@@ -1,0 +1,27 @@
+[project]
+name = "shanhai"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx>=0.27",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "typer>=0.12",
+  "pillow>=10.3",
+]
+
+[project.scripts]
+shanhai = "shanhai.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.5", "respx>=0.21"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shanhai"]
+
+[tool.ruff]
+line-length = 100
