@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from shanhai.config import Settings
-from shanhai.providers.image import ImageClient, ImageGenError
+from shanhai.providers.image import ImageClient
 
 OUT = Path("spike/out/probe"); OUT.mkdir(parents=True, exist_ok=True)
 
