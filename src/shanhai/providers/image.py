@@ -67,9 +67,9 @@ class ImageClient:
 
 
 def _decode(item: dict) -> bytes:
-    if "b64_json" in item:
+    if item.get("b64_json"):
         return base64.b64decode(item["b64_json"])
-    if "url" in item:
+    if item.get("url"):
         r = httpx.get(item["url"], timeout=120)
         r.raise_for_status()
         return r.content

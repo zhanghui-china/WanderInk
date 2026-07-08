@@ -27,6 +27,17 @@ def test_edits_with_reference(tmp_path: Path):
 
 
 @respx.mock
+def test_generations_empty_b64_falls_back_to_url():
+    # 真实代理(tu-zi gpt-image-2)同时返回空 b64_json 和有效 url
+    respx.post(f"{BASE}/images/generations").mock(return_value=httpx.Response(200, json={
+        "data": [{"b64_json": "", "url": "https://img.example.com/x.png", "revised_prompt": "r"}]}))
+    respx.get("https://img.example.com/x.png").mock(
+        return_value=httpx.Response(200, content=b"realpng"))
+    c = ImageClient(BASE, "sk", "gpt-image-2", mode="images_api")
+    assert c.generate("a cat") == b"realpng"
+
+
+@respx.mock
 def test_chat_mode_images_field():
     respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
         "choices": [{"message": {"content": "",
