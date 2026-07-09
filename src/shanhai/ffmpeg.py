@@ -7,7 +7,11 @@ BUFFER_MS = 500  # 每页时长 = 解说音频 + 0.5s(PRD F6)
 
 
 def sh(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True, capture_output=True)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode("utf-8", "replace").strip() if e.stderr else ""
+        raise RuntimeError(f"ffmpeg 失败({' '.join(cmd[:3])}…):{stderr}") from e
 
 
 def probe_duration_ms(path: Path) -> int:
@@ -15,6 +19,8 @@ def probe_duration_ms(path: Path) -> int:
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "csv=p=0", str(path)],
         check=True, capture_output=True, text=True).stdout.strip()
+    if not out or out == "N/A":
+        raise ValueError(f"ffprobe 无法解析时长(输出为 {out!r}):{path}")
     return int(float(out) * 1000)
 
 
