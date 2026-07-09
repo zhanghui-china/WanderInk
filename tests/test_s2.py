@@ -22,6 +22,20 @@ def test_s2_fills_storyboard():
     assert p.storyboard[0].status == "draft"
     assert p.status["s2"] == "done"
 
+@respx.mock
+def test_s2_filters_narrator_from_cell_characters():
+    cells = {"cells": [
+        {"index": 1, "scene_ref": "1-1", "visual_desc": "断桥",
+         "characters": ["白素贞", "旁白"], "caption": "初遇。", "emotion": "宁静"}]}
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(cells, ensure_ascii=False)}}]}))
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.duration_min = 1
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    p = s2_storyboard.run(p, LLMClient(BASE, "sk", "m"))
+    assert p.storyboard[0].characters == ["白素贞"]   # 旁白从出场角色剔除
+
+
 def test_s2_system_contains_page_end_suspense_hint():
     """Assert that SYSTEM prompt contains hint about page-end suspense."""
     system = s2_storyboard.SYSTEM

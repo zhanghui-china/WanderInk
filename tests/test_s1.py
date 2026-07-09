@@ -29,6 +29,25 @@ def test_s1_requires_legend():
     with pytest.raises(ValueError):
         s1_script.run(Project(project_id="x", scenic_spot="雷峰塔"), LLMClient(BASE, "sk", "m"))
 
+def test_is_narrator():
+    assert s1_script.is_narrator("旁白", "叙事者")
+    assert s1_script.is_narrator("解说")
+    assert s1_script.is_narrator("Narrator")
+    assert not s1_script.is_narrator("白素贞", "蛇仙")
+    assert not s1_script.is_narrator("许仙", "书生")
+
+@respx.mock
+def test_s1_filters_narrator_from_characters():
+    script = json.loads(json.dumps(SCRIPT))
+    script["characters"].append({"name": "旁白", "role": "叙事者",
+                                 "personality": "温和", "appearance": "无固定形象"})
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(script, ensure_ascii=False)}}]}))
+    p = s1_script.run(_project(), LLMClient(BASE, "sk", "m"))
+    names = [c.name for c in p.script.characters]
+    assert "旁白" not in names            # 旁白被剔除,不占三视图名额
+    assert "白素贞" in names
+
 def test_s1_system_contains_narrative_framework():
     """Assert that SYSTEM prompt contains key narrative framework keywords."""
     system = s1_script.SYSTEM
