@@ -1,10 +1,25 @@
 from pathlib import Path
 
 from shanhai import ffmpeg, typeset
-from shanhai.schema import Project
+from shanhai.schema import Legend, Project
 
 TITLE_MS = 2500
 CREDITS_MS = 3000
+
+
+def _credits_lines(legend: Legend | None) -> list[str]:
+    """片尾来源标注(PRD F0②/§9.4):原创演绎显式标注,不冠"传说来源";始终至少一行来源。"""
+    source_type = legend.source_type if legend else None
+    sources = legend.sources if legend else []
+    if source_type == "原创演绎":
+        lines = ["本故事为原创演绎"] + [f"素材来源:{s}" for s in sources]
+    elif sources:
+        lines = [f"传说来源:{s}" for s in sources]
+    elif source_type:
+        lines = [f"改编自{source_type}"]
+    else:
+        lines = ["来源:未标注"]
+    return lines + ["本片为 AI 生成内容"]
 
 
 def run(project: Project, workdir: Path) -> Project:
@@ -15,9 +30,8 @@ def run(project: Project, workdir: Path) -> Project:
     title_png = out_dir / "title.png"
     legend_title = project.legend.title if project.legend else ""
     typeset.title_card(project.scenic_spot, legend_title, title_png)
-    sources = project.legend.sources if project.legend else []
     credits_png = out_dir / "credits.png"
-    typeset.credits_card([f"传说来源:{s}" for s in sources] + ["本片为 AI 生成内容"], credits_png)
+    typeset.credits_card(_credits_lines(project.legend), credits_png)
 
     clips: list[Path] = []
     head = clips_dir / "00_title.mp4"
@@ -27,10 +41,13 @@ def run(project: Project, workdir: Path) -> Project:
         if cell.status != "confirmed" or not (cell.image and cell.audio):
             print(f"跳过第 {cell.index} 页(status={cell.status})")
             continue
+        img, aud = workdir / cell.image, workdir / cell.audio
+        if not img.exists() or not aud.exists():
+            print(f"跳过第 {cell.index} 页(产物缺失)")
+            continue
         clip = clips_dir / f"{cell.index:02d}.mp4"
         # page_clip_cmd 内部补 0.5s 尾缓冲,此处传原始解说时长
-        ffmpeg.sh(ffmpeg.page_clip_cmd(workdir / cell.image, workdir / cell.audio,
-                                       cell.duration_ms, clip))
+        ffmpeg.sh(ffmpeg.page_clip_cmd(img, aud, cell.duration_ms, clip))
         clips.append(clip)
     tail = clips_dir / "99_credits.mp4"
     ffmpeg.sh(ffmpeg.page_clip_cmd(credits_png, None, CREDITS_MS, tail))
