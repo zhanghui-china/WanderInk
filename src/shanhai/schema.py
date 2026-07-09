@@ -72,7 +72,7 @@ class Project(BaseModel):
     legend_candidates: list[Legend] = Field(default_factory=list)
     legend: Legend | None = None
     script: Script | None = None
-    style_preset: str = "kids_picture_book"
+    style_preset: str = "guofeng_ink"
     storyboard: list[StoryboardCell] = Field(default_factory=list)
     bgm: str = ""
     output: dict[str, str] = Field(default_factory=dict)
