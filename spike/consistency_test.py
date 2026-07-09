@@ -8,6 +8,7 @@ from pathlib import Path
 from shanhai.config import Settings
 from shanhai.providers.image import ImageClient
 from shanhai.steps.s3_characters import TURNAROUND_TMPL
+from shanhai.steps.s4_pages import PAGE_TMPL
 from shanhai.styles import STYLE_PRESETS
 
 CHARACTERS = {
@@ -23,11 +24,6 @@ SCENES = [
     "雷峰塔下,许仙仰望高塔,黄昏逆光,中景",
     "多年后塔前重逢,两人对望,晨光温暖,中景",
 ]
-
-PAGE_TMPL = (
-    "{style}。连环画单页画面:{scene}。出场角色:{features}。"
-    "严格保持角色与参考图中的形象一致(发型、服饰、面部特征)。画面中不要出现任何文字。"
-)
 
 
 def main() -> None:
