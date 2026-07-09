@@ -1,7 +1,7 @@
 import io
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 FONT_PATH = Path("assets/fonts/NotoSansCJKsc-Regular.otf")
 FRAME = (1920, 1080)
@@ -11,6 +11,16 @@ WATERMARK = "AI 生成"
 
 def _font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(str(FONT_PATH), size)
+
+
+def _cover(img: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """缩放并居中裁剪填满 size(cover-fit)。"""
+    tw, th = size
+    scale = max(tw / img.width, th / img.height)
+    resized = img.resize((max(round(img.width * scale), tw), max(round(img.height * scale), th)))
+    left = (resized.width - tw) // 2
+    top = (resized.height - th) // 2
+    return resized.crop((left, top, left + tw, top + th))
 
 
 def _wrap(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
@@ -29,9 +39,15 @@ def _wrap(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
 def compose_page(art: bytes, caption: str, out: Path) -> None:
     frame = Image.new("RGB", FRAME, "black")
     img = Image.open(io.BytesIO(art)).convert("RGB")
-    area_h = FRAME[1] - CAPTION_H
-    img.thumbnail((FRAME[0], area_h))
-    frame.paste(img, ((FRAME[0] - img.width) // 2, (area_h - img.height) // 2))
+    area = (FRAME[0], FRAME[1] - CAPTION_H)
+    # 画面区背景:同图 cover 填满 + 高斯模糊 + 压暗,替代竖图两侧的死黑边
+    bg = _cover(img, area).filter(ImageFilter.GaussianBlur(40))
+    frame.paste(Image.eval(bg, lambda p: p * 45 // 100), (0, 0))
+    # 前景:完整画面 contain 居中,不裁剪
+    fit = img.copy()
+    fit.thumbnail(area)
+    frame.paste(fit, ((area[0] - fit.width) // 2, (area[1] - fit.height) // 2))
+    area_h = area[1]
     draw = ImageDraw.Draw(frame, "RGBA")
     draw.rectangle([0, area_h, FRAME[0], FRAME[1]], fill=(0, 0, 0, 200))
     font = _font(40)
