@@ -1,9 +1,12 @@
 # src/shanhai/providers/image.py
 import base64
 import re
+import time
 from pathlib import Path
 
 import httpx
+
+_TRANSIENT_STATUS = {429, 500, 502, 503, 504}  # 代理瞬时过载/超时,可重试;400/内容问题不重试
 
 
 class ImageGenError(Exception):
@@ -23,7 +26,21 @@ class ImageClient:
         )
 
     def generate(self, prompt: str, size: str = "1536x1024",
-                 references: list[Path] | None = None) -> bytes:
+                 references: list[Path] | None = None, retries: int = 2) -> bytes:
+        # 瞬时网络错误(超时/连接错/5xx)重试;gpt-image-2 经代理偶发 ReadTimeout,S3 三视图无外层重试
+        for attempt in range(retries + 1):
+            try:
+                return self._dispatch(prompt, size, references)
+            except (httpx.TimeoutException, httpx.ConnectError):
+                if attempt == retries:
+                    raise
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code not in _TRANSIENT_STATUS or attempt == retries:
+                    raise
+            time.sleep(2 * (attempt + 1))
+        raise ImageGenError("unreachable")  # pragma: no cover
+
+    def _dispatch(self, prompt: str, size: str, references: list[Path] | None) -> bytes:
         if self.mode == "chat_api":
             return self._via_chat(prompt, references or [])
         if references:

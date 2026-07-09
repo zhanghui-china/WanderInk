@@ -1,6 +1,7 @@
 # tests/test_image_provider.py
 import base64
 from pathlib import Path
+from unittest.mock import patch
 import respx, httpx, pytest
 from shanhai.providers.image import ImageClient, ImageGenError
 
@@ -14,6 +15,27 @@ def test_generations_b64():
         return_value=httpx.Response(200, json={"data": [{"b64_json": PNG}]}))
     c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
     assert c.generate("a cat") == b"fakepng"
+
+
+@respx.mock
+@patch("shanhai.providers.image.time.sleep")
+def test_generate_retries_on_timeout(mock_sleep):
+    route = respx.post(f"{BASE}/images/generations")
+    route.side_effect = [httpx.ReadTimeout("slow"),
+                         httpx.Response(200, json={"data": [{"b64_json": PNG}]})]
+    c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
+    assert c.generate("a cat") == b"fakepng"           # 超时后重试成功
+    assert route.call_count == 2
+
+
+@respx.mock
+def test_generate_does_not_retry_400():
+    route = respx.post(f"{BASE}/images/generations").mock(
+        return_value=httpx.Response(400, json={"error": {"message": "not supported"}}))
+    c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
+    with pytest.raises(httpx.HTTPStatusError):
+        c.generate("a cat")
+    assert route.call_count == 1                        # 400 不可重试
 
 
 @respx.mock
