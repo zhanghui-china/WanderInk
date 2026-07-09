@@ -34,7 +34,7 @@ class ImageClient:
         r = self._client.post("/images/generations",
                               json={"model": self.model, "prompt": prompt, "size": size, "n": 1})
         r.raise_for_status()
-        return _decode(r.json()["data"][0])
+        return _decode(_first(r.json()))
 
     def _via_edits(self, prompt: str, references: list[Path], size: str) -> bytes:
         files = [("image[]", (p.name, p.read_bytes(), "image/png")) for p in references]
@@ -42,7 +42,7 @@ class ImageClient:
                               data={"model": self.model, "prompt": prompt, "size": size},
                               files=files)
         r.raise_for_status()
-        return _decode(r.json()["data"][0])
+        return _decode(_first(r.json()))
 
     def _via_chat(self, prompt: str, references: list[Path]) -> bytes:
         content: list[dict] = [{"type": "text", "text": prompt}]
@@ -60,10 +60,19 @@ class ImageClient:
             url = img.get("image_url", {}).get("url", "")
             if url.startswith("data:image"):
                 return base64.b64decode(url.split(",", 1)[1])
+            if url.startswith("http"):
+                return _decode({"url": url})
         m = re.search(r"data:image/\w+;base64,([A-Za-z0-9+/=]+)", msg.get("content") or "")
         if m:
             return base64.b64decode(m.group(1))
         raise ImageGenError(f"响应中未找到图像: {str(msg)[:200]}")
+
+
+def _first(resp: dict) -> dict:
+    data = resp.get("data")
+    if not data:
+        raise ImageGenError(f"响应中无 data: {str(resp)[:200]}")
+    return data[0]
 
 
 def _decode(item: dict) -> bytes:

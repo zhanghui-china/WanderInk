@@ -35,10 +35,11 @@ class LLMClient:
         prompt = user
         last_err: Exception | None = None
         for _ in range(retries + 1):
-            text = self.chat(sys_prompt, prompt, temperature=0.3)
             try:
+                text = self.chat(sys_prompt, prompt, temperature=0.3)
                 return schema.model_validate_json(_extract_json(text))
-            except (ValidationError, ValueError) as e:
+            except (httpx.HTTPError, ValidationError, ValueError,
+                    TypeError, KeyError, IndexError) as e:
                 last_err = e
                 prompt = f"{user}\n\n上一次输出不合法:{e}\n请修正后重新只输出 JSON。"
         raise LLMError(f"结构化输出失败: {last_err}")

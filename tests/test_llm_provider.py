@@ -31,3 +31,27 @@ def test_structured_exhausts_retries():
     respx.post(f"{BASE}/chat/completions").mock(return_value=_resp("永远不是 JSON"))
     with pytest.raises(LLMError):
         LLMClient(BASE, "sk", "m").structured("sys", "user", Pet, retries=1)
+
+
+@respx.mock
+def test_structured_retries_on_http_error():
+    route = respx.post(f"{BASE}/chat/completions")
+    route.side_effect = [httpx.Response(500), _resp(json.dumps({"name": "咪咪", "age": 3}))]
+    pet = LLMClient(BASE, "sk", "m").structured("sys", "user", Pet)
+    assert pet.age == 3 and route.call_count == 2   # 5xx 被重试而非逃逸
+
+
+@respx.mock
+def test_structured_wraps_null_content():
+    respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": None}}]}))
+    with pytest.raises(LLMError):                     # null content 不以 TypeError 逃逸
+        LLMClient(BASE, "sk", "m").structured("sys", "user", Pet, retries=1)
+
+
+@respx.mock
+def test_structured_wraps_empty_choices():
+    respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": []}))
+    with pytest.raises(LLMError):                     # 空 choices 包成 LLMError 而非 IndexError
+        LLMClient(BASE, "sk", "m").structured("sys", "user", Pet, retries=1)

@@ -53,3 +53,25 @@ def test_chat_mode_no_image_raises():
     c = ImageClient(BASE, "sk", "nano-banana", mode="chat_api")
     with pytest.raises(ImageGenError):
         c.generate("a cat")
+
+
+@respx.mock
+def test_generations_empty_data_raises():
+    # 内容被拦截时代理常返回 200 + 空 data,应包成 ImageGenError 而非 IndexError
+    respx.post(f"{BASE}/images/generations").mock(
+        return_value=httpx.Response(200, json={"data": []}))
+    c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
+    with pytest.raises(ImageGenError):
+        c.generate("a cat")
+
+
+@respx.mock
+def test_chat_mode_http_url_downloaded():
+    # 部分 chat_api 模型在 images[] 里回传普通 https 链接而非 data: base64
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": "",
+            "images": [{"image_url": {"url": "https://img.example.com/x.png"}}]}}]}))
+    respx.get("https://img.example.com/x.png").mock(
+        return_value=httpx.Response(200, content=b"realpng"))
+    c = ImageClient(BASE, "sk", "nano-banana", mode="chat_api")
+    assert c.generate("a cat") == b"realpng"

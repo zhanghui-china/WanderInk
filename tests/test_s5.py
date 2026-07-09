@@ -2,8 +2,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import httpx, respx
-from shanhai.providers.tts import TTSClient
+import httpx, pytest, respx
+from shanhai.providers.tts import TTSClient, TTSError
 from shanhai.schema import Project, StoryboardCell
 from shanhai.steps import s5_audio
 
@@ -12,10 +12,21 @@ BASE = "https://p.example.com/v1"
 
 @respx.mock
 def test_tts_client(tmp_path: Path):
-    respx.post(f"{BASE}/audio/speech").mock(
-        return_value=httpx.Response(200, content=b"mp3bytes"))
+    respx.post(f"{BASE}/audio/speech").mock(return_value=httpx.Response(
+        200, headers={"content-type": "audio/mpeg"}, content=b"mp3bytes"))
     TTSClient(BASE, "sk", "tts-1").synthesize("你好", "alloy", tmp_path / "a.mp3")
     assert (tmp_path / "a.mp3").read_bytes() == b"mp3bytes"
+
+
+@respx.mock
+def test_tts_rejects_non_audio(tmp_path: Path):
+    # 代理配额耗尽时常返回 200 + JSON 错误体
+    respx.post(f"{BASE}/audio/speech").mock(return_value=httpx.Response(
+        200, headers={"content-type": "application/json"}, content=b'{"error":"quota"}'))
+    out = tmp_path / "a.mp3"
+    with pytest.raises(TTSError):
+        TTSClient(BASE, "sk", "tts-1").synthesize("你好", "alloy", out)
+    assert not out.exists()                          # 非音频不落盘
 
 
 def _project() -> Project:
