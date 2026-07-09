@@ -91,6 +91,18 @@ def test_s4_warns_when_no_turnaround(tmp_path: Path, capsys):
     assert "一致性" in capsys.readouterr().out         # S3 未产出三视图时告警(M0 被绕过)
 
 
+def test_s4_parallel_all_cells_confirmed(tmp_path: Path):
+    p = _project(tmp_path)
+    p.storyboard = [StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc="v",
+                                   characters=["白素贞"], caption=f"第{i}页。", emotion="宁静")
+                    for i in range(1, 7)]                # 6 页并发生成
+    image = MagicMock(); image.generate.return_value = _png()
+    p = s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert all(c.status == "confirmed" for c in p.storyboard)   # 全部成功
+    assert p.status["s4"] == "done"
+    assert all((tmp_path / "pages" / f"page_{i:02d}.png").exists() for i in range(1, 7))
+
+
 def test_s4_downscaled_ref_rebuilds_on_newer_source(tmp_path: Path):
     src = tmp_path / "白素贞.png"
     Image.new("RGB", (100, 100), "red").save(src, "PNG")
