@@ -10,12 +10,32 @@ from shanhai.providers.tts import TTSClient
 from shanhai.schema import Project
 
 DEFAULT_MANIFEST = Path("assets/bgm/manifest.json")
-CHARS_PER_SEC = 4.0   # 解说语速估算(与 PRD S1 字数-时长模型同量级)
-MIN_MS = 2500         # 单页最短显示时长
+CHARS_PER_SEC = 4.0       # 解说语速估算(与 PRD S1 字数-时长模型同量级)
+MIN_MS = 2500             # 单页最短显示时长
+MIN_MS_PER_CHAR = 380     # 完整解说约 420+ms/字;低于字数×380ms 几乎必是 TTS 截断
+TTS_TRIES = 3             # 小模型 TTS 偶发截断/空返回,重合成取最长的一次
 
 
 def _estimate_ms(caption: str) -> int:
     return max(MIN_MS, round(len(caption) / CHARS_PER_SEC * 1000))
+
+
+def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path) -> int:
+    """合成并检测截断:时长明显偏短(疑似被截)则重合成,始终保留最长的一次。返回时长 ms。"""
+    floor = len(caption) * MIN_MS_PER_CHAR
+    tmp = out.with_suffix(".try.mp3")
+    best_ms = 0
+    for _ in range(TTS_TRIES):
+        tts.synthesize(caption, voice, tmp)
+        ms = probe_duration_ms(tmp)
+        if ms > best_ms:
+            tmp.replace(out)
+            best_ms = ms
+        else:
+            tmp.unlink(missing_ok=True)
+        if best_ms >= floor:
+            break
+    return best_ms
 
 
 def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
@@ -28,8 +48,7 @@ def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
             cell.duration_ms = probe_duration_ms(out)
             continue
         try:
-            tts.synthesize(cell.caption, voice, out)
-            cell.duration_ms = probe_duration_ms(out)
+            cell.duration_ms = _synthesize_full(tts, cell.caption, voice, out)
             cell.audio = str(out.relative_to(workdir))
         except Exception as e:  # noqa: BLE001 TTS/探测失败 → 静音兜底,成片完整但该页无解说
             try:
