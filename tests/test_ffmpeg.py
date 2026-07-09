@@ -8,6 +8,7 @@ def test_page_clip_cmd_duration_and_fade():
     assert "-t 7.3" in cmd            # 6800ms + 500ms 缓冲
     assert "fade=t=in" in cmd and "fade=t=out" in cmd
     assert "1920:1080" in cmd and "yuv420p" in cmd
+    assert "-ar 44100" in cmd and "-ac 2" in cmd  # 与静音分支采样率/声道对齐
 
 
 def test_page_clip_cmd_silent():

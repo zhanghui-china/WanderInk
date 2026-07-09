@@ -31,8 +31,11 @@ def page_clip_cmd(image: Path, audio: Path | None, duration_ms: int, out: Path) 
         cmd += ["-i", str(audio), "-af", "apad"]
     else:
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+    # 强制 44.1kHz/立体声,与片头/片尾静音分支(anullsrc=r=44100:cl=stereo)对齐,
+    # 否则解说 mp3(常见 24kHz/mono)会让 concat demuxer 拿到参数不一致的音频流而错乱
     cmd += ["-t", f"{dur:g}", "-vf", vf, "-r", str(FPS),
-            "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k", str(out)]
+            "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
+            "-ar", "44100", "-ac", "2", str(out)]
     return cmd
 
 
