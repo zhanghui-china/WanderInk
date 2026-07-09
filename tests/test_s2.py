@@ -21,3 +21,11 @@ def test_s2_fills_storyboard():
     assert len(p.storyboard) == 8
     assert p.storyboard[0].status == "draft"
     assert p.status["s2"] == "done"
+
+def test_s2_system_contains_page_end_suspense_hint():
+    """Assert that SYSTEM prompt contains hint about page-end suspense."""
+    system = s2_storyboard.SYSTEM
+    # Check for page-end suspense hint keywords
+    assert "悬念" in system or "期待" in system or "页尾" in system, "Missing page-end suspense hint"
+    # Ensure the hard constraint about story continuity is preserved
+    assert "连起来" in system or "独立讲通" in system, "Missing hard constraint about story continuity"

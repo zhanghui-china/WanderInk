@@ -28,3 +28,15 @@ def test_s1_fills_script():
 def test_s1_requires_legend():
     with pytest.raises(ValueError):
         s1_script.run(Project(project_id="x", scenic_spot="雷峰塔"), LLMClient(BASE, "sk", "m"))
+
+def test_s1_system_contains_narrative_framework():
+    """Assert that SYSTEM prompt contains key narrative framework keywords."""
+    system = s1_script.SYSTEM
+    # Check for cold open hook keywords
+    assert "冷开场" in system or "钩子" in system, "Missing cold open hook instruction"
+    # Check for four-part structure (起承转合)
+    assert "起承转合" in system, "Missing 起承转合 structure instruction"
+    # Check for climax/tension
+    assert "高潮" in system, "Missing climax instruction"
+    # Check for emotional beat
+    assert "情感" in system, "Missing emotional beat instruction"
