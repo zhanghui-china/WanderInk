@@ -40,8 +40,10 @@ def compose_page(art: bytes, caption: str, out: Path) -> None:
         w = font.getlength(line)
         draw.text(((FRAME[0] - w) / 2, area_h + 24 + i * 56), line, font=font, fill="white")
     wm_font = _font(28)
+    # 深色描边保证 AI 标识在留白/浅色画面上始终可见(合规:标识不可失效)
     draw.text((FRAME[0] - wm_font.getlength(WATERMARK) - 24, 20), WATERMARK,
-              font=wm_font, fill=(255, 255, 255, 180))
+              font=wm_font, fill=(255, 255, 255, 180),
+              stroke_width=2, stroke_fill=(0, 0, 0, 160))
     frame.save(out)
 
 
