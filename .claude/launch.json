@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "shanhai-web",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "shanhai-web"],
+      "port": 8080
+    }
+  ]
+}

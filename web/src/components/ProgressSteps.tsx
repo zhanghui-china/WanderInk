@@ -1,0 +1,98 @@
+import type { ProjectDetail } from '../types'
+
+const STEPS: { key: string; label: string; sub: string }[] = [
+  { key: 's0', label: '传说', sub: 'LEGEND' },
+  { key: 's1', label: '剧本', sub: 'SCRIPT' },
+  { key: 's2', label: '分镜', sub: 'BOARD' },
+  { key: 's3', label: '角色', sub: 'ROLE' },
+  { key: 's4', label: '漫画页', sub: 'PAGES' },
+  { key: 's5', label: '配音', sub: 'VOICE' },
+  { key: 's6', label: '合成', sub: 'FILM' },
+]
+
+type Cell = { dot: string; label: string; sub: string; tag: string }
+
+function cell(status: string | undefined, running: boolean): Cell {
+  if (status === 'done')
+    return {
+      dot: 'bg-cinnabar text-rice',
+      label: 'text-ink',
+      sub: 'text-muted',
+      tag: '✓',
+    }
+  if (status === 'partial')
+    return {
+      dot: 'bg-amber2 text-white',
+      label: 'text-ink',
+      sub: 'text-muted',
+      tag: '',
+    }
+  if (status === 'failed')
+    return {
+      dot: 'bg-cinnabar/20 text-cinnabar border border-cinnabar',
+      label: 'text-cinnabar',
+      sub: 'text-cinnabar/60',
+      tag: '!',
+    }
+  // pending / running current
+  if (running)
+    return {
+      dot: 'border-2 border-cinnabar text-cinnabar animate-shy-pulse',
+      label: 'text-ink',
+      sub: 'text-muted',
+      tag: '',
+    }
+  return {
+    dot: 'bg-kraft text-muted border border-line',
+    label: 'text-muted',
+    sub: 'text-band',
+    tag: '',
+  }
+}
+
+export function ProgressSteps({ project }: { project: ProjectDetail }) {
+  const running = project.pipeline === 'running' || project.pipeline === 'queued'
+  // 第一个未完成步骤即“当前步”
+  const currentIdx = STEPS.findIndex((s) => project.status[s.key] !== 'done')
+
+  return (
+    <div className="rounded-2xl border border-band bg-paper p-5 shadow-paper">
+      <div className="mb-4 flex items-center gap-2.5">
+        <span className="font-serif text-base font-semibold tracking-wide text-ink">生成进度</span>
+        {running && <span className="h-2 w-2 animate-shy-pulse rounded-full bg-cinnabar" />}
+        <span className="text-xs tracking-wide text-muted">
+          {running ? '正在生成…' : project.pipeline === 'done' ? '全部完成' : project.pipeline}
+        </span>
+      </div>
+
+      <ol className="flex flex-wrap items-start gap-y-4">
+        {STEPS.map((s, i) => {
+          const isCurrent = running && i === currentIdx
+          const c = cell(project.status[s.key], isCurrent)
+          const done = project.status[s.key] === 'done'
+          return (
+            <li key={s.key} className="flex flex-1 items-center" style={{ minWidth: 92 }}>
+              <div className="flex flex-col items-center gap-1.5 px-1">
+                <span
+                  className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-bold ${c.dot}`}
+                >
+                  {c.tag}
+                </span>
+                <span className={`font-serif text-[13px] font-semibold tracking-wide ${c.label}`}>
+                  {s.label}
+                </span>
+                <span className={`text-[9px] tracking-[2px] ${c.sub}`}>{s.sub}</span>
+              </div>
+              {i < STEPS.length - 1 && (
+                <span
+                  className={`mx-1 h-px flex-1 ${done ? 'bg-cinnabar' : 'bg-line'}`}
+                  style={{ minWidth: 12 }}
+                />
+              )}
+            </li>
+          )
+        })}
+      </ol>
+    </div>
+  )
+}
