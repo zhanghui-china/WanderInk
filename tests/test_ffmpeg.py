@@ -1,4 +1,9 @@
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
 
 from shanhai import ffmpeg
 
@@ -24,3 +29,16 @@ def test_finalize_cmd_loudnorm_and_bgm():
 def test_finalize_cmd_no_bgm():
     cmd = " ".join(ffmpeg.finalize_cmd(Path("v.mp4"), None, Path("o.mp4")))
     assert "loudnorm=I=-16" in cmd and "amix" not in cmd
+
+
+def test_sh_surfaces_stderr_on_failure():
+    err = subprocess.CalledProcessError(1, ["ffmpeg"], stderr=b"No such file or directory")
+    with patch("shanhai.ffmpeg.subprocess.run", side_effect=err), \
+         pytest.raises(RuntimeError, match="No such file or directory"):
+        ffmpeg.sh(["ffmpeg", "-i", "x", "o.mp4"])
+
+
+def test_probe_duration_ms_rejects_na():
+    with patch("shanhai.ffmpeg.subprocess.run", return_value=SimpleNamespace(stdout="N/A\n")), \
+         pytest.raises(ValueError, match="无法解析时长"):
+        ffmpeg.probe_duration_ms(Path("bad.mp3"))

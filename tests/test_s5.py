@@ -88,3 +88,35 @@ def test_s5_skips_existing_audio(mock_probe, tmp_path: Path):
     tts = MagicMock()
     s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
     tts.synthesize.assert_not_called()               # 已配音且文件在则跳过合成
+
+
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_resynthesizes_when_file_missing(mock_probe, tmp_path: Path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
+    p = _project()                                   # caption="西湖初遇。"
+    p.storyboard[0].audio = "audio/page_01.mp3"      # 引用的文件并不存在
+    tts = MagicMock()
+    s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    tts.synthesize.assert_called_once()              # 产物丢失则重新合成
+    assert tts.synthesize.call_args.args[0] == "西湖初遇。"
+
+
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_isolates_failed_synthesis(mock_probe, tmp_path: Path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.storyboard = [
+        StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
+                       caption="坏页。", emotion="宁静"),
+        StoryboardCell(index=2, scene_ref="1-2", visual_desc="v", characters=[],
+                       caption="好页。", emotion="宁静"),
+    ]
+    tts = MagicMock(); tts.synthesize.side_effect = [TTSError("boom"), None]
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    assert p.storyboard[0].audio == "" and p.storyboard[0].duration_ms == 0  # 坏页留空
+    assert p.storyboard[1].audio.endswith("page_02.mp3")                     # 其余页照常
+    assert p.status["s5"] == "partial"               # 有页缺音频 -> partial(不复用 cell.status)

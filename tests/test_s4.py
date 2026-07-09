@@ -80,6 +80,17 @@ def test_s4_bad_turnaround_fails_only_that_cell(tmp_path: Path):
     assert p.status["s4"] == "partial"
 
 
+def test_s4_warns_when_no_turnaround(tmp_path: Path, capsys):
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    card = CharacterCard(name="白素贞", role="r", personality="p", appearance="a")  # 无三视图
+    p.script = Script(title="t", theme="th", acts=[], characters=[card])
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="断桥",
+                                   characters=["白素贞"], caption="c", emotion="宁静")]
+    image = MagicMock(); image.generate.return_value = _png()
+    s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert "一致性" in capsys.readouterr().out         # S3 未产出三视图时告警(M0 被绕过)
+
+
 def test_s4_downscaled_ref_rebuilds_on_newer_source(tmp_path: Path):
     src = tmp_path / "白素贞.png"
     Image.new("RGB", (100, 100), "red").save(src, "PNG")
