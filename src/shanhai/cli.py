@@ -10,8 +10,25 @@ from shanhai.providers.llm import LLMClient
 from shanhai.providers.tts import TTSClient
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s6_compose)
+from shanhai.styles import STYLE_PRESETS
 
 app = typer.Typer(help="山海:景区传说有声连环画生成器(CLI 骨架)")
+
+_MINUTES = (1, 3, 5)
+_AUDIENCES = ("儿童", "大众")
+_TONES = ("温情", "奇幻", "悬疑")
+
+
+def _validate_params(minutes: int, audience: str, tone: str, style: str) -> None:
+    """建/存项目前校验枚举参数,非法值快速失败,避免写入永久不可加载的 project.json。"""
+    if minutes not in _MINUTES:
+        raise typer.BadParameter(f"--minutes 须为 {'/'.join(map(str, _MINUTES))},收到 {minutes}")
+    if audience not in _AUDIENCES:
+        raise typer.BadParameter(f"--audience 须为 {'/'.join(_AUDIENCES)},收到 {audience}")
+    if tone not in _TONES:
+        raise typer.BadParameter(f"--tone 须为 {'/'.join(_TONES)},收到 {tone}")
+    if style not in STYLE_PRESETS:
+        raise typer.BadParameter(f"--style 须为 {'/'.join(STYLE_PRESETS)},收到 {style}")
 
 
 def _clients(s: Settings) -> tuple[LLMClient, ImageClient, TTSClient]:
@@ -44,6 +61,7 @@ _STORY_FILE = typer.Option(None, exists=True, dir_okay=False, readable=True)
 @app.command()
 def new(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str = "温情",
         style: str = "guofeng_ink", story_file: Path | None = _STORY_FILE):
+    _validate_params(minutes, audience, tone, style)
     s = Settings()
     llm, _, _ = _clients(s)
     story = _read_story(story_file)
@@ -101,6 +119,7 @@ def step(project_id: str, name: str):
 def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str = "温情",
         style: str = "guofeng_ink", story_file: Path | None = _STORY_FILE):
     """快速模式:自动选第一个候选传说,一路跑到 MP4。"""
+    _validate_params(minutes, audience, tone, style)
     s = Settings()
     llm, image, tts = _clients(s)
     story = _read_story(story_file)
@@ -127,8 +146,13 @@ def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str 
         t0 = time.time()
         fn()
         store.save(p)
-        typer.echo(f"{name} 完成({time.time() - t0:.0f}s)")
+        st = p.status.get(name, "missing")
+        mark = "完成" if st == "done" else f"⚠️ {st}"
+        typer.echo(f"{name} {mark}({time.time() - t0:.0f}s)")
     typer.echo(f"总耗时 {(time.time() - total0) / 60:.1f} 分钟")
+    if not any(c.status == "confirmed" for c in p.storyboard):
+        typer.echo("⚠️ 未生成任何正文页,成片仅含片头片尾,判定失败")
+        raise typer.Exit(1)
     typer.echo(f"成片: {p.output.get('mp4')}")
 
 
