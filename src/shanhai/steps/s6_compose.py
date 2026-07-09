@@ -33,10 +33,14 @@ def run(project: Project, workdir: Path) -> Project:
     credits_png = out_dir / "credits.png"
     typeset.credits_card(_credits_lines(project.legend), credits_png)
 
+    # clips 与 durations 一一对应:durations 供 xfade 累积 offset 计算
     clips: list[Path] = []
+    durations: list[float] = []
     head = clips_dir / "00_title.mp4"
-    ffmpeg.sh(ffmpeg.page_clip_cmd(title_png, None, TITLE_MS, head))
+    ffmpeg.sh(ffmpeg.page_clip_cmd(title_png, None, TITLE_MS, head, zoom_in=True))
     clips.append(head)
+    durations.append(ffmpeg.clip_duration_s(TITLE_MS, has_audio=False))
+    page_i = 0
     for cell in project.storyboard:
         if cell.status != "confirmed" or not (cell.image and cell.audio):
             print(f"跳过第 {cell.index} 页(status={cell.status})")
@@ -46,15 +50,18 @@ def run(project: Project, workdir: Path) -> Project:
             print(f"跳过第 {cell.index} 页(产物缺失)")
             continue
         clip = clips_dir / f"{cell.index:02d}.mp4"
-        # page_clip_cmd 内部补 0.5s 尾缓冲,此处传原始解说时长
-        ffmpeg.sh(ffmpeg.page_clip_cmd(img, aud, cell.duration_ms, clip))
+        # page_clip_cmd 内部补 0.5s 尾缓冲,此处传原始解说时长;奇偶页交替推近/拉远
+        ffmpeg.sh(ffmpeg.page_clip_cmd(img, aud, cell.duration_ms, clip, zoom_in=page_i % 2 == 0))
         clips.append(clip)
+        durations.append(ffmpeg.clip_duration_s(cell.duration_ms, has_audio=True))
+        page_i += 1
     tail = clips_dir / "99_credits.mp4"
-    ffmpeg.sh(ffmpeg.page_clip_cmd(credits_png, None, CREDITS_MS, tail))
+    ffmpeg.sh(ffmpeg.page_clip_cmd(credits_png, None, CREDITS_MS, tail, zoom_in=False))
     clips.append(tail)
+    durations.append(ffmpeg.clip_duration_s(CREDITS_MS, has_audio=False))
 
     merged = out_dir / "merged.mp4"
-    ffmpeg.sh(ffmpeg.concat_cmd(clips, out_dir / "concat.txt", merged))
+    ffmpeg.sh(ffmpeg.xfade_concat_cmd(clips, durations, merged))
     final = out_dir / "final.mp4"
     bgm = Path(project.bgm) if project.bgm else None
     ffmpeg.sh(ffmpeg.finalize_cmd(merged, bgm, final))
