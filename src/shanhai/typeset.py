@@ -37,11 +37,19 @@ def _wrap(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
     return lines
 
 
-def compose_page(art: bytes, caption: str, out: Path) -> None:
+def compose_page(art: bytes, out: Path) -> None:
+    # 只产出 cover-crop 满幅底图(锚点偏上保住头部);字幕/水印移到 overlay_layer,
+    # 由 ffmpeg 作为静态层叠加,使 Ken Burns 只推拉底图、字幕/水印保持不动。
     img = Image.open(io.BytesIO(art)).convert("RGB")
-    # cover-crop 铺满整个画框,锚点偏上保住头部,不再切黑边、不再单独占黑条
     frame = _cover(img, FRAME, anchor_y=CAPTION_ANCHOR_Y)
-    draw = ImageDraw.Draw(frame, "RGBA")
+    frame.save(out)
+
+
+def overlay_layer(caption: str, out: Path) -> None:
+    # 1920×1080 透明 PNG:仅底部渐变遮罩 + 白色字幕 + 右上"AI 生成"水印。
+    # 上部完全透明,合成时不遮画面;整层静态,不随 Ken Burns 推拉。
+    layer = Image.new("RGBA", FRAME, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer, "RGBA")
     # 底部半透明渐变遮罩(透明→半透明黑,越往下越暗),承载字幕但不切走画面
     grad_top = FRAME[1] - CAPTION_GRAD_H
     for i in range(CAPTION_GRAD_H):
@@ -60,7 +68,7 @@ def compose_page(art: bytes, caption: str, out: Path) -> None:
     draw.text((FRAME[0] - wm_font.getlength(WATERMARK) - 24, 20), WATERMARK,
               font=wm_font, fill=(255, 255, 255, 180),
               stroke_width=2, stroke_fill=(0, 0, 0, 160))
-    frame.save(out)
+    layer.save(out)
 
 
 def _text_card(lines: list[str], sizes: list[int], out: Path) -> None:

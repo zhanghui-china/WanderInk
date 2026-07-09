@@ -18,11 +18,13 @@ def test_s6_builds_and_records_output(tmp_path: Path):
                                    status="confirmed")]
     with patch("shanhai.steps.s6_compose.ffmpeg.sh") as sh, \
          patch("shanhai.steps.s6_compose.typeset.title_card"), \
-         patch("shanhai.steps.s6_compose.typeset.credits_card"):
+         patch("shanhai.steps.s6_compose.typeset.credits_card"), \
+         patch("shanhai.steps.s6_compose.typeset.overlay_layer") as ov:
         p = s6_compose.run(p, tmp_path)
     assert p.output["mp4"].endswith("final.mp4")
     assert p.status["s6"] == "done"
     assert sh.call_count >= 4          # 片头 clip + 页 clip + 片尾 clip + concat + finalize
+    assert ov.call_count == 1          # 每确认页生成一张静态字幕/水印 overlay
 
 
 def test_s6_kenburns_xfade_pipeline(tmp_path: Path):
@@ -37,10 +39,15 @@ def test_s6_kenburns_xfade_pipeline(tmp_path: Path):
                                    status="confirmed")]
     with patch("shanhai.steps.s6_compose.ffmpeg.sh") as sh, \
          patch("shanhai.steps.s6_compose.typeset.title_card"), \
-         patch("shanhai.steps.s6_compose.typeset.credits_card"):
+         patch("shanhai.steps.s6_compose.typeset.credits_card"), \
+         patch("shanhai.steps.s6_compose.typeset.overlay_layer"):
         s6_compose.run(p, tmp_path)
     cmds = [" ".join(call.args[0]) for call in sh.call_args_list]
-    assert any("zoompan" in c for c in cmds)                      # 每页 Ken Burns 推拉
+    page = next(c for c in cmds if "clips/01.mp4" in c and "xfade=transition" not in c)
+    assert "zoompan" in page and "overlay=0:0" in page           # 页:Ken Burns 底图 + 静态字幕层
+    title = next(c for c in cmds if "00_title.mp4" in c and "xfade=transition" not in c)
+    credits = next(c for c in cmds if "99_credits.mp4" in c and "xfade=transition" not in c)
+    assert "zoompan" not in title and "zoompan" not in credits   # 片头/片尾静止,文字不漂移
     xf = next(c for c in cmds if "xfade=transition=fade" in c)    # 页间交叉溶解链
     assert "acrossfade" in xf                                     # narration 不交叠
     assert "fade=t=in" in xf and "fade=t=out" in xf               # 全片首尾黑场开合,不硬切

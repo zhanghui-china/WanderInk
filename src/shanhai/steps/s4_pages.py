@@ -46,7 +46,7 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
             refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
                     for c in present if c.turnaround_image]
             art = image.generate(prompt, size=image_size, references=refs or None)
-            typeset.compose_page(art, cell.caption, out)
+            typeset.compose_page(art, out)
             cell.image = str(out.relative_to(workdir))
             cell.status = "confirmed"
             return

@@ -15,29 +15,44 @@ def test_silent_audio_cmd():
 
 
 def test_page_clip_cmd_duration_and_kenburns():
-    cmd = " ".join(ffmpeg.page_clip_cmd(Path("p.png"), Path("a.mp3"), 6800, Path("o.mp4")))
+    cmd = " ".join(ffmpeg.page_clip_cmd(Path("p.png"), Path("ov.png"), Path("a.mp3"),
+                                        6800, Path("o.mp4")))
     assert "-t 7.3" in cmd            # 6800ms + 500ms 缓冲
     assert "zoompan" in cmd           # Ken Burns 缓慢推拉取代淡入淡出
+    assert "overlay=0:0" in cmd       # 静态字幕/水印层叠加在 zoompan 之后
+    assert "-i ov.png" in cmd         # overlay 作为独立输入(不随 zoompan 推拉)
+    assert cmd.index("zoompan") < cmd.index("overlay=0:0")  # 先推拉底图再叠静态层
     assert "fade=t=" not in cmd       # 不再淡入淡出到黑(改由 xfade 溶接)
     assert "s=1920x1080" in cmd and "yuv420p" in cmd
     assert "-ar 44100" in cmd and "-ac 2" in cmd  # 与静音分支采样率/声道对齐
 
 
 def test_page_clip_cmd_zoom_direction_alternates():
-    zin = " ".join(ffmpeg.page_clip_cmd(Path("p.png"), Path("a.mp3"), 3000, Path("o.mp4"),
-                                        zoom_in=True))
-    zout = " ".join(ffmpeg.page_clip_cmd(Path("p.png"), Path("a.mp3"), 3000, Path("o.mp4"),
-                                         zoom_in=False))
+    zin = " ".join(ffmpeg.page_clip_cmd(Path("p.png"), Path("ov.png"), Path("a.mp3"),
+                                        3000, Path("o.mp4"), zoom_in=True))
+    zout = " ".join(ffmpeg.page_clip_cmd(Path("p.png"), Path("ov.png"), Path("a.mp3"),
+                                         3000, Path("o.mp4"), zoom_in=False))
     assert "min(1+" in zin            # 推近:zoom 1 → 1.08
     assert "max(1.08" in zout         # 拉远:zoom 1.08 → 1
     assert zin != zout                # 奇偶页方向不同
 
 
 def test_page_clip_cmd_silent():
-    cmd = " ".join(ffmpeg.page_clip_cmd(Path("p.png"), None, 2500, Path("o.mp4")))
+    cmd = " ".join(ffmpeg.page_clip_cmd(Path("p.png"), Path("ov.png"), None,
+                                        2500, Path("o.mp4")))
     assert "anullsrc" in cmd
     assert "zoompan" in cmd
+    assert "overlay=0:0" in cmd
     assert "-t 2.5" in cmd            # 静帧片头/片尾无缓冲(项目既有约定)
+
+
+def test_still_clip_cmd_no_zoompan_no_overlay():
+    cmd = " ".join(ffmpeg.still_clip_cmd(Path("t.png"), None, 2500, Path("o.mp4")))
+    assert "zoompan" not in cmd       # 片头/片尾卡静止,烘焙文字不漂移
+    assert "overlay=" not in cmd
+    assert "-t 2.5" in cmd            # 静帧无缓冲
+    assert "s=1920x1080" not in cmd and "scale=1920:1080" in cmd
+    assert "yuv420p" in cmd and "-ar 44100" in cmd and "-ac 2" in cmd
 
 
 def test_clip_duration_s_buffer_only_with_audio():

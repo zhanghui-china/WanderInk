@@ -46,17 +46,37 @@ def _kenburns_vf(dur: float, zoom_in: bool) -> str:
             f"fps={FPS}:s=1920x1080,format=yuv420p")
 
 
-def page_clip_cmd(image: Path, audio: Path | None, duration_ms: int, out: Path,
-                  zoom_in: bool = True) -> list[str]:
+def page_clip_cmd(image: Path, overlay: Path, audio: Path | None, duration_ms: int,
+                  out: Path, zoom_in: bool = True) -> list[str]:
+    # 底图 image 走 Ken Burns 推拉;overlay(透明 PNG 字幕/水印)作为独立静态输入
+    # 在 zoompan 之后叠加,故字幕/水印保持不动,只有底图运动。
     dur = clip_duration_s(duration_ms, audio is not None)
-    vf = _kenburns_vf(dur, zoom_in)
-    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", str(image)]
+    kb = _kenburns_vf(dur, zoom_in)
+    fc = f"[0:v]{kb}[bg];[bg][1:v]overlay=0:0[v]"
+    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", str(image),
+           "-loop", "1", "-i", str(overlay)]
     if audio:
         cmd += ["-i", str(audio), "-af", "apad"]
     else:
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
     # 强制 44.1kHz/立体声,与片头/片尾静音分支(anullsrc=r=44100:cl=stereo)对齐,
     # 否则解说 mp3(常见 24kHz/mono)会让后续 acrossfade 拿到参数不一致的音频流而错乱
+    cmd += ["-t", f"{dur:g}", "-filter_complex", fc, "-map", "[v]", "-map", "2:a",
+            "-r", str(FPS), "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
+            "-ar", "44100", "-ac", "2", str(out)]
+    return cmd
+
+
+def still_clip_cmd(image: Path, audio: Path | None, duration_ms: int,
+                   out: Path) -> list[str]:
+    # 静帧片头/片尾卡:无 zoompan、无 overlay,烘焙好的文字不漂移。输出格式与页 clip 一致。
+    dur = clip_duration_s(duration_ms, audio is not None)
+    vf = f"scale=1920:1080,fps={FPS},format=yuv420p"
+    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", str(image)]
+    if audio:
+        cmd += ["-i", str(audio), "-af", "apad"]
+    else:
+        cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
     cmd += ["-t", f"{dur:g}", "-vf", vf, "-r", str(FPS),
             "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
             "-ar", "44100", "-ac", "2", str(out)]

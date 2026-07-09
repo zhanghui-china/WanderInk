@@ -26,6 +26,8 @@ def run(project: Project, workdir: Path) -> Project:
     out_dir = workdir / "output"
     clips_dir = out_dir / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
+    overlays_dir = out_dir / "overlays"
+    overlays_dir.mkdir(parents=True, exist_ok=True)
 
     title_png = out_dir / "title.png"
     legend_title = project.legend.title if project.legend else ""
@@ -37,7 +39,7 @@ def run(project: Project, workdir: Path) -> Project:
     clips: list[Path] = []
     durations: list[float] = []
     head = clips_dir / "00_title.mp4"
-    ffmpeg.sh(ffmpeg.page_clip_cmd(title_png, None, TITLE_MS, head, zoom_in=True))
+    ffmpeg.sh(ffmpeg.still_clip_cmd(title_png, None, TITLE_MS, head))
     clips.append(head)
     durations.append(ffmpeg.clip_duration_s(TITLE_MS, has_audio=False))
     page_i = 0
@@ -50,13 +52,16 @@ def run(project: Project, workdir: Path) -> Project:
             print(f"跳过第 {cell.index} 页(产物缺失)")
             continue
         clip = clips_dir / f"{cell.index:02d}.mp4"
+        overlay = overlays_dir / f"page_{cell.index:02d}.png"
+        typeset.overlay_layer(cell.caption, overlay)
         # page_clip_cmd 内部补 0.5s 尾缓冲,此处传原始解说时长;奇偶页交替推近/拉远
-        ffmpeg.sh(ffmpeg.page_clip_cmd(img, aud, cell.duration_ms, clip, zoom_in=page_i % 2 == 0))
+        ffmpeg.sh(ffmpeg.page_clip_cmd(img, overlay, aud, cell.duration_ms, clip,
+                                       zoom_in=page_i % 2 == 0))
         clips.append(clip)
         durations.append(ffmpeg.clip_duration_s(cell.duration_ms, has_audio=True))
         page_i += 1
     tail = clips_dir / "99_credits.mp4"
-    ffmpeg.sh(ffmpeg.page_clip_cmd(credits_png, None, CREDITS_MS, tail, zoom_in=False))
+    ffmpeg.sh(ffmpeg.still_clip_cmd(credits_png, None, CREDITS_MS, tail))
     clips.append(tail)
     durations.append(ffmpeg.clip_duration_s(CREDITS_MS, has_audio=False))
 
