@@ -18,8 +18,8 @@ class TTSClient:
         r = self._client.post("/audio/speech", json={
             "model": self.model, "voice": voice, "input": text, "response_format": "mp3"})
         r.raise_for_status()
-        ctype = r.headers.get("content-type", "")
+        ctype = r.headers.get("content-type", "").lower()
         body = r.content
-        if not ctype.startswith("audio") or not body or body[:1] == b"{":
+        if not body or "json" in ctype or ctype.startswith("text") or body[:1] == b"{":
             raise TTSError(f"TTS 返回非音频响应 (content-type={ctype!r}): {body[:200]!r}")
         out.write_bytes(body)

@@ -29,6 +29,15 @@ def test_tts_rejects_non_audio(tmp_path: Path):
     assert not out.exists()                          # 非音频不落盘
 
 
+@respx.mock
+def test_tts_accepts_octet_stream(tmp_path: Path):
+    # 部分代理用 application/octet-stream 返回合法音频,不应误拒
+    respx.post(f"{BASE}/audio/speech").mock(return_value=httpx.Response(
+        200, headers={"content-type": "application/octet-stream"}, content=b"\xff\xf3mp3"))
+    TTSClient(BASE, "sk", "tts-1").synthesize("你好", "alloy", tmp_path / "a.mp3")
+    assert (tmp_path / "a.mp3").read_bytes() == b"\xff\xf3mp3"
+
+
 def _project() -> Project:
     p = Project(project_id="x", scenic_spot="雷峰塔")
     p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="v",
