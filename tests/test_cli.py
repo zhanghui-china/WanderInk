@@ -113,13 +113,13 @@ def test_run_rejects_bad_style_no_orphan(store):
     store.create_project.assert_not_called()
 
 
-def _run_project(s4_status="done", cell_status="confirmed"):
+def _run_project(s4_status="done", cell_status="confirmed", cell_audio="audio/page_01.mp3"):
     p = _proj_with_candidates(1)
     p.status = {k: "done" for k in ("s0", "s1", "s2", "s3", "s4", "s5", "s6")}
     p.status["s4"] = s4_status
     p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
                                    caption="c", emotion="宁静", image="pages/page_01.png",
-                                   audio="audio/page_01.mp3", duration_ms=6800,
+                                   audio=cell_audio, duration_ms=6800,
                                    status=cell_status)]
     p.output = {"mp4": "projects/x/output/final.mp4"}
     return p
@@ -151,8 +151,21 @@ def test_run_all_failed_s4_reports_failure(store):
         _patch_steps(stack, p)
         result = runner.invoke(app, ["run", "雷峰塔"])
     assert result.exit_code != 0                      # 零正文页不得报成功
-    assert "未生成任何正文页" in result.output
+    assert "判定失败" in result.output
     assert "partial" in result.output                 # 每步 status 如实告警
+
+
+@patch("shanhai.cli.Settings", _stub_settings)
+@patch("shanhai.cli.store")
+def test_run_all_failed_s5_reports_failure(store):
+    # T18 无 TTS key 场景:S4 成功(cell confirmed 有画面),但 S5 全失败留空 audio
+    p = _run_project(cell_status="confirmed", cell_audio="")
+    store.create_project.return_value = p
+    with ExitStack() as stack:
+        _patch_steps(stack, p)
+        result = runner.invoke(app, ["run", "雷峰塔"])
+    assert result.exit_code != 0                      # 有画面无配音也不得报成功
+    assert "判定失败" in result.output
 
 
 @patch("shanhai.cli.Settings", _stub_settings)

@@ -150,8 +150,8 @@ def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str 
         mark = "完成" if st == "done" else f"⚠️ {st}"
         typer.echo(f"{name} {mark}({time.time() - t0:.0f}s)")
     typer.echo(f"总耗时 {(time.time() - total0) / 60:.1f} 分钟")
-    if not any(c.status == "confirmed" for c in p.storyboard):
-        typer.echo("⚠️ 未生成任何正文页,成片仅含片头片尾,判定失败")
+    if not any(c.status == "confirmed" and c.image and c.audio for c in p.storyboard):
+        typer.echo("⚠️ 未生成任何完整正文页(缺画面或配音),成片仅含片头片尾,判定失败")
         raise typer.Exit(1)
     typer.echo(f"成片: {p.output.get('mp4')}")
 

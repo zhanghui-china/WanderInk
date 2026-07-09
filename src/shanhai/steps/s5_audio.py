@@ -16,16 +16,18 @@ def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
     audio_dir.mkdir(parents=True, exist_ok=True)
     for cell in project.storyboard:
         out = audio_dir / f"page_{cell.index:02d}.mp3"
-        if not (cell.audio and out.exists()):
-            try:
-                tts.synthesize(cell.caption, voice, out)
-            except Exception as e:  # noqa: BLE001 单页配音失败不拖垮整步,留空跳过(S6 会跳过无音频页)
-                print(f"跳过第 {cell.index} 页配音:{e}")
-                cell.audio = ""
-                cell.duration_ms = 0
-                continue
-            cell.audio = str(out.relative_to(workdir))
-        cell.duration_ms = probe_duration_ms(out)
+        if cell.audio and out.exists():
+            cell.duration_ms = probe_duration_ms(out)
+            continue
+        try:
+            tts.synthesize(cell.caption, voice, out)
+            cell.duration_ms = probe_duration_ms(out)
+        except Exception as e:  # noqa: BLE001 单页配音/探测失败不拖垮整步,留空跳过(S6 会跳过无音频页)
+            print(f"跳过第 {cell.index} 页配音:{e}")
+            cell.audio = ""
+            cell.duration_ms = 0
+            continue
+        cell.audio = str(out.relative_to(workdir))
     tracks = json.loads(manifest_path.read_text(encoding="utf-8")).get("tracks", [])
     if tracks and project.storyboard:
         mood = Counter(c.emotion for c in project.storyboard).most_common(1)[0][0]
