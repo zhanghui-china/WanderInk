@@ -29,28 +29,44 @@ def _apply_params(p, minutes: int, audience: str, tone: str, style: str) -> None
     p.style_preset = style
 
 
+def _read_story(story_file: Path | None) -> str | None:
+    if story_file is None:
+        return None
+    try:
+        return story_file.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise typer.BadParameter(f"故事文件需为 UTF-8 编码: {story_file}") from e
+
+
+_STORY_FILE = typer.Option(None, exists=True, dir_okay=False, readable=True)
+
+
 @app.command()
 def new(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str = "温情",
-        style: str = "guofeng_ink", story_file: Path | None = None):
+        style: str = "guofeng_ink", story_file: Path | None = _STORY_FILE):
     s = Settings()
     llm, _, _ = _clients(s)
+    story = _read_story(story_file)
     p = store.create_project(scenic_spot)
     _apply_params(p, minutes, audience, tone, style)
-    if story_file:
-        p = s0_legend.from_text(p, llm, story_file.read_text(encoding="utf-8"))
+    if story is not None:
+        p = s0_legend.from_text(p, llm, story)
     else:
         p = s0_legend.run(p, llm)
         for i, c in enumerate(p.legend_candidates, 1):
             typer.echo(f"  [{i}] {c.title}({c.source_type})- {c.summary[:60]}…")
     store.save(p)
     typer.echo(f"project_id: {p.project_id}")
-    if not story_file:
+    if story is None:
         typer.echo(f"下一步: shanhai pick {p.project_id} <序号>")
 
 
 @app.command()
 def pick(project_id: str, index: int):
     p = store.load(project_id)
+    n = len(p.legend_candidates)
+    if not 1 <= index <= n:
+        raise typer.BadParameter(f"序号 {index} 越界:当前有 {n} 个候选,请传入 1..{n}")
     p.legend = p.legend_candidates[index - 1]
     store.save(p)
     typer.echo(f"已选定:{p.legend.title}")
@@ -83,16 +99,17 @@ def step(project_id: str, name: str):
 
 @app.command()
 def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str = "温情",
-        style: str = "guofeng_ink", story_file: Path | None = None):
+        style: str = "guofeng_ink", story_file: Path | None = _STORY_FILE):
     """快速模式:自动选第一个候选传说,一路跑到 MP4。"""
     s = Settings()
     llm, image, tts = _clients(s)
+    story = _read_story(story_file)
     p = store.create_project(scenic_spot)
     _apply_params(p, minutes, audience, tone, style)
     workdir = store.project_dir(p.project_id)
     total0 = time.time()
-    if story_file:
-        p = s0_legend.from_text(p, llm, story_file.read_text(encoding="utf-8"))
+    if story is not None:
+        p = s0_legend.from_text(p, llm, story)
     else:
         p = s0_legend.run(p, llm)
         if not p.legend_candidates:
