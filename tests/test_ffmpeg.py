@@ -46,6 +46,13 @@ def test_page_clip_cmd_silent():
     assert "-t 2.5" in cmd            # 静帧片头/片尾无缓冲(项目既有约定)
 
 
+def test_concat_audio_cmd():
+    cmd = " ".join(ffmpeg.concat_audio_cmd(
+        [Path("a.mp3"), Path("b.mp3")], Path("list.txt"), Path("page.mp3")))
+    assert "-f concat" in cmd and "-safe 0" in cmd and "list.txt" in cmd
+    assert "libmp3lame" in cmd and "-ar 44100" in cmd and "-ac 2" in cmd and "page.mp3" in cmd
+
+
 def test_still_clip_cmd_no_zoompan_no_overlay():
     cmd = " ".join(ffmpeg.still_clip_cmd(Path("t.png"), None, 2500, Path("o.mp4")))
     assert "zoompan" not in cmd       # 片头/片尾卡静止,烘焙文字不漂移

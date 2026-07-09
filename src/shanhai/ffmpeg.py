@@ -91,6 +91,15 @@ def silent_audio_cmd(duration_ms: int, out: Path) -> list[str]:
             "-ar", "44100", "-ac", "2", str(out)]
 
 
+def concat_audio_cmd(parts: list[Path], list_file: Path, out: Path) -> list[str]:
+    # 拼接分句合成的 mp3 为整页音轨。重编码(非 -c copy)避免各句 mp3 参数不一致导致
+    # 时长/拼接错乱,统一 44.1kHz/立体声与其它音频分支对齐。
+    # 调用方需先把 list_file 写成 concat demuxer 格式:每行 file '<绝对路径>'。
+    return ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
+            "-c:a", "libmp3lame", "-q:a", "2",
+            "-ar", "44100", "-ac", "2", str(out)]
+
+
 def xfade_offsets(durations_s: list[float], t: float) -> list[float]:
     # 第 k 段过渡(0-based)起点 offset_k = Σ_{i≤k} d_i − (k+1)·T:
     # xfade 把前段视频尾部与下段头部重叠 T,累积时长每次减 T,故偏移随之累加。

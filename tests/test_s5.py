@@ -121,8 +121,35 @@ def test_s5_retries_truncated_tts_keeps_longest(mock_probe, tmp_path: Path):
                                    caption="一二三四五六七八九十", emotion="宁静")]
     tts = _writing_tts()
     p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
-    assert tts.synthesize.call_count == 2            # 检测到截断后重合成
+    assert tts.synthesize.call_count == 2            # 无标点走单句路径,截断后重合成
     assert p.storyboard[0].duration_ms == 5000       # 保留更长(完整)那次
+
+
+def test_s5_split_clauses_unit():
+    assert s5_audio._split_clauses("黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。") == \
+        ["黄昏的西湖边，", "雷峰塔映入水中，", "像藏着一封千年未拆的旧信。"]  # 分隔符留在句末
+    assert s5_audio._split_clauses("一二三四五六七八九十") == ["一二三四五六七八九十"]  # 无标点→单句
+    assert s5_audio._split_clauses("好，走开。") == ["好，走开。"]              # 短碎片"好，"并入后句
+    assert s5_audio._split_clauses("") == []                                # 空串→空
+
+
+@patch("shanhai.ffmpeg.sh")
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=5000)
+def test_s5_splits_caption_into_clauses_and_concats(mock_probe, mock_sh, tmp_path: Path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
+                                   caption="黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。",
+                                   emotion="宁静")]
+    tts = _writing_tts()
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    assert tts.synthesize.call_count == 3            # 每句各合成一次
+    said = [c.args[0] for c in tts.synthesize.call_args_list]
+    assert said == ["黄昏的西湖边，", "雷峰塔映入水中，", "像藏着一封千年未拆的旧信。"]
+    concat_cmd = " ".join(mock_sh.call_args.args[0])  # 最后一次 sh 是拼接
+    assert "-f concat" in concat_cmd                  # 分句音频拼成整页
+    assert p.storyboard[0].duration_ms == 5000        # 拼接后真实总时长
 
 
 @patch("shanhai.ffmpeg.sh")

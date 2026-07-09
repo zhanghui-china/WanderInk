@@ -14,28 +14,80 @@ CHARS_PER_SEC = 4.0       # 解说语速估算(与 PRD S1 字数-时长模型同
 MIN_MS = 2500             # 单页最短显示时长
 MIN_MS_PER_CHAR = 380     # 完整解说约 420+ms/字;低于字数×380ms 几乎必是 TTS 截断
 TTS_TRIES = 3             # 小模型 TTS 偶发截断/空返回,重合成取最长的一次
+CLAUSE_DELIMS = "。！？；，、：!?;,:\n"  # 全角+半角句/读点;短输入避开小模型的确定性提前停止
+MIN_CLAUSE_CHARS = 3      # 短于此的碎片并入相邻句,避免逐字合成发碎
 
 
 def _estimate_ms(caption: str) -> int:
     return max(MIN_MS, round(len(caption) / CHARS_PER_SEC * 1000))
 
 
-def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path) -> int:
-    """合成并检测截断:时长明显偏短(疑似被截)则重合成,始终保留最长的一次。返回时长 ms。"""
-    floor = len(caption) * MIN_MS_PER_CHAR
-    tmp = out.with_suffix(".try.mp3")
+def _split_clauses(caption: str) -> list[str]:
+    """按标点切成短句(分隔符留在前段末尾,换行不保留);短碎片并入相邻句。
+    无标点→单元素;空串→[]。"""
+    frags: list[str] = []
+    buf = ""
+    for ch in caption:
+        if ch in CLAUSE_DELIMS:
+            if ch != "\n":
+                buf += ch
+            if buf.strip():
+                frags.append(buf.strip())
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        frags.append(buf.strip())
+    merged: list[str] = []
+    for f in frags:
+        if merged and len(f) < MIN_CLAUSE_CHARS:
+            merged[-1] += f
+        else:
+            merged.append(f)
+    if len(merged) > 1 and len(merged[0]) < MIN_CLAUSE_CHARS:
+        merged[1] = merged[0] + merged[1]
+        merged.pop(0)
+    return merged
+
+
+def _synthesize_clause(tts: TTSClient, text: str, voice: str, dest: Path) -> int:
+    """合成一句并检测截断:时长明显偏短则重合成,始终保留最长的一次。返回时长 ms。"""
+    floor = len(text) * MIN_MS_PER_CHAR
+    tmp = dest.with_suffix(".try.mp3")
     best_ms = 0
     for _ in range(TTS_TRIES):
-        tts.synthesize(caption, voice, tmp)
+        tts.synthesize(text, voice, tmp)
         ms = probe_duration_ms(tmp)
         if ms > best_ms:
-            tmp.replace(out)
+            tmp.replace(dest)
             best_ms = ms
         else:
             tmp.unlink(missing_ok=True)
         if best_ms >= floor:
             break
     return best_ms
+
+
+def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path) -> int:
+    """按标点分句、逐句合成(避开确定性截断)、拼接为整页音轨。返回真实总时长 ms;失败向上抛。"""
+    clauses = _split_clauses(caption)
+    if not clauses:
+        raise ValueError("空文案,无法合成")
+    if len(clauses) == 1:
+        return _synthesize_clause(tts, clauses[0], voice, out)
+    parts = [out.with_suffix(f".part{i:02d}.mp3") for i in range(len(clauses))]
+    list_file = out.with_suffix(".concat.txt")
+    try:
+        for clause, part in zip(clauses, parts):
+            _synthesize_clause(tts, clause, voice, part)
+        list_file.write_text("".join(f"file '{p.resolve()}'\n" for p in parts), encoding="utf-8")
+        ffmpeg.sh(ffmpeg.concat_audio_cmd(parts, list_file, out))
+        return probe_duration_ms(out)
+    finally:
+        for p in parts:
+            p.unlink(missing_ok=True)
+            p.with_suffix(".try.mp3").unlink(missing_ok=True)
+        list_file.unlink(missing_ok=True)
 
 
 def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
