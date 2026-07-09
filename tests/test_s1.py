@@ -59,3 +59,8 @@ def test_s1_system_contains_narrative_framework():
     assert "高潮" in system, "Missing climax instruction"
     # Check for emotional beat
     assert "情感" in system, "Missing emotional beat instruction"
+
+def test_s1_system_requires_importance_ordering():
+    """characters 需按重要度降序,保证前 4 个主角拿到三视图参考。"""
+    system = s1_script.SYSTEM
+    assert "重要度" in system and "降序" in system

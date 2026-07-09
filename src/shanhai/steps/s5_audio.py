@@ -9,7 +9,7 @@ from shanhai.ffmpeg import probe_duration_ms
 from shanhai.providers.tts import TTSClient
 from shanhai.schema import Project
 
-DEFAULT_MANIFEST = Path("assets/bgm/manifest.json")
+DEFAULT_MANIFEST = Path(__file__).resolve().parents[3] / "assets" / "bgm" / "manifest.json"
 CHARS_PER_SEC = 4.0       # 解说语速估算(与 PRD S1 字数-时长模型同量级)
 MIN_MS = 2500             # 单页最短显示时长
 MIN_MS_PER_CHAR = 380     # 完整解说约 420+ms/字;低于字数×380ms 几乎必是 TTS 截断

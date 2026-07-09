@@ -1,0 +1,8 @@
+node_modules
+dist
+*.local
+.vite
+# tsgo/tsc -b(composite)构建产物
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
