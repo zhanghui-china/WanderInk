@@ -29,6 +29,8 @@ def _downscaled_ref(src: Path, cache_dir: Path) -> Path:
 def run(project: Project, image: ImageClient, workdir: Path, image_size: str) -> Project:
     if project.script is None or not project.storyboard:
         raise ValueError("先完成 S2/S3")
+    if not any(c.turnaround_image for c in project.script.characters):
+        print("⚠️ 无任何角色三视图参考(S3 未运行/未产出),M0 角色一致性机制被绕过")
     style = STYLE_PRESETS[project.style_preset]
     cards = {c.name: c for c in project.script.characters}
     pages_dir = workdir / "pages"
