@@ -69,24 +69,31 @@ def _synthesize_clause(tts: TTSClient, text: str, voice: str, dest: Path) -> int
 
 
 def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path) -> int:
-    """按标点分句、逐句合成(避开确定性截断)、拼接为整页音轨。返回真实总时长 ms;失败向上抛。"""
+    """按标点分句、逐句合成(避开确定性截断)、逐句修剪首尾静音、拼接为整页音轨。
+    返回真实总时长 ms;失败向上抛。"""
     clauses = _split_clauses(caption)
     if not clauses:
         raise ValueError("空文案,无法合成")
-    if len(clauses) == 1:
-        return _synthesize_clause(tts, clauses[0], voice, out)
+    raws = [out.with_suffix(f".raw{i:02d}.mp3") for i in range(len(clauses))]
     parts = [out.with_suffix(f".part{i:02d}.mp3") for i in range(len(clauses))]
     list_file = out.with_suffix(".concat.txt")
     try:
-        for clause, part in zip(clauses, parts):
-            _synthesize_clause(tts, clause, voice, part)
-        list_file.write_text("".join(f"file '{p.resolve()}'\n" for p in parts), encoding="utf-8")
-        ffmpeg.sh(ffmpeg.concat_audio_cmd(parts, list_file, out))
+        for clause, raw, part in zip(clauses, raws, parts):
+            _synthesize_clause(tts, clause, voice, raw)
+            ffmpeg.sh(ffmpeg.trim_silence_cmd(raw, part))   # 修剪该句首尾静音
+        if len(parts) == 1:
+            parts[0].replace(out)
+        else:
+            list_file.write_text("".join(f"file '{p.resolve()}'\n" for p in parts),
+                                 encoding="utf-8")
+            ffmpeg.sh(ffmpeg.concat_audio_cmd(parts, list_file, out))
         return probe_duration_ms(out)
     finally:
+        for r in raws:
+            r.unlink(missing_ok=True)
+            r.with_suffix(".try.mp3").unlink(missing_ok=True)
         for p in parts:
             p.unlink(missing_ok=True)
-            p.with_suffix(".try.mp3").unlink(missing_ok=True)
         list_file.unlink(missing_ok=True)
 
 

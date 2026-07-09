@@ -52,8 +52,14 @@ def _writing_tts() -> MagicMock:
     return tts
 
 
+def _sh_creates_out(cmd):
+    # 让 mock 的 ffmpeg.sh 产出命令末参指定的文件(trim/concat/silent 的输出),供后续 replace/probe
+    Path(cmd[-1]).write_bytes(b"\xff\xf3mp3")
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
 @patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
-def test_s5_fills_duration_and_bgm(mock_probe, tmp_path: Path):
+def test_s5_fills_duration_and_bgm(mock_probe, mock_sh, tmp_path: Path):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"tracks": [
         {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
@@ -64,8 +70,9 @@ def test_s5_fills_duration_and_bgm(mock_probe, tmp_path: Path):
     assert p.status["s5"] == "done"
 
 
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
 @patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
-def test_s5_bgm_matches_dominant_emotion(mock_probe, tmp_path: Path):
+def test_s5_bgm_matches_dominant_emotion(mock_probe, mock_sh, tmp_path: Path):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"tracks": [
         {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"},
@@ -97,8 +104,9 @@ def test_s5_skips_existing_audio(mock_probe, tmp_path: Path):
     tts.synthesize.assert_not_called()               # 已配音且文件在则跳过合成
 
 
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
 @patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
-def test_s5_resynthesizes_when_file_missing(mock_probe, tmp_path: Path):
+def test_s5_resynthesizes_when_file_missing(mock_probe, mock_sh, tmp_path: Path):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"tracks": [
         {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
@@ -110,10 +118,12 @@ def test_s5_resynthesizes_when_file_missing(mock_probe, tmp_path: Path):
     assert tts.synthesize.call_args.args[0] == "西湖初遇。"
 
 
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
 @patch("shanhai.steps.s5_audio.probe_duration_ms")
-def test_s5_retries_truncated_tts_keeps_longest(mock_probe, tmp_path: Path):
+def test_s5_retries_truncated_tts_keeps_longest(mock_probe, mock_sh, tmp_path: Path):
     # 小模型 TTS 偶发截断:首次 2000ms(< 10字×380=3800 floor,疑似截断)→ 重合成 5000ms,取长
-    mock_probe.side_effect = [2000, 5000]
+    # 第3次 probe 是修剪后 out 的时长(4200),即 S6 使用的真实时长
+    mock_probe.side_effect = [2000, 5000, 4200]
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
     p = Project(project_id="x", scenic_spot="雷峰塔")
@@ -122,7 +132,8 @@ def test_s5_retries_truncated_tts_keeps_longest(mock_probe, tmp_path: Path):
     tts = _writing_tts()
     p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
     assert tts.synthesize.call_count == 2            # 无标点走单句路径,截断后重合成
-    assert p.storyboard[0].duration_ms == 5000       # 保留更长(完整)那次
+    assert "silenceremove" in " ".join(mock_sh.call_args.args[0])   # 单句也修剪静音
+    assert p.storyboard[0].duration_ms == 4200       # 修剪后真实时长
 
 
 def test_s5_split_clauses_unit():
@@ -133,7 +144,7 @@ def test_s5_split_clauses_unit():
     assert s5_audio._split_clauses("") == []                                # 空串→空
 
 
-@patch("shanhai.ffmpeg.sh")
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
 @patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=5000)
 def test_s5_splits_caption_into_clauses_and_concats(mock_probe, mock_sh, tmp_path: Path):
     manifest = tmp_path / "manifest.json"
@@ -147,12 +158,13 @@ def test_s5_splits_caption_into_clauses_and_concats(mock_probe, mock_sh, tmp_pat
     assert tts.synthesize.call_count == 3            # 每句各合成一次
     said = [c.args[0] for c in tts.synthesize.call_args_list]
     assert said == ["黄昏的西湖边，", "雷峰塔映入水中，", "像藏着一封千年未拆的旧信。"]
-    concat_cmd = " ".join(mock_sh.call_args.args[0])  # 最后一次 sh 是拼接
-    assert "-f concat" in concat_cmd                  # 分句音频拼成整页
+    trims = sum("silenceremove" in " ".join(c.args[0]) for c in mock_sh.call_args_list)
+    assert trims == 3                                 # 每句各修剪一次静音
+    assert "-f concat" in " ".join(mock_sh.call_args.args[0])   # 最后一次 sh 是拼接
     assert p.storyboard[0].duration_ms == 5000        # 拼接后真实总时长
 
 
-@patch("shanhai.ffmpeg.sh")
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
 @patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
 def test_s5_silent_fallback_on_tts_failure(mock_probe, mock_sh, tmp_path: Path):
     manifest = tmp_path / "manifest.json"

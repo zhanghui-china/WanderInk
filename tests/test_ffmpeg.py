@@ -53,6 +53,17 @@ def test_concat_audio_cmd():
     assert "libmp3lame" in cmd and "-ar 44100" in cmd and "-ac 2" in cmd and "page.mp3" in cmd
 
 
+def test_trim_silence_cmd():
+    cmd = " ".join(ffmpeg.trim_silence_cmd(Path("r.mp3"), Path("p.mp3")))
+    assert "silenceremove" in cmd and cmd.count("areverse") == 2   # 两端剪
+    assert "detection=peak" in cmd and "-45dB" in cmd
+    assert "apad=pad_dur=0.18" in cmd
+    assert "libmp3lame" in cmd and "-ar 44100" in cmd and "-ac 2" in cmd
+    assert "-i r.mp3" in cmd and "p.mp3" in cmd
+    assert "apad=pad_dur=0.12" in " ".join(ffmpeg.trim_silence_cmd(
+        Path("r.mp3"), Path("p.mp3"), pad_s=0.12))
+
+
 def test_still_clip_cmd_no_zoompan_no_overlay():
     cmd = " ".join(ffmpeg.still_clip_cmd(Path("t.png"), None, 2500, Path("o.mp4")))
     assert "zoompan" not in cmd       # 片头/片尾卡静止,烘焙文字不漂移

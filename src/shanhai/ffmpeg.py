@@ -100,6 +100,20 @@ def concat_audio_cmd(parts: list[Path], list_file: Path, out: Path) -> list[str]
             "-ar", "44100", "-ac", "2", str(out)]
 
 
+SILENCE_THRESH_DB = "-45dB"  # 低于此视为静音(保守,不切软起音)
+SILENCE_LEAD_S = 0.05        # 保护性 lead-in/tail-out,免切掉爆破/齿音
+
+
+def trim_silence_cmd(src: Path, out: Path, pad_s: float = 0.18) -> list[str]:
+    # 修剪每句首尾多余静音(reverse 惯用法两端剪)+ 尾部补固定微停顿,收紧句间节奏。
+    # detection=peak 按可听样本判断,起音处停剪不吃字。输出统一 44.1kHz/立体声。
+    leg = (f"silenceremove=start_periods=1:start_silence={SILENCE_LEAD_S:g}:"
+           f"start_threshold={SILENCE_THRESH_DB}:detection=peak")
+    af = f"{leg},areverse,{leg},areverse,apad=pad_dur={pad_s:g}"
+    return ["ffmpeg", "-y", "-i", str(src), "-af", af,
+            "-c:a", "libmp3lame", "-q:a", "2", "-ar", "44100", "-ac", "2", str(out)]
+
+
 def xfade_offsets(durations_s: list[float], t: float) -> list[float]:
     # 第 k 段过渡(0-based)起点 offset_k = Σ_{i≤k} d_i − (k+1)·T:
     # xfade 把前段视频尾部与下段头部重叠 T,累积时长每次减 T,故偏移随之累加。
