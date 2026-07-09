@@ -1,11 +1,12 @@
 import io
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 FONT_PATH = Path("assets/fonts/NotoSansCJKsc-Regular.otf")
 FRAME = (1920, 1080)
-CAPTION_H = 160
+CAPTION_GRAD_H = 240  # 底部渐变字幕高度
+CAPTION_ANCHOR_Y = 0.4  # cover-crop 垂直锚点:偏上,优先保住人物头部
 WATERMARK = "AI 生成"
 
 
@@ -13,13 +14,13 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(str(FONT_PATH), size)
 
 
-def _cover(img: Image.Image, size: tuple[int, int]) -> Image.Image:
-    """缩放并居中裁剪填满 size(cover-fit)。"""
+def _cover(img: Image.Image, size: tuple[int, int], anchor_y: float = 0.5) -> Image.Image:
+    """缩放并裁剪填满 size(cover-fit)。anchor_y 为垂直裁切锚点(0=保留顶部,1=保留底部)。"""
     tw, th = size
     scale = max(tw / img.width, th / img.height)
     resized = img.resize((max(round(img.width * scale), tw), max(round(img.height * scale), th)))
     left = (resized.width - tw) // 2
-    top = (resized.height - th) // 2
+    top = round((resized.height - th) * anchor_y)
     return resized.crop((left, top, left + tw, top + th))
 
 
@@ -37,24 +38,23 @@ def _wrap(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
 
 
 def compose_page(art: bytes, caption: str, out: Path) -> None:
-    frame = Image.new("RGB", FRAME, "black")
     img = Image.open(io.BytesIO(art)).convert("RGB")
-    area = (FRAME[0], FRAME[1] - CAPTION_H)
-    # 画面区背景:同图 cover 填满 + 高斯模糊 + 压暗,替代竖图两侧的死黑边
-    bg = _cover(img, area).filter(ImageFilter.GaussianBlur(40))
-    frame.paste(Image.eval(bg, lambda p: p * 45 // 100), (0, 0))
-    # 前景:完整画面 contain 居中,不裁剪
-    fit = img.copy()
-    fit.thumbnail(area)
-    frame.paste(fit, ((area[0] - fit.width) // 2, (area[1] - fit.height) // 2))
-    area_h = area[1]
+    # cover-crop 铺满整个画框,锚点偏上保住头部,不再切黑边、不再单独占黑条
+    frame = _cover(img, FRAME, anchor_y=CAPTION_ANCHOR_Y)
     draw = ImageDraw.Draw(frame, "RGBA")
-    draw.rectangle([0, area_h, FRAME[0], FRAME[1]], fill=(0, 0, 0, 200))
+    # 底部半透明渐变遮罩(透明→半透明黑,越往下越暗),承载字幕但不切走画面
+    grad_top = FRAME[1] - CAPTION_GRAD_H
+    for i in range(CAPTION_GRAD_H):
+        alpha = round(200 * i / (CAPTION_GRAD_H - 1))
+        draw.line([(0, grad_top + i), (FRAME[0], grad_top + i)], fill=(0, 0, 0, alpha))
     font = _font(40)
     lines = _wrap(caption, font, FRAME[0] - 240)[:2]
+    line_h = 56
+    y0 = FRAME[1] - 20 - line_h * len(lines)
     for i, line in enumerate(lines):
         w = font.getlength(line)
-        draw.text(((FRAME[0] - w) / 2, area_h + 24 + i * 56), line, font=font, fill="white")
+        draw.text(((FRAME[0] - w) / 2, y0 + i * line_h), line, font=font, fill="white",
+                  stroke_width=2, stroke_fill="black")
     wm_font = _font(28)
     # 深色描边保证 AI 标识在留白/浅色画面上始终可见(合规:标识不可失效)
     draw.text((FRAME[0] - wm_font.getlength(WATERMARK) - 24, 20), WATERMARK,
