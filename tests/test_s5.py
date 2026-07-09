@@ -46,3 +46,36 @@ def test_s5_fills_duration_and_bgm(mock_probe, tmp_path: Path):
     assert p.storyboard[0].duration_ms == 6800
     assert p.bgm.endswith("calm.mp3")
     assert p.status["s5"] == "done"
+
+
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_bgm_matches_dominant_emotion(mock_probe, tmp_path: Path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"},
+        {"file": "tense.mp3", "emotions": ["激烈"], "license": "CC0"}]}), encoding="utf-8")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.storyboard = [
+        StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
+                       caption="水漫金山。", emotion="激烈"),
+        StoryboardCell(index=2, scene_ref="1-2", visual_desc="v", characters=[],
+                       caption="法海来袭。", emotion="激烈"),
+        StoryboardCell(index=3, scene_ref="1-3", visual_desc="v", characters=[],
+                       caption="断桥重逢。", emotion="宁静"),
+    ]
+    p = s5_audio.run(p, MagicMock(), "alloy", tmp_path, manifest_path=manifest)
+    assert p.bgm.endswith("tense.mp3")               # 主导情绪选中非首条 track
+
+
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_skips_existing_audio(mock_probe, tmp_path: Path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
+    p = _project()
+    (tmp_path / "audio").mkdir(parents=True)
+    (tmp_path / "audio" / "page_01.mp3").write_bytes(b"mp3")
+    p.storyboard[0].audio = "audio/page_01.mp3"
+    tts = MagicMock()
+    s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    tts.synthesize.assert_not_called()               # 已配音且文件在则跳过合成

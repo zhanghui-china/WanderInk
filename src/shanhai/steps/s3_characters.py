@@ -24,6 +24,8 @@ def run(project: Project, llm: LLMClient, image: ImageClient,
     char_dir = workdir / "characters"
     char_dir.mkdir(parents=True, exist_ok=True)
     for i, c in enumerate(project.script.characters):
+        if c.locked and c.turnaround_image and (workdir / c.turnaround_image).exists():
+            continue                                  # 已定稿角色不重绘(续跑幂等)
         c.feature_prompt = llm.chat(
             FEATURE_SYSTEM, f"姓名:{c.name}\n身份:{c.role}\n性格:{c.personality}\n外貌:{c.appearance}")
         if i < MAX_TURNAROUND:
