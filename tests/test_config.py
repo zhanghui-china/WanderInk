@@ -15,3 +15,8 @@ def test_modality_override(monkeypatch):
     s = Settings(_env_file=None)
     assert s.image_endpoint == ("https://img.example.com/v1", "sk-1")
     assert s.tts_endpoint == ("https://p.example.com/v1", "sk-1")
+
+def test_strict_consistency_defaults_false(monkeypatch):
+    monkeypatch.setenv("SHANHAI_BASE_URL", "https://p.example.com/v1")
+    monkeypatch.setenv("SHANHAI_API_KEY", "sk-1")
+    assert Settings(_env_file=None).strict_consistency is False

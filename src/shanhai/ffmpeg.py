@@ -7,6 +7,13 @@ XFADE_S = 0.5    # 页间交叉溶解时长,落在每页尾部 0.5s 缓冲静音
 FADE_S = 0.5     # 全片开合:首段从黑淡入、末段淡出到黑(xfade 只做页间过渡,不含此)
 ZOOM_MAX = 1.08  # Ken Burns 推拉幅度:zoom 在 1 与 1.08 之间缓慢变化
 
+# 所有音频分支统一为 44.1kHz/立体声:解说 mp3 常见 24kHz/mono,不统一会让 acrossfade/amix
+# 拿到参数不一致的流而时长错乱。新增音频分支务必复用以下常量,勿再手写数字。
+AUDIO_RATE = 44100
+AUDIO_CH = 2
+_ANULLSRC = f"anullsrc=r={AUDIO_RATE}:cl=stereo"
+_AR_AC = ["-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CH)]
+
 
 def sh(cmd: list[str]) -> None:
     try:
@@ -58,12 +65,12 @@ def page_clip_cmd(image: Path, overlay: Path, audio: Path | None, duration_ms: i
     if audio:
         cmd += ["-i", str(audio), "-af", "apad"]
     else:
-        cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+        cmd += ["-f", "lavfi", "-i", _ANULLSRC]
     # 强制 44.1kHz/立体声,与片头/片尾静音分支(anullsrc=r=44100:cl=stereo)对齐,
     # 否则解说 mp3(常见 24kHz/mono)会让后续 acrossfade 拿到参数不一致的音频流而错乱
     cmd += ["-t", f"{dur:g}", "-filter_complex", fc, "-map", "[v]", "-map", "2:a",
             "-r", str(FPS), "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
-            "-ar", "44100", "-ac", "2", str(out)]
+            *_AR_AC, str(out)]
     return cmd
 
 
@@ -76,19 +83,19 @@ def still_clip_cmd(image: Path, audio: Path | None, duration_ms: int,
     if audio:
         cmd += ["-i", str(audio), "-af", "apad"]
     else:
-        cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+        cmd += ["-f", "lavfi", "-i", _ANULLSRC]
     cmd += ["-t", f"{dur:g}", "-vf", vf, "-r", str(FPS),
             "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
-            "-ar", "44100", "-ac", "2", str(out)]
+            *_AR_AC, str(out)]
     return cmd
 
 
 def silent_audio_cmd(duration_ms: int, out: Path) -> list[str]:
     # TTS 不可用时的静音兜底音轨,44.1kHz/立体声与其它音频分支对齐
     dur = max(duration_ms, 1) / 1000
-    return ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+    return ["ffmpeg", "-y", "-f", "lavfi", "-i", _ANULLSRC,
             "-t", f"{dur:g}", "-c:a", "libmp3lame", "-q:a", "9",
-            "-ar", "44100", "-ac", "2", str(out)]
+            *_AR_AC, str(out)]
 
 
 def concat_audio_cmd(parts: list[Path], list_file: Path, out: Path) -> list[str]:
@@ -97,7 +104,7 @@ def concat_audio_cmd(parts: list[Path], list_file: Path, out: Path) -> list[str]
     # 调用方需先把 list_file 写成 concat demuxer 格式:每行 file '<绝对路径>'。
     return ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
             "-c:a", "libmp3lame", "-q:a", "2",
-            "-ar", "44100", "-ac", "2", str(out)]
+            *_AR_AC, str(out)]
 
 
 SILENCE_THRESH_DB = "-45dB"  # 低于此视为静音(保守,不切软起音)
@@ -111,7 +118,7 @@ def trim_silence_cmd(src: Path, out: Path, pad_s: float = 0.18) -> list[str]:
            f"start_threshold={SILENCE_THRESH_DB}:detection=peak")
     af = f"{leg},areverse,{leg},areverse,apad=pad_dur={pad_s:g}"
     return ["ffmpeg", "-y", "-i", str(src), "-af", af,
-            "-c:a", "libmp3lame", "-q:a", "2", "-ar", "44100", "-ac", "2", str(out)]
+            "-c:a", "libmp3lame", "-q:a", "2", *_AR_AC, str(out)]
 
 
 def xfade_offsets(durations_s: list[float], t: float) -> list[float]:
@@ -133,7 +140,7 @@ def xfade_concat_cmd(clips: list[Path], durations_s: list[float], out: Path,
         inputs += ["-i", str(c)]
     if len(clips) == 1:
         return ["ffmpeg", "-y", *inputs, "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", str(out)]
+                "-c:a", "aac", "-b:a", "192k", *_AR_AC, str(out)]
     n = len(clips)
     offsets = xfade_offsets(durations_s, t)
     # 逐输入规整时基/帧率/像素格式,避免 xfade 因时基不一致而冻帧;
@@ -160,7 +167,7 @@ def xfade_concat_cmd(clips: list[Path], durations_s: list[float], out: Path,
     return ["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(parts),
             "-map", "[vout]", "-map", "[aout]",
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", str(out)]
+            "-c:a", "aac", "-b:a", "192k", *_AR_AC, str(out)]
 
 
 def finalize_cmd(video: Path, bgm: Path | None, out: Path) -> list[str]:

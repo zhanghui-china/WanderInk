@@ -28,6 +28,8 @@ def run(project: Project, llm: LLMClient, image: ImageClient,
             continue                                  # 已定稿角色不重绘(续跑幂等)
         c.feature_prompt = llm.chat(
             FEATURE_SYSTEM, f"姓名:{c.name}\n身份:{c.role}\n性格:{c.personality}\n外貌:{c.appearance}")
+        # 仅前 MAX_TURNAROUND 个角色绘三视图;依赖 S1 已按重要度降序排列 characters,
+        # 故前几个即主角。S1 违约(主角排后)则其一致性锚点缺失,见 s1_script SYSTEM 约束。
         if i < MAX_TURNAROUND:
             out = char_dir / f"{c.name}.png"
             out.write_bytes(image.generate(

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-FONT_PATH = Path("assets/fonts/NotoSansCJKsc-Regular.otf")
+FONT_PATH = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "NotoSansCJKsc-Regular.otf"
 FRAME = (1920, 1080)
 CAPTION_GRAD_H = 240  # 底部渐变字幕高度
 CAPTION_ANCHOR_Y = 0.4  # cover-crop 垂直锚点:偏上,优先保住人物头部

@@ -104,7 +104,7 @@ def step(project_id: str, name: str):
     elif name == "s3":
         p = s3_characters.run(p, llm, image, workdir, s.image_size)
     elif name == "s4":
-        p = s4_pages.run(p, image, workdir, s.image_size)
+        p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency)
     elif name == "s5":
         p = s5_audio.run(p, tts, s.tts_voice, workdir)
     elif name == "s6":
@@ -139,7 +139,7 @@ def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str 
     stages = [("s1", lambda: s1_script.run(p, llm)),
               ("s2", lambda: s2_storyboard.run(p, llm)),
               ("s3", lambda: s3_characters.run(p, llm, image, workdir, s.image_size)),
-              ("s4", lambda: s4_pages.run(p, image, workdir, s.image_size)),
+              ("s4", lambda: s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency)),
               ("s5", lambda: s5_audio.run(p, tts, s.tts_voice, workdir)),
               ("s6", lambda: s6_compose.run(p, workdir))]
     for name, fn in stages:

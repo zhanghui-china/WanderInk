@@ -1,5 +1,12 @@
+import pytest
+
 from shanhai import store
 from shanhai.schema import Legend
+
+
+def test_load_missing_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        store.load("does_not_exist", root=tmp_path)
 
 
 def test_create_save_load(tmp_path):

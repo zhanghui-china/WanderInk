@@ -6,7 +6,8 @@
 - 产物(图/音/mp4)由 StaticFiles 挂 projects/ 目录托管为 /files/<id>/...。
 - 若 web/dist 存在(前端已 build),挂到 / 作为单页应用;dev 时前端另起 Vite 连本服务。
 """
-import threading
+import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -24,11 +25,20 @@ from shanhai.styles import STYLE_PRESETS
 
 app = FastAPI(title="山海 · 有声连环画生成器")
 
+# CORS 来源可经 SHANHAI_CORS_ORIGINS(逗号分隔)收敛;默认 * 便于本地 dev。
+# 此处直接读环境变量而非构造 Settings():middleware 在 import 期注册,
+# 而 Settings 需要 base_url/api_key,import 期强制校验会在缺 .env 的环境下崩溃。
+_CORS_ORIGINS = [o.strip() for o in os.getenv("SHANHAI_CORS_ORIGINS", "*").split(",") if o.strip()]
+
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"],
 )
 
-_JOBS: dict[str, threading.Thread] = {}
+# 管线耗时数分钟且吃满上游配额:用单 worker 线程池串行化,天然限流,
+# 避免多项目并发把上游打到 503(叠加 S4 内部 ×3 并发会放大过载)。
+MAX_PENDING = 8  # 未完成作业(排队+运行)上限,超出则拒绝新建
+_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+_JOBS: dict[str, Future] = {}
 
 
 # ---------- 后台管线 ----------
@@ -55,7 +65,8 @@ def _pipeline(project_id: str, s: Settings, story: str | None) -> None:
             ("s1", lambda: s1_script.run(p, llm)),
             ("s2", lambda: s2_storyboard.run(p, llm)),
             ("s3", lambda: s3_characters.run(p, llm, image, workdir, s.image_size)),
-            ("s4", lambda: s4_pages.run(p, image, workdir, s.image_size)),
+            ("s4", lambda: s4_pages.run(p, image, workdir, s.image_size,
+                                        strict=s.strict_consistency)),
             ("s5", lambda: s5_audio.run(p, tts, s.tts_voice, workdir)),
             ("s6", lambda: s6_compose.run(p, workdir)),
         ]
@@ -137,6 +148,11 @@ def _validate(body: NewProject) -> None:
 def create_project(body: NewProject) -> dict:
     """新建项目并在后台启动完整管线,立即返回 project_id 供前端轮询。"""
     _validate(body)
+    # 清理已完成作业句柄,避免 _JOBS 无界增长;并按未完成数做背压。
+    for done in [k for k, f in _JOBS.items() if f.done()]:
+        del _JOBS[done]
+    if len(_JOBS) >= MAX_PENDING:
+        raise HTTPException(429, f"生成队列已满(上限 {MAX_PENDING}),请稍后再试")
     s = Settings()
     p = store.create_project(body.scenic_spot)
     p.params.duration_min = body.minutes
@@ -145,11 +161,7 @@ def create_project(body: NewProject) -> dict:
     p.style_preset = body.style
     p.status["pipeline"] = "queued"
     store.save(p)
-    t = threading.Thread(
-        target=_pipeline, args=(p.project_id, s, body.story), daemon=True,
-    )
-    _JOBS[p.project_id] = t
-    t.start()
+    _JOBS[p.project_id] = _EXECUTOR.submit(_pipeline, p.project_id, s, body.story)
     return {"project_id": p.project_id}
 
 

@@ -1,3 +1,4 @@
+from concurrent.futures import Future
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -60,5 +61,20 @@ def test_create_returns_id_and_starts_job(mock_create, _save, _settings, mock_pi
     r = client.post("/api/projects", json={"scenic_spot": "黄鹤楼", "minutes": 1})
     assert r.status_code == 200
     assert r.json()["project_id"] == "newid01"
-    api._JOBS["newid01"].join(timeout=2)   # 等后台线程结束再断言
+    api._JOBS["newid01"].result(timeout=2)   # _JOBS 现在存 Future,等其结束再断言
     mock_pipe.assert_called_once()
+
+
+def test_create_rejects_when_queue_full():
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    try:
+        api._JOBS.update({f"busy{i}": Future() for i in range(api.MAX_PENDING)})  # 均未完成
+        r = client.post("/api/projects", json={"scenic_spot": "峨眉山"})
+        assert r.status_code == 429                       # 队列满则拒绝新建
+    finally:
+        for f in api._JOBS.values():
+            if not f.done():
+                f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)

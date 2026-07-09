@@ -2,6 +2,7 @@ import io
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
+import pytest
 from PIL import Image
 from shanhai.providers.image import ImageGenError
 from shanhai.schema import CharacterCard, Project, Script, StoryboardCell
@@ -89,6 +90,17 @@ def test_s4_warns_when_no_turnaround(tmp_path: Path, capsys):
     image = MagicMock(); image.generate.return_value = _png()
     s4_pages.run(p, image, tmp_path, "1536x1024")
     assert "一致性" in capsys.readouterr().out         # S3 未产出三视图时告警(M0 被绕过)
+
+
+def test_s4_strict_raises_when_no_turnaround(tmp_path: Path):
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    card = CharacterCard(name="白素贞", role="r", personality="p", appearance="a")  # 无三视图
+    p.script = Script(title="t", theme="th", acts=[], characters=[card])
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="断桥",
+                                   characters=["白素贞"], caption="c", emotion="宁静")]
+    image = MagicMock(); image.generate.return_value = _png()
+    with pytest.raises(ValueError):                    # strict=True 时无三视图直接失败,堵 M0 绕过
+        s4_pages.run(p, image, tmp_path, "1536x1024", strict=True)
 
 
 def test_s4_parallel_all_cells_confirmed(tmp_path: Path):
