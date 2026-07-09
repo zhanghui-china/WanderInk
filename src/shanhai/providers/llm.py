@@ -1,8 +1,11 @@
 import json
 import re
+import time
 
 import httpx
 from pydantic import BaseModel, ValidationError
+
+_TRANSIENT = {429, 500, 502, 503, 504}  # 代理瞬时过载(如"资源不足"503),可重试;400 不可重试
 
 
 class LLMError(Exception):
@@ -18,15 +21,20 @@ class LLMClient:
             timeout=300,
         )
 
-    def chat(self, system: str, user: str, temperature: float = 0.7) -> str:
-        r = self._client.post("/chat/completions", json={
-            "model": self.model,
-            "temperature": temperature,
-            "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": user}],
-        })
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+    def chat(self, system: str, user: str, temperature: float = 0.7, retries: int = 2) -> str:
+        for attempt in range(retries + 1):
+            r = self._client.post("/chat/completions", json={
+                "model": self.model,
+                "temperature": temperature,
+                "messages": [{"role": "system", "content": system},
+                             {"role": "user", "content": user}],
+            })
+            if r.status_code in _TRANSIENT and attempt < retries:
+                time.sleep(2 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        raise LLMError("unreachable")  # pragma: no cover
 
     def structured[T: BaseModel](self, system: str, user: str,
                                  schema: type[T], retries: int = 2) -> T:

@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 import httpx, respx, pytest
 from pydantic import BaseModel
 from shanhai.providers.llm import LLMClient, LLMError
@@ -11,6 +12,22 @@ class Pet(BaseModel):
 
 def _resp(text: str) -> httpx.Response:
     return httpx.Response(200, json={"choices": [{"message": {"content": text}}]})
+
+@respx.mock
+@patch("shanhai.providers.llm.time.sleep")
+def test_chat_retries_transient_then_succeeds(mock_sleep):
+    route = respx.post(f"{BASE}/chat/completions")
+    route.side_effect = [httpx.Response(503, text="资源不足"), _resp("好")]
+    assert LLMClient(BASE, "sk", "m").chat("sys", "user") == "好"
+    assert route.call_count == 2                      # 503 后重试成功
+
+@respx.mock
+def test_chat_does_not_retry_400():
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(400, json={"error": {"message": "model not supported"}}))
+    with pytest.raises(httpx.HTTPStatusError):
+        LLMClient(BASE, "sk", "m").chat("sys", "user")
+    assert route.call_count == 1                      # 400 不可重试,立即抛
 
 @respx.mock
 def test_structured_with_code_fence():
