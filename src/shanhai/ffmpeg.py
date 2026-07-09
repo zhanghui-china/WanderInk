@@ -45,6 +45,14 @@ def page_clip_cmd(image: Path, audio: Path | None, duration_ms: int, out: Path) 
     return cmd
 
 
+def silent_audio_cmd(duration_ms: int, out: Path) -> list[str]:
+    # TTS 不可用时的静音兜底音轨,44.1kHz/立体声与其它音频分支对齐
+    dur = max(duration_ms, 1) / 1000
+    return ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-t", f"{dur:g}", "-c:a", "libmp3lame", "-q:a", "9",
+            "-ar", "44100", "-ac", "2", str(out)]
+
+
 def concat_cmd(clips: list[Path], list_file: Path, out: Path) -> list[str]:
     list_file.write_text("".join(f"file '{c.resolve()}'\n" for c in clips), encoding="utf-8")
     return ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),

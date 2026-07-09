@@ -8,6 +8,12 @@ import pytest
 from shanhai import ffmpeg
 
 
+def test_silent_audio_cmd():
+    cmd = " ".join(ffmpeg.silent_audio_cmd(6500, Path("s.mp3")))
+    assert "anullsrc=r=44100:cl=stereo" in cmd
+    assert "-t 6.5" in cmd and "libmp3lame" in cmd and "s.mp3" in cmd
+
+
 def test_page_clip_cmd_duration_and_fade():
     cmd = " ".join(ffmpeg.page_clip_cmd(Path("p.png"), Path("a.mp3"), 6800, Path("o.mp4")))
     assert "-t 7.3" in cmd            # 6800ms + 500ms 缓冲

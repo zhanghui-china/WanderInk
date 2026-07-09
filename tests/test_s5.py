@@ -103,11 +103,11 @@ def test_s5_resynthesizes_when_file_missing(mock_probe, tmp_path: Path):
     assert tts.synthesize.call_args.args[0] == "西湖初遇。"
 
 
+@patch("shanhai.ffmpeg.sh")
 @patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
-def test_s5_isolates_failed_synthesis(mock_probe, tmp_path: Path):
+def test_s5_silent_fallback_on_tts_failure(mock_probe, mock_sh, tmp_path: Path):
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"tracks": [
-        {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
     p = Project(project_id="x", scenic_spot="雷峰塔")
     p.storyboard = [
         StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
@@ -117,6 +117,20 @@ def test_s5_isolates_failed_synthesis(mock_probe, tmp_path: Path):
     ]
     tts = MagicMock(); tts.synthesize.side_effect = [TTSError("boom"), None]
     p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
-    assert p.storyboard[0].audio == "" and p.storyboard[0].duration_ms == 0  # 坏页留空
-    assert p.storyboard[1].audio.endswith("page_02.mp3")                     # 其余页照常
-    assert p.status["s5"] == "partial"               # 有页缺音频 -> partial(不复用 cell.status)
+    assert p.storyboard[0].audio.endswith("page_01.mp3")   # 坏页走静音兜底,仍有音轨
+    assert p.storyboard[0].duration_ms == 2500             # max(2500, 3字/4)
+    assert mock_sh.called                                  # 调用了 ffmpeg 生成静音
+    assert p.storyboard[1].audio.endswith("page_02.mp3")   # 好页正常合成
+    assert p.status["s5"] == "done"                        # 全页有音频(含兜底)
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=RuntimeError("no ffmpeg"))
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_partial_when_fallback_also_fails(mock_probe, mock_sh, tmp_path: Path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = _project()                                    # caption="西湖初遇。"
+    tts = MagicMock(); tts.synthesize.side_effect = TTSError("boom")
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    assert p.storyboard[0].audio == "" and p.storyboard[0].duration_ms == 0
+    assert p.status["s5"] == "partial"               # TTS + 兜底均失败 -> partial
