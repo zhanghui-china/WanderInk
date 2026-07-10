@@ -56,6 +56,9 @@ def test_serialize_builds_urls():
     assert d["mp4"] == "/files/abcd/output/final.mp4"
     assert d["pages"][0]["image"] == "/files/abcd/pages/page_01.png"
     assert d["pages"][0]["audio"] == "/files/abcd/audio/page_01.mp3"
+    assert d["pages"][0]["visual_desc"] == "断桥"        # 分镜画面描述
+    assert d["pages"][0]["scene_ref"] == "1-1"
+    assert d["pages"][0]["characters"] == ["白娘子"]
     assert d["characters"][0]["image"] == "/files/abcd/characters/白娘子.png"
     assert d["script_title"] == "白蛇传"
 

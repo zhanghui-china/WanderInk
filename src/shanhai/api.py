@@ -101,6 +101,7 @@ def _serialize(p: Project) -> dict:
     pages = [{
         "index": c.index, "caption": c.caption, "emotion": c.emotion,
         "status": c.status, "duration_ms": c.duration_ms,
+        "scene_ref": c.scene_ref, "visual_desc": c.visual_desc, "characters": c.characters,
         "image": _file_url(p.project_id, c.image),
         "audio": _file_url(p.project_id, c.audio),
     } for c in p.storyboard]

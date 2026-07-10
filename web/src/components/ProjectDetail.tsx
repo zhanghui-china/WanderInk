@@ -141,12 +141,38 @@ function PageCard({ pg }: { pg: Page }) {
             第 {pg.index} 页 · {pg.status}
           </div>
         )}
+        {pg.scene_ref && (
+          <span className="absolute left-2 top-2 rounded-md bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
+            {pg.scene_ref}
+          </span>
+        )}
         <span className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md border border-rice/60 font-brush text-lg text-rice">
           {pg.index}
         </span>
       </div>
       <div className="space-y-2.5 p-3.5">
-        <p className="font-serif text-sm leading-relaxed text-ink">{pg.caption}</p>
+        {pg.visual_desc && (
+          <div>
+            <span className="text-[10px] tracking-[2px] text-muted">画面</span>
+            <p className="mt-0.5 text-[13px] leading-relaxed text-ink-soft">{pg.visual_desc}</p>
+          </div>
+        )}
+        <div>
+          <span className="text-[10px] tracking-[2px] text-muted">旁白</span>
+          <p className="mt-0.5 font-serif text-sm leading-relaxed text-ink">{pg.caption}</p>
+        </div>
+        {pg.characters.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {pg.characters.map((n) => (
+              <span
+                key={n}
+                className="rounded-full border border-line bg-white/50 px-2 py-0.5 text-[10px] text-ink-soft"
+              >
+                {n}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-2 text-[11px]">
           <span className={`rounded-full px-2 py-0.5 tracking-wide ${emotionCls(pg.emotion)}`}>
             {pg.emotion}

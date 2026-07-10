@@ -21,6 +21,9 @@ export interface Page {
   emotion: string
   status: 'draft' | 'confirmed' | 'failed'
   duration_ms: number
+  scene_ref: string
+  visual_desc: string
+  characters: string[]
   image: string | null
   audio: string | null
 }
