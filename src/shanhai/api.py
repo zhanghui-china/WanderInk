@@ -30,6 +30,9 @@ app = FastAPI(title="山海 · 有声连环画生成器")
 # 而 Settings 需要 base_url/api_key,import 期强制校验会在缺 .env 的环境下崩溃。
 _CORS_ORIGINS = [o.strip() for o in os.getenv("SHANHAI_CORS_ORIGINS", "*").split(",") if o.strip()]
 
+# 只读模式(公网暴露用):关闭 POST 新建生成,访客仅能浏览已有作品,不触发上游/烧额度。
+_READONLY = os.getenv("SHANHAI_READONLY", "").strip().lower() in ("1", "true", "yes", "on")
+
 app.add_middleware(
     CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"],
 )
@@ -147,6 +150,8 @@ def _validate(body: NewProject) -> None:
 @app.post("/api/projects")
 def create_project(body: NewProject) -> dict:
     """新建项目并在后台启动完整管线,立即返回 project_id 供前端轮询。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,生成请在本机或 tailnet 内进行")
     _validate(body)
     # 清理已完成作业句柄,避免 _JOBS 无界增长;并按未完成数做背压。
     for done in [k for k, f in _JOBS.items() if f.done()]:
@@ -196,6 +201,7 @@ def meta() -> dict:
     return {
         "minutes": list(_MINUTES), "audiences": list(_AUDIENCES),
         "tones": list(_TONES), "styles": list(STYLE_PRESETS),
+        "readonly": _READONLY,
     }
 
 

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     tts_base_url: str | None = None
     tts_api_key: str | None = None
     strict_consistency: bool = False  # True 时 S4 无三视图直接失败(堵 M0 绕过);默认告警继续
+    readonly: bool = False  # True 时公网只读:关闭 POST 新建生成(SHANHAI_READONLY)
 
     @property
     def image_endpoint(self) -> tuple[str, str]:

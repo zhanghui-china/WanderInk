@@ -17,6 +17,7 @@ export function NewProjectForm({
   const [story, setStory] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const ro = !!meta?.readonly   // 公开演示只读:禁用生成
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -141,11 +142,14 @@ export function NewProjectForm({
 
       <button
         type="submit"
-        disabled={busy || !spot.trim()}
+        disabled={busy || !spot.trim() || ro}
         className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-br from-cinnabar to-cinnabar-deep px-4 py-2.5 font-serif text-sm font-semibold tracking-[3px] text-rice shadow-[0_4px_12px_rgba(138,43,34,0.28)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
       >
-        {busy ? '提交中…' : '开始生成'}
+        {ro ? '公开演示 · 仅浏览' : busy ? '提交中…' : '开始生成'}
       </button>
+      {ro && (
+        <p className="text-center text-xs text-muted">生成在所有者本机进行,此处仅浏览已有作品</p>
+      )}
     </form>
   )
 }

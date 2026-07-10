@@ -13,6 +13,14 @@ def test_meta_lists_enums():
     j = client.get("/api/meta").json()
     assert j["minutes"] == [1, 3, 5]
     assert "guofeng_ink" in j["styles"]
+    assert j["readonly"] is False               # 默认非只读
+
+
+def test_create_blocked_in_readonly(monkeypatch):
+    monkeypatch.setattr(api, "_READONLY", True)
+    r = client.post("/api/projects", json={"scenic_spot": "雷峰塔"})
+    assert r.status_code == 403                  # 只读模式拒绝新建生成
+    assert client.get("/api/meta").json()["readonly"] is True
 
 
 def test_create_validates_input():

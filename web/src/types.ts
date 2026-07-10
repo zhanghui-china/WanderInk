@@ -5,6 +5,7 @@ export interface Meta {
   audiences: string[]
   tones: string[]
   styles: string[]
+  readonly?: boolean
 }
 
 export interface ProjectSummary {
