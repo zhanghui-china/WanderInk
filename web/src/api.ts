@@ -22,4 +22,9 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => j<{ project_id: string }>(r)),
+
+  exportProject: (id: string) =>
+    fetch(`/api/projects/${id}/export`, { method: 'POST' }).then((r) =>
+      j<{ pdf: string | null; zip: string | null }>(r)
+    ),
 }

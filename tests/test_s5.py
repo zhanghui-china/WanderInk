@@ -48,7 +48,8 @@ def _project() -> Project:
 def _writing_tts() -> MagicMock:
     # synthesize 真写文件到 out(第3参),配合 _synthesize_full 的 tmp.replace(out)
     tts = MagicMock()
-    tts.synthesize.side_effect = lambda text, voice, out: Path(out).write_bytes(b"\xff\xf3mp3")
+    tts.synthesize.side_effect = \
+        lambda text, voice, out, **kw: Path(out).write_bytes(b"\xff\xf3mp3")
     return tts
 
 
@@ -136,6 +137,20 @@ def test_s5_retries_truncated_tts_keeps_longest(mock_probe, mock_sh, tmp_path: P
     assert p.storyboard[0].duration_ms == 4200       # 修剪后真实时长
 
 
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_uses_project_params_voice_and_speed(mock_probe, mock_sh, tmp_path: Path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = _project()
+    p.params.voice = "shimmer"
+    p.params.speed = 1.5
+    tts = _writing_tts()
+    s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    assert tts.synthesize.call_args.args[1] == "shimmer"   # project.params.voice 覆盖传入 voice
+    assert tts.synthesize.call_args.kwargs["speed"] == 1.5
+
+
 def test_s5_split_clauses_unit():
     assert s5_audio._split_clauses("黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。") == \
         ["黄昏的西湖边，", "雷峰塔映入水中，", "像藏着一封千年未拆的旧信。"]  # 分隔符留在句末
@@ -177,7 +192,7 @@ def test_s5_silent_fallback_on_tts_failure(mock_probe, mock_sh, tmp_path: Path):
                        caption="好页。", emotion="宁静"),
     ]
     calls = {"n": 0}
-    def _synth(text, voice, out):                          # 坏页抛错,好页写文件
+    def _synth(text, voice, out, **kw):                     # 坏页抛错,好页写文件
         calls["n"] += 1
         if calls["n"] == 1:
             raise TTSError("boom")

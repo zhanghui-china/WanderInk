@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from shanhai import ffmpeg, typeset
+from shanhai import export, ffmpeg, typeset
 from shanhai.schema import Legend, Project
 
 TITLE_MS = 2500
@@ -72,4 +72,8 @@ def run(project: Project, workdir: Path) -> Project:
     ffmpeg.sh(ffmpeg.finalize_cmd(merged, bgm, final))
     project.output["mp4"] = str(final)
     project.status["s6"] = "done"
+    try:
+        export.build_exports(project, workdir)
+    except Exception as e:  # noqa: BLE001 导出失败不拖垮 s6,mp4 已产出即算成功
+        print(f"图文导出(zip/pdf)失败:{e}")
     return project

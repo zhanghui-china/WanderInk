@@ -17,10 +17,12 @@ class TTSClient:
         self._client = httpx.Client(base_url=base_url.rstrip("/"),
                                     headers={"Authorization": f"Bearer {api_key}"}, timeout=300)
 
-    def synthesize(self, text: str, voice: str, out: Path, retries: int = 2) -> None:
+    def synthesize(self, text: str, voice: str, out: Path, retries: int = 2,
+                   speed: float = 1.0) -> None:
         for attempt in range(retries + 1):
             r = self._client.post("/audio/speech", json={
-                "model": self.model, "voice": voice, "input": text, "response_format": "mp3"})
+                "model": self.model, "voice": voice, "input": text, "response_format": "mp3",
+                "speed": speed})
             if r.status_code in _TRANSIENT and attempt < retries:
                 time.sleep(2 * (attempt + 1))
                 continue

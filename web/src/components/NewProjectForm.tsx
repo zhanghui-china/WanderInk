@@ -15,6 +15,8 @@ export function NewProjectForm({
   const [tone, setTone] = useState('温情')
   const [style, setStyle] = useState('guofeng_ink')
   const [story, setStory] = useState('')
+  const [voice, setVoice] = useState('')
+  const [speed, setSpeed] = useState(1.0)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const ro = !!meta?.readonly   // 公开演示只读:禁用生成
@@ -31,6 +33,8 @@ export function NewProjectForm({
         tone,
         style,
         story: story.trim() || null,
+        voice,
+        speed,
       })
       setSpot('')
       setStory('')
@@ -122,6 +126,27 @@ export function NewProjectForm({
                 {s}
               </option>
             ))}
+          </select>
+        </div>
+        {meta?.voices && meta.voices.length > 0 && (
+          <div>
+            <label className={label}>音色</label>
+            <select className={field} value={voice} onChange={(e) => setVoice(e.target.value)}>
+              <option value="">默认</option>
+              {meta.voices.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div>
+          <label className={label}>语速</label>
+          <select className={field} value={speed} onChange={(e) => setSpeed(+e.target.value)}>
+            <option value={0.8}>0.8</option>
+            <option value={1.0}>1.0</option>
+            <option value={1.2}>1.2</option>
           </select>
         </div>
       </div>

@@ -5,6 +5,7 @@ export interface Meta {
   audiences: string[]
   tones: string[]
   styles: string[]
+  voices?: string[]
   readonly?: boolean
 }
 
@@ -46,6 +47,8 @@ export interface ProjectDetail {
   characters: Character[]
   pages: Page[]
   mp4: string | null
+  pdf: string | null
+  zip: string | null
 }
 
 export interface NewProjectInput {
@@ -55,4 +58,6 @@ export interface NewProjectInput {
   tone: string
   style: string
   story?: string | null
+  voice?: string
+  speed?: number
 }

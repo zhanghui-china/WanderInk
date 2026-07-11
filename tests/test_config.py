@@ -20,3 +20,16 @@ def test_strict_consistency_defaults_false(monkeypatch):
     monkeypatch.setenv("SHANHAI_BASE_URL", "https://p.example.com/v1")
     monkeypatch.setenv("SHANHAI_API_KEY", "sk-1")
     assert Settings(_env_file=None).strict_consistency is False
+
+def test_tts_voices_list_falls_back_to_tts_voice(monkeypatch):
+    monkeypatch.setenv("SHANHAI_BASE_URL", "https://p.example.com/v1")
+    monkeypatch.setenv("SHANHAI_API_KEY", "sk-1")
+    s = Settings(_env_file=None)
+    assert s.tts_voices_list == [s.tts_voice]
+
+def test_tts_voices_list_parses_comma_separated(monkeypatch):
+    monkeypatch.setenv("SHANHAI_BASE_URL", "https://p.example.com/v1")
+    monkeypatch.setenv("SHANHAI_API_KEY", "sk-1")
+    monkeypatch.setenv("SHANHAI_TTS_VOICES", "alloy, shimmer,echo")
+    s = Settings(_env_file=None)
+    assert s.tts_voices_list == ["alloy", "shimmer", "echo"]

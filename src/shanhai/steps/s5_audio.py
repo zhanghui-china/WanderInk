@@ -50,13 +50,14 @@ def _split_clauses(caption: str) -> list[str]:
     return merged
 
 
-def _synthesize_clause(tts: TTSClient, text: str, voice: str, dest: Path) -> int:
+def _synthesize_clause(tts: TTSClient, text: str, voice: str, dest: Path,
+                       speed: float = 1.0) -> int:
     """合成一句并检测截断:时长明显偏短则重合成,始终保留最长的一次。返回时长 ms。"""
     floor = len(text) * MIN_MS_PER_CHAR
     tmp = dest.with_suffix(".try.mp3")
     best_ms = 0
     for _ in range(TTS_TRIES):
-        tts.synthesize(text, voice, tmp)
+        tts.synthesize(text, voice, tmp, speed=speed)
         ms = probe_duration_ms(tmp)
         if ms > best_ms:
             tmp.replace(dest)
@@ -68,7 +69,8 @@ def _synthesize_clause(tts: TTSClient, text: str, voice: str, dest: Path) -> int
     return best_ms
 
 
-def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path) -> int:
+def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path,
+                     speed: float = 1.0) -> int:
     """按标点分句、逐句合成(避开确定性截断)、逐句修剪首尾静音、拼接为整页音轨。
     返回真实总时长 ms;失败向上抛。"""
     clauses = _split_clauses(caption)
@@ -79,7 +81,7 @@ def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path) -> int
     list_file = out.with_suffix(".concat.txt")
     try:
         for clause, raw, part in zip(clauses, raws, parts):
-            _synthesize_clause(tts, clause, voice, raw)
+            _synthesize_clause(tts, clause, voice, raw, speed=speed)
             ffmpeg.sh(ffmpeg.trim_silence_cmd(raw, part))   # 修剪该句首尾静音
         if len(parts) == 1:
             parts[0].replace(out)
@@ -99,6 +101,8 @@ def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path) -> int
 
 def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
         manifest_path: Path = DEFAULT_MANIFEST) -> Project:
+    effective_voice = project.params.voice or voice
+    speed = project.params.speed
     audio_dir = workdir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     for cell in project.storyboard:
@@ -107,7 +111,8 @@ def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
             cell.duration_ms = probe_duration_ms(out)
             continue
         try:
-            cell.duration_ms = _synthesize_full(tts, cell.caption, voice, out)
+            cell.duration_ms = _synthesize_full(tts, cell.caption, effective_voice, out,
+                                                speed=speed)
             cell.audio = str(out.relative_to(workdir))
         except Exception as e:  # noqa: BLE001 TTS/探测失败 → 静音兜底,成片完整但该页无解说
             try:

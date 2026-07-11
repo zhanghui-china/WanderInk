@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { api } from '../api'
 import type { ProjectDetail as Detail, Character, Page } from '../types'
 import { ProgressSteps } from './ProgressSteps'
 
@@ -60,6 +62,7 @@ export function ProjectDetailView({ project }: { project: Detail }) {
             controls
             className="w-full rounded-xl border border-line bg-black"
           />
+          <ExportButtons project={project} />
         </div>
       )}
 
@@ -104,6 +107,51 @@ export function ProjectDetailView({ project }: { project: Detail }) {
           </div>
           <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
         </div>
+      )}
+    </div>
+  )
+}
+
+function ExportButtons({ project }: { project: Detail }) {
+  const [pdf, setPdf] = useState(project.pdf)
+  const [zip, setZip] = useState(project.zip)
+  const [busy, setBusy] = useState(false)
+
+  const btn =
+    'inline-flex items-center gap-1.5 rounded-lg border border-line bg-white/60 px-3.5 py-2 text-xs font-medium tracking-wide text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-50'
+
+  async function handleClick(kind: 'pdf' | 'zip') {
+    setBusy(true)
+    try {
+      const res = await api.exportProject(project.project_id)
+      setPdf(res.pdf)
+      setZip(res.zip)
+      const url = kind === 'pdf' ? res.pdf : res.zip
+      if (url) window.open(url, '_blank')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {pdf ? (
+        <a href={pdf} download className={btn}>
+          下载 PDF
+        </a>
+      ) : (
+        <button type="button" onClick={() => handleClick('pdf')} disabled={busy} className={btn}>
+          {busy ? '打包中…' : '下载 PDF'}
+        </button>
+      )}
+      {zip ? (
+        <a href={zip} download className={btn}>
+          下载图片包
+        </a>
+      ) : (
+        <button type="button" onClick={() => handleClick('zip')} disabled={busy} className={btn}>
+          {busy ? '打包中…' : '下载图片包'}
+        </button>
       )}
     </div>
   )

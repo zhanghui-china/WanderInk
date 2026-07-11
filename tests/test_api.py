@@ -16,6 +16,11 @@ def test_meta_lists_enums():
     assert j["readonly"] is False               # 默认非只读
 
 
+def test_meta_includes_voices():
+    j = client.get("/api/meta").json()
+    assert isinstance(j["voices"], list) and j["voices"]   # 至少回退 [tts_voice]
+
+
 def test_create_blocked_in_readonly(monkeypatch):
     monkeypatch.setattr(api, "_READONLY", True)
     r = client.post("/api/projects", json={"scenic_spot": "雷峰塔"})
@@ -52,8 +57,12 @@ def test_serialize_builds_urls():
                                    image="pages/page_01.png", audio="audio/page_01.mp3",
                                    duration_ms=3200, status="confirmed")]
     p.output["mp4"] = "projects/abcd/output/final.mp4"
+    p.output["zip"] = "projects/abcd/output/pages.zip"
+    p.output["pdf"] = "projects/abcd/output/book.pdf"
     d = api._serialize(p)
     assert d["mp4"] == "/files/abcd/output/final.mp4"
+    assert d["zip"] == "/files/abcd/output/pages.zip"
+    assert d["pdf"] == "/files/abcd/output/book.pdf"
     assert d["pages"][0]["image"] == "/files/abcd/pages/page_01.png"
     assert d["pages"][0]["audio"] == "/files/abcd/audio/page_01.mp3"
     assert d["pages"][0]["visual_desc"] == "断桥"        # 分镜画面描述
@@ -74,6 +83,36 @@ def test_create_returns_id_and_starts_job(mock_create, _save, _settings, mock_pi
     assert r.json()["project_id"] == "newid01"
     api._JOBS["newid01"].result(timeout=2)   # _JOBS 现在存 Future,等其结束再断言
     mock_pipe.assert_called_once()
+
+
+@patch("shanhai.api._pipeline")
+@patch("shanhai.api.Settings")
+@patch("shanhai.api.store.save")
+@patch("shanhai.api.store.create_project")
+def test_create_stores_voice_and_speed(mock_create, _save, _settings, _pipe):
+    p = Project(project_id="vsid01", scenic_spot="黄鹤楼")
+    mock_create.return_value = p
+    r = client.post("/api/projects", json={"scenic_spot": "黄鹤楼", "minutes": 1,
+                                           "voice": "shimmer", "speed": 1.25})
+    assert r.status_code == 200
+    api._JOBS["vsid01"].result(timeout=2)
+    assert p.params.voice == "shimmer"           # body.voice 写入 project.params
+    assert p.params.speed == 1.25
+
+
+def test_export_endpoint_runs_even_in_readonly(monkeypatch):
+    monkeypatch.setattr(api, "_READONLY", True)          # 导出不受只读限制
+    p = Project(project_id="expid", scenic_spot="雷峰塔")
+    p.output["pdf"] = "projects/expid/output/book.pdf"
+    p.output["zip"] = "projects/expid/output/pages.zip"
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.export.build_exports", return_value=p) as mock_build:
+        r = client.post("/api/projects/expid/export")
+    assert r.status_code == 200
+    assert r.json()["pdf"] == "/files/expid/output/book.pdf"
+    assert r.json()["zip"] == "/files/expid/output/pages.zip"
+    mock_build.assert_called_once()
 
 
 def test_create_rejects_when_queue_full():

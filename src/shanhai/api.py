@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from shanhai import store
+from shanhai import export, store
 from shanhai.cli import _AUDIENCES, _MINUTES, _TONES, _clients
 from shanhai.config import Settings
 from shanhai.schema import Project
@@ -121,6 +121,8 @@ def _serialize(p: Project) -> dict:
         "characters": characters,
         "pages": pages,
         "mp4": _mp4_url(p.output.get("mp4", "")),
+        "zip": _mp4_url(p.output.get("zip", "")),
+        "pdf": _mp4_url(p.output.get("pdf", "")),
     }
 
 
@@ -133,6 +135,8 @@ class NewProject(BaseModel):
     tone: str = "温情"
     style: str = "guofeng_ink"
     story: str | None = None
+    voice: str = ""
+    speed: float = 1.0
 
 
 def _validate(body: NewProject) -> None:
@@ -164,6 +168,8 @@ def create_project(body: NewProject) -> dict:
     p.params.duration_min = body.minutes
     p.params.audience = body.audience
     p.params.tone = body.tone
+    p.params.voice = body.voice
+    p.params.speed = body.speed
     p.style_preset = body.style
     p.status["pipeline"] = "queued"
     store.save(p)
@@ -196,12 +202,28 @@ def get_project(project_id: str) -> dict:
     return _serialize(p)
 
 
+@app.post("/api/projects/{project_id}/export")
+def export_project(project_id: str) -> dict:
+    """合成 PDF/ZIP 导出物(纯本地、无上游成本,故不受只读拦截)。"""
+    try:
+        p = store.load(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"项目不存在: {project_id}") from e
+    p = export.build_exports(p, store.project_dir(project_id))
+    store.save(p)
+    return {
+        "pdf": _mp4_url(p.output.get("pdf", "")),
+        "zip": _mp4_url(p.output.get("zip", "")),
+    }
+
+
 @app.get("/api/meta")
 def meta() -> dict:
     """前端建项目表单用的枚举选项。"""
     return {
         "minutes": list(_MINUTES), "audiences": list(_AUDIENCES),
         "tones": list(_TONES), "styles": list(STYLE_PRESETS),
+        "voices": Settings().tts_voices_list,
         "readonly": _READONLY,
     }
 
