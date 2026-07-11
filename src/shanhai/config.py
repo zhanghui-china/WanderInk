@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     base_url: str
     api_key: str
     llm_model: str = "claude-sonnet-5"
+    llm_timeout: float = 300  # 秒;本地思考型模型建议调大(SHANHAI_LLM_TIMEOUT)
     image_model: str = "gemini-2.5-flash-image"
     image_api_mode: str = "chat_api"
     image_size: str = "1536x1024"

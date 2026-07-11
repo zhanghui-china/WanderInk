@@ -34,7 +34,7 @@ def _validate_params(minutes: int, audience: str, tone: str, style: str) -> None
 def _clients(s: Settings) -> tuple[LLMClient, ImageClient, TTSClient]:
     img_base, img_key = s.image_endpoint
     tts_base, tts_key = s.tts_endpoint
-    return (LLMClient(s.base_url, s.api_key, s.llm_model),
+    return (LLMClient(s.base_url, s.api_key, s.llm_model, timeout=s.llm_timeout),
             ImageClient(img_base, img_key, s.image_model, s.image_api_mode),
             TTSClient(tts_base, tts_key, s.tts_model))
 

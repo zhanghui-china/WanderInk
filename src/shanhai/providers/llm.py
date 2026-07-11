@@ -13,12 +13,12 @@ class LLMError(Exception):
 
 
 class LLMClient:
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 300):
         self.model = model
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {api_key}"},
-            timeout=300,
+            timeout=timeout,  # 本地大模型(如带思考的 Qwen3.5)单次结构化输出可远超 300s
         )
 
     def chat(self, system: str, user: str, temperature: float = 0.7, retries: int = 2) -> str:
