@@ -58,7 +58,12 @@ R1 已验证 DGX(GX10/GB10,119G 统一内存,Ubuntu 24.04 aarch64,团队共用)�
 - P2:一句真人声 mp3 → 单页 revoice → 成片该页有解说。
 - P3:S0–S2 总耗时 <3min;测试全绿。
 
-## 运维速查(部署后补齐实际值)
+## 访问入口(2026-07-11 实际值)
+- 团队内网:`http://192.168.199.107:8080`
+- **公网(cpolar)**:`http://wuzitokenplan.vip.cpolar.cn/`(cpolar.yml 里 `huntun` 隧道 → :8080;注意同名 `WuziTokenPlan` 隧道指 :8000 未监听,勿混淆)。国内可达;部分国际线路到 cn_vip HTTP 边缘不通属正常。
+- ⚠️ **已知风险(用户拍板接受)**:公网与内网同一实例、`readonly:false`——公网访客可触发生成烧 tu-zi 图像额度;缓解仅靠 URL 隐蔽 + 队列上限 8。若被滥用,改法见 git 历史讨论:按来源区分只读(内网可写/cpolar 只读)约半小时可加。
+
+## 运维速查
 - 服务:`systemctl --user {status,restart} shanhai-web`;日志 `journalctl --user -u shanhai-web -f`
 - 隧道模板:`ssh -p 14801 -L 8080:127.0.0.1:8080 huntun@21.tcp.vip.cpolar.cn`
 - 回传作品到 Mac(展示):`rsync -a huntun@…:~/shanhai/projects/ ~/Work/shanhai/projects/`
