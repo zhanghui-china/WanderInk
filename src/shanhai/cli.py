@@ -34,7 +34,12 @@ def _validate_params(minutes: int, audience: str, tone: str, style: str) -> None
 def _clients(s: Settings) -> tuple[LLMClient, ImageClient, TTSClient]:
     img_base, img_key = s.image_endpoint
     tts_base, tts_key = s.tts_endpoint
-    return (LLMClient(s.base_url, s.api_key, s.llm_model, timeout=s.llm_timeout),
+    if s.llm_provider == "ollama":
+        from shanhai.providers.llm_ollama import OllamaLLMClient
+        llm = OllamaLLMClient(s.base_url, s.api_key, s.llm_model, timeout=s.llm_timeout)
+    else:
+        llm = LLMClient(s.base_url, s.api_key, s.llm_model, timeout=s.llm_timeout)
+    return (llm,
             ImageClient(img_base, img_key, s.image_model, s.image_api_mode),
             TTSClient(tts_base, tts_key, s.tts_model))
 

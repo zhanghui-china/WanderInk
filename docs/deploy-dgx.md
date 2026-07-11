@@ -10,7 +10,7 @@ R1 已验证 DGX(GX10/GB10,119G 统一内存,Ubuntu 24.04 aarch64,团队共用)�
 
 ## P0 传输与环境
 1. **小代码改动(Mac 先做)**:`api.py main()` 加 `SHANHAI_HOST`(默认 `127.0.0.1`;DGX 设 `0.0.0.0` 供内网访问),与既有 `SHANHAI_PORT` 同款。前端 `bun run build` 出最新 dist(DGX 不装 bun,直接带 dist)。
-2. **rsync 到 DGX**(`~/shanhai`):仓库含 `.git`、`assets/`、`web/dist`,排除 `.venv/ web/node_modules/`;`projects/`(797M)单独 rsync。
+2. **rsync 到 DGX**(`~/shanhai`):仓库含 `.git`、`assets/`(字体 16M)、`web/dist`(Mac 预构建,DGX 不装 bun),排除 `.venv/ web/node_modules/ spike/out/`;**依赖不走线**——`uv sync` 在 DGX 直接拉 pypi。**`projects/` 历史作品不迁移**(用户决定):DGX 上重新生成即可,Mac 保留原作品供公网展示。
 3. **DGX 环境**:装 uv(curl → `~/.local/bin`,免 sudo)→ `uv sync` → `uv run pytest -q`(aarch64 上应 147 全绿)。
 4. **DGX 专属 `.env`**(生产参数,不入库):
    ```
