@@ -12,6 +12,7 @@ export default function App() {
   const [list, setList] = useState<ProjectSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
 
   const refreshList = useCallback(async () => {
     try {
@@ -51,7 +52,11 @@ export default function App() {
       alive = false
       if (timer) window.clearTimeout(timer)
     }
-  }, [selectedId, refreshList])
+  }, [selectedId, refreshList, refreshKey])
+
+  // 编辑操作(改字面/重绘/重配音/增删/重排/单步重跑)后调用:强制重拉一次详情,
+  // 若管线因此进入 queued/running 则上面的 effect 会继续自行轮询
+  const onDetailChanged = useCallback(() => setRefreshKey((k) => k + 1), [])
 
   const onCreated = (id: string) => {
     setSelectedId(id)
@@ -101,7 +106,7 @@ export default function App() {
 
           <main>
             {detail ? (
-              <ProjectDetailView project={detail} />
+              <ProjectDetailView project={detail} meta={meta} onChanged={onDetailChanged} />
             ) : (
               <EmptyState />
             )}

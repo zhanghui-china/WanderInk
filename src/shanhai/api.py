@@ -12,10 +12,11 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from shanhai import export, store
+from shanhai import editing, export, store
 from shanhai.cli import _AUDIENCES, _MINUTES, _TONES, _clients
 from shanhai.config import Settings
 from shanhai.schema import Project
@@ -128,6 +129,20 @@ def _serialize(p: Project) -> dict:
 
 # ---------- 接口 ----------
 
+def _editable(project_id: str) -> Project:
+    """编辑端点公共前置校验:只读模式拒绝写入;项目有未完成后台作业时拒绝并发编辑
+    (避免与生成管线互相踩踏落盘);项目须存在。返回加载好的 Project 供端点直接改。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止编辑")
+    f = _JOBS.get(project_id)
+    if f is not None and not f.done():
+        raise HTTPException(409, "该项目有未完成的生成作业,请等待完成后再编辑")
+    try:
+        return store.load(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"项目不存在: {project_id}") from e
+
+
 class NewProject(BaseModel):
     scenic_spot: str
     minutes: int = 3
@@ -217,6 +232,159 @@ def export_project(project_id: str) -> dict:
     }
 
 
+class CellPatch(BaseModel):
+    caption: str | None = None
+    visual_desc: str | None = None
+    emotion: str | None = None
+    characters: list[str] | None = None
+
+
+@app.patch("/api/projects/{project_id}/cells/{index}")
+def patch_cell(project_id: str, index: int, body: CellPatch) -> dict:
+    p = _editable(project_id)
+    try:
+        editing.update_cell(p, index, caption=body.caption, visual_desc=body.visual_desc,
+                            emotion=body.emotion, characters=body.characters)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    store.save(p)
+    return _serialize(p)
+
+
+@app.post("/api/projects/{project_id}/cells/{index}/redraw")
+def redraw_cell(project_id: str, index: int) -> dict:
+    p = _editable(project_id)
+    try:
+        editing.mark_redraw(p, index)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    store.save(p)
+    return _serialize(p)
+
+
+@app.post("/api/projects/{project_id}/cells/{index}/revoice")
+def revoice_cell(project_id: str, index: int) -> dict:
+    p = _editable(project_id)
+    try:
+        editing.mark_revoice(p, index)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    store.save(p)
+    return _serialize(p)
+
+
+class CellInsert(BaseModel):
+    after_index: int
+    caption: str
+    visual_desc: str
+    emotion: str = "宁静"
+    characters: list[str] | None = None
+
+
+@app.post("/api/projects/{project_id}/cells")
+def create_cell(project_id: str, body: CellInsert) -> dict:
+    p = _editable(project_id)
+    workdir = store.project_dir(project_id)
+    try:
+        editing.insert_cell(p, workdir, body.after_index, caption=body.caption,
+                            visual_desc=body.visual_desc, emotion=body.emotion,
+                            characters=body.characters)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    store.save(p)
+    return _serialize(p)
+
+
+@app.delete("/api/projects/{project_id}/cells/{index}")
+def delete_cell(project_id: str, index: int) -> dict:
+    p = _editable(project_id)
+    workdir = store.project_dir(project_id)
+    try:
+        editing.delete_cell(p, workdir, index)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    store.save(p)
+    return _serialize(p)
+
+
+class ReorderBody(BaseModel):
+    order: list[int]
+
+
+@app.post("/api/projects/{project_id}/cells/reorder")
+def reorder_cells(project_id: str, body: ReorderBody) -> dict:
+    p = _editable(project_id)
+    workdir = store.project_dir(project_id)
+    try:
+        editing.reorder_cells(p, workdir, body.order)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    store.save(p)
+    return _serialize(p)
+
+
+@app.post("/api/projects/{project_id}/characters/{name}/redraw")
+def redraw_character(project_id: str, name: str) -> dict:
+    p = _editable(project_id)
+    try:
+        editing.mark_character_redraw(p, name)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    store.save(p)
+    return _serialize(p)
+
+
+# ---------- 单步重跑(编辑后局部重生成) ----------
+
+_STEP_NAMES = ("s2", "s3", "s4", "s5", "s6")
+
+
+def _run_step(project_id: str, name: str, s: Settings) -> None:
+    """后台线程跑单步,复用 _pipeline 的状态写入 + 异常兜底语义(不复用其整段管线循环,
+    因为这里只跑调用方指定的一步)。"""
+    p = store.load(project_id)
+    workdir = store.project_dir(project_id)
+    llm, image, tts = _clients(s)
+    try:
+        p.status["pipeline"] = "running"
+        store.save(p)
+        if name == "s2":
+            p = s2_storyboard.run(p, llm)
+        elif name == "s3":
+            p = s3_characters.run(p, llm, image, workdir, s.image_size)
+        elif name == "s4":
+            p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency)
+        elif name == "s5":
+            p = s5_audio.run(p, tts, s.tts_voice, workdir)
+        elif name == "s6":
+            p = s6_compose.run(p, workdir)
+        store.save(p)
+        p.status["pipeline"] = "done"
+        store.save(p)
+    except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
+        p.status["pipeline"] = f"error: {e}"
+        store.save(p)
+
+
+@app.post("/api/projects/{project_id}/steps/{name}")
+def run_step(project_id: str, name: str) -> JSONResponse:
+    """单步重跑(编辑后只需局部重生成,不必整条管线重来一遍)。"""
+    if name not in _STEP_NAMES:
+        raise HTTPException(400, f"未知步骤: {name}")
+    p = _editable(project_id)  # 403/409/404
+    for done in [k for k, f in _JOBS.items() if f.done()]:
+        del _JOBS[done]
+    if len(_JOBS) >= MAX_PENDING:
+        raise HTTPException(429, f"生成队列已满(上限 {MAX_PENDING}),请稍后再试")
+    # 提交前先落盘 queued(与 create_project 一致):否则 202 后立刻轮询会读到
+    # 上一次遗留的 done,客户端误判"这步已完成"。job 线程随后置 running/done。
+    p.status["pipeline"] = "queued"
+    store.save(p)
+    s = Settings()
+    _JOBS[project_id] = _EXECUTOR.submit(_run_step, project_id, name, s)
+    return JSONResponse({"queued": True}, status_code=202)
+
+
 @app.get("/api/meta")
 def meta() -> dict:
     """前端建项目表单用的枚举选项。"""
@@ -239,4 +407,5 @@ if _WEB_DIST.exists():
 
 def main() -> None:
     import uvicorn
-    uvicorn.run("shanhai.api:app", host="127.0.0.1", port=8080, reload=False)
+    port = int(os.getenv("SHANHAI_PORT", "8080"))
+    uvicorn.run("shanhai.api:app", host="127.0.0.1", port=port, reload=False)
