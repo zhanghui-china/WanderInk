@@ -22,6 +22,17 @@ def test_chat_retries_transient_then_succeeds(mock_sleep):
     assert route.call_count == 2                      # 503 后重试成功
 
 @respx.mock
+@patch("shanhai.providers.llm.time.sleep")
+def test_chat_retries_on_transport_error(mock_sleep):
+    # chat() 之前对 self._client.post() 无任何 try/except:连接被对端掐断
+    # (RemoteProtocolError 等)会直接不重试地传播,DGX 经隧道链路更易触发
+    route = respx.post(f"{BASE}/chat/completions")
+    route.side_effect = [
+        httpx.RemoteProtocolError("Server disconnected without sending a response"), _resp("好")]
+    assert LLMClient(BASE, "sk", "m").chat("sys", "user") == "好"
+    assert route.call_count == 2
+
+@respx.mock
 def test_chat_does_not_retry_400():
     route = respx.post(f"{BASE}/chat/completions").mock(
         return_value=httpx.Response(400, json={"error": {"message": "model not supported"}}))

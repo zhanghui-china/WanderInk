@@ -29,6 +29,20 @@ def test_generate_retries_on_timeout(mock_sleep):
 
 
 @respx.mock
+@patch("shanhai.providers.image.time.sleep")
+def test_generate_retries_on_remote_protocol_error(mock_sleep):
+    # "Server disconnected without sending a response" 是 RemoteProtocolError,
+    # 曾被窄写的 except (TimeoutException, ConnectError) 漏抓,单次瞬时故障直接杀死整条 S3
+    route = respx.post(f"{BASE}/images/generations")
+    route.side_effect = [
+        httpx.RemoteProtocolError("Server disconnected without sending a response"),
+        httpx.Response(200, json={"data": [{"b64_json": PNG}]})]
+    c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
+    assert c.generate("a cat") == b"fakepng"
+    assert route.call_count == 2
+
+
+@respx.mock
 def test_generate_does_not_retry_400():
     route = respx.post(f"{BASE}/images/generations").mock(
         return_value=httpx.Response(400, json={"error": {"message": "not supported"}}))

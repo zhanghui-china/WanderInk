@@ -27,11 +27,14 @@ class ImageClient:
 
     def generate(self, prompt: str, size: str = "1536x1024",
                  references: list[Path] | None = None, retries: int = 2) -> bytes:
-        # 瞬时网络错误(超时/连接错/5xx)重试;gpt-image-2 经代理偶发 ReadTimeout,S3 三视图无外层重试
+        # 瞬时网络错误重试;gpt-image-2 经代理偶发 ReadTimeout/连接被对端掐断,S3 三视图无外层重试。
+        # httpx.TransportError 是 TimeoutException/ConnectError/RemoteProtocolError(“Server
+        # disconnected without sending a response”)等的公共基类,窄写漏抓过 RemoteProtocolError
+        # 导致单次瞬时故障直接杀死整条 S3(DGX 经隧道链路更易触发)。
         for attempt in range(retries + 1):
             try:
                 return self._dispatch(prompt, size, references)
-            except (httpx.TimeoutException, httpx.ConnectError):
+            except httpx.TransportError:
                 if attempt == retries:
                     raise
             except httpx.HTTPStatusError as e:

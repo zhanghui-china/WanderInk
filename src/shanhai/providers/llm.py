@@ -23,12 +23,20 @@ class LLMClient:
 
     def chat(self, system: str, user: str, temperature: float = 0.7, retries: int = 2) -> str:
         for attempt in range(retries + 1):
-            r = self._client.post("/chat/completions", json={
-                "model": self.model,
-                "temperature": temperature,
-                "messages": [{"role": "system", "content": system},
-                             {"role": "user", "content": user}],
-            })
+            try:
+                r = self._client.post("/chat/completions", json={
+                    "model": self.model,
+                    "temperature": temperature,
+                    "messages": [{"role": "system", "content": system},
+                                 {"role": "user", "content": user}],
+                })
+            except httpx.TransportError:
+                # 连接层瞬时故障(超时/连接被对端掐断等),与下面的 5xx 重试同一退避节奏;
+                # 本地大模型单次耗时数分钟,长连接经隧道更易被中间网络设备断开。
+                if attempt == retries:
+                    raise
+                time.sleep(2 * (attempt + 1))
+                continue
             if r.status_code in _TRANSIENT and attempt < retries:
                 time.sleep(2 * (attempt + 1))
                 continue
