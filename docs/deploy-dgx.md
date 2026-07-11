@@ -35,7 +35,7 @@ R1 已验证 DGX(GX10/GB10,119G 统一内存,Ubuntu 24.04 aarch64,团队共用)�
    ```
 
 ## P1 服务化与端到端验证
-1. **systemd user 服务** `~/.config/systemd/user/shanhai-web.service`(WorkingDirectory=~/shanhai、ExecStart=uv run shanhai-web、Restart=always);`loginctl enable-linger`(需 sudo 则记录、先用会话内常驻兜底)。
+1. **systemd user 服务** `~/.config/systemd/user/shanhai-web.service`(WorkingDirectory=~/shanhai、**`EnvironmentFile=%h/shanhai/.env`**——关键:`SHANHAI_HOST/PORT/CORS/READONLY` 走 `os.getenv` 只认进程环境,不读 .env 文件,必须由 systemd 注入、ExecStart=uv run shanhai-web、Restart=always);`loginctl enable-linger`(需 sudo 则记录、先用会话内常驻兜底)。
 2. 团队访问 `http://<DGX 内网 IP>:8080`;外部走 SSH 隧道 `-L 8080:127.0.0.1:8080`。**非只读**:团队可建作品/编辑/重绘(单 worker 队列 + MAX_PENDING=8 背压;图像烧 tu-zi 额度为已知代价)。
 3. **端到端冒烟**:web 建 1 分钟作品 → 本地 LLM(S0–S2)+ 云图像(S3–S4)+ S5 静音兜底 + S6 成片;历史作品列表可浏览可播。
 
