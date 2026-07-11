@@ -31,10 +31,16 @@ def run(project: Project, llm: LLMClient, image: ImageClient,
         # 仅前 MAX_TURNAROUND 个角色绘三视图;依赖 S1 已按重要度降序排列 characters,
         # 故前几个即主角。S1 违约(主角排后)则其一致性锚点缺失,见 s1_script SYSTEM 约束。
         if i < MAX_TURNAROUND:
-            out = char_dir / f"{c.name}.png"
-            out.write_bytes(image.generate(
-                TURNAROUND_TMPL.format(style=style, feature=c.feature_prompt), size=image_size))
-            c.turnaround_image = str(out.relative_to(workdir))
-            c.locked = True
-    project.status["s3"] = "done"
+            try:
+                out = char_dir / f"{c.name}.png"
+                out.write_bytes(image.generate(
+                    TURNAROUND_TMPL.format(style=style, feature=c.feature_prompt), size=image_size))
+                c.turnaround_image = str(out.relative_to(workdir))
+                c.locked = True
+            except Exception as e:  # noqa: BLE001 单角色三视图失败不拖垮整轮(同 S4 单页失败模式);
+                # 该角色退化为仅文字特征约束,与 MAX_TURNAROUND 之外的次要角色同等对待
+                print(f"角色「{c.name}」三视图生成失败,退化为纯文字特征:{e}")
+    project.status["s3"] = "done" if all(
+        c.turnaround_image or i >= MAX_TURNAROUND
+        for i, c in enumerate(project.script.characters)) else "partial"
     return project

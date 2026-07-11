@@ -10,6 +10,15 @@
 > `chat()` 对请求本身甚至**零** try/except。DGX 经隧道的长连接比 Mac 直连更易触发此类
 > 瞬时故障。修复:两处改为捕获 `httpx.TransportError`(commit `ab49fed`)。教训:云端
 > provider 重试必须覆盖 httpx 完整 TransportError 家族,不能只挑 Timeout/Connect。
+>
+> **同日复发**:部署 `ab49fed` 后重发冒烟,S3 第 2 个角色又报同一异常(重试 3 次全部失败)。
+> 排查:curl 连打 5 轮(100%)、Python 精确复刻 ImageClient 持久连接池 6 轮(100%)均无法
+> 复现——网络路径本身不是确定性坏的,更像共用机上的间歇性抖动(122b 占极重资源,S3 恰好
+> 紧跟长时间本地推理之后)。**结论**:根因既不确定也不完全可控,重试次数调再高也只是概率
+> 游戏。真正的结构性修复是给 S3 补上 S4 早就有的**单元素容错隔离**——单角色三视图失败只
+> 退化为纯文字特征(同 MAX_TURNAROUND 之外的次要角色),不再 raise 拖垮整条 pipeline
+> (s3_characters.py + test_s3.py 新增 test_s3_single_character_failure_does_not_abort_others)。
+> 教训:对不受控的外部依赖,隔离失败范围比死磕重试参数更可靠。
 
 ## ⚠️ 拓扑铁律(操作前核对)
 - **代码真源 = Mac** `/Users/nativeas/Work/shanhai`(唯一 git,无远程)。开发/测试/提交只在 Mac。
