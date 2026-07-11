@@ -2,6 +2,14 @@
 
 > 状态:P0/P1 已上线(2026-07-11);P2(GPU TTS)spike 待开;P3(Ollama 适配器)已开发待部署。
 > 前置:R1 冒烟见 [decisions/0006](decisions/0006-r1-local-llm-smoke.md)。
+>
+> **2026-07-11 事故记录**:首次端到端冒烟在 S3(角色三视图,4 个中处理 2 个后)报
+> `Server disconnected without sending a response` 并杀死整条 pipeline。根因:
+> `image.py`/`llm.py` 的网络重试窄写成 `(TimeoutException, ConnectError)`,漏抓
+> `httpx.RemoteProtocolError`(该异常的公共基类是 `TransportError`);`llm.py` 的
+> `chat()` 对请求本身甚至**零** try/except。DGX 经隧道的长连接比 Mac 直连更易触发此类
+> 瞬时故障。修复:两处改为捕获 `httpx.TransportError`(commit `ab49fed`)。教训:云端
+> provider 重试必须覆盖 httpx 完整 TransportError 家族,不能只挑 Timeout/Connect。
 
 ## ⚠️ 拓扑铁律(操作前核对)
 - **代码真源 = Mac** `/Users/nativeas/Work/shanhai`(唯一 git,无远程)。开发/测试/提交只在 Mac。
