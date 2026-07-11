@@ -51,6 +51,20 @@ export interface ProjectDetail {
   zip: string | null
 }
 
+export interface CellPatch {
+  caption?: string
+  visual_desc?: string
+  emotion?: string
+  characters?: string[]
+}
+
+export interface InsertCellFields {
+  caption: string
+  visual_desc: string
+  emotion?: string
+  characters?: string[]
+}
+
 export interface NewProjectInput {
   scenic_spot: string
   minutes: number
