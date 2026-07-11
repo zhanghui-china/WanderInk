@@ -407,5 +407,6 @@ if _WEB_DIST.exists():
 
 def main() -> None:
     import uvicorn
+    host = os.getenv("SHANHAI_HOST", "127.0.0.1")  # 内网部署(如 DGX)设 0.0.0.0
     port = int(os.getenv("SHANHAI_PORT", "8080"))
-    uvicorn.run("shanhai.api:app", host="127.0.0.1", port=port, reload=False)
+    uvicorn.run("shanhai.api:app", host=host, port=port, reload=False)
