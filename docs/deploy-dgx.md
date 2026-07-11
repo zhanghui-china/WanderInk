@@ -1,7 +1,14 @@
 # shanhai 部署到 DGX Spark(团队内网 · 可生成 · 本地 LLM + GPU TTS)
 
-> 状态:P0/P1 执行中;P2(GPU TTS)spike 待开;P3(Ollama 适配器)待做。
+> 状态:P0/P1 已上线(2026-07-11);P2(GPU TTS)spike 待开;P3(Ollama 适配器)已开发待部署。
 > 前置:R1 冒烟见 [decisions/0006](decisions/0006-r1-local-llm-smoke.md)。
+
+## ⚠️ 拓扑铁律(操作前核对)
+- **代码真源 = Mac** `/Users/nativeas/Work/shanhai`(唯一 git,无远程)。开发/测试/提交只在 Mac。
+- **DGX = 部署目标** `~/shanhai`(rsync 快照)。**绝不在 DGX 改代码**;DGX `.env` 机器专属、不入 git。
+- **发布流程**:Mac 改+测+commit → rsync(**必须 `--exclude .env --exclude projects`**,否则覆盖 DGX 配置/数据)→ 确认无管线在跑(`/api/projects` 无 running/queued)→ `systemctl --user restart shanhai-web`。
+- Mac 同一工作树还跑着两个实例(公网只读 :10000、本机编辑 :8081):重启前确认工作树是已提交可上线状态。
+- 作品数据各自生长:DGX `projects/`(生产)与 Mac `projects/`(展示)不互通、不互相 rsync 覆盖。
 
 ## Context
 R1 已验证 DGX(GX10/GB10,119G 统一内存,Ubuntu 24.04 aarch64,团队共用)上 Ollama qwen3.5:122b 可直接驱动 S0–S2。现把整个项目部署上去:代码 + 历史作品(797M)迁移、systemd 服务化、团队内网访问、**LLM 走本机 Ollama(免隧道)**、图像暂走云端 tu-zi(R2 前)、**TTS 在 DGX 装 GPU 版**。Mac 上的公网只读站(:10000)保留不动——两边 `projects/` 会各自生长,DGX 为生产、Mac 为展示(后续可定期回传)。
