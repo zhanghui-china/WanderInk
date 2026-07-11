@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 
 import httpx, respx, pytest
@@ -38,3 +39,10 @@ def test_synthesize_rejects_non_audio_json(tmp_path):
         return_value=httpx.Response(200, json={"error": "model busy"}))
     with pytest.raises(TTSError):                      # 小模型返回 JSON 错误体 → TTSError
         TTSClient(BASE, "sk", "m").synthesize("x", "alloy", tmp_path / "c.mp3")
+
+
+@respx.mock
+def test_synthesize_sends_speed_in_body(tmp_path):
+    route = respx.post(f"{BASE}/audio/speech").mock(return_value=_mp3())
+    TTSClient(BASE, "sk", "m").synthesize("你好", "alloy", tmp_path / "d.mp3", speed=1.5)
+    assert json.loads(route.calls[0].request.content)["speed"] == 1.5

@@ -45,8 +45,8 @@ def compose_page(art: bytes, out: Path) -> None:
     frame.save(out)
 
 
-def overlay_layer(caption: str, out: Path) -> None:
-    # 1920×1080 透明 PNG:仅底部渐变遮罩 + 白色字幕 + 右上"AI 生成"水印。
+def overlay_image(caption: str) -> Image.Image:
+    # 1920×1080 透明画布:仅底部渐变遮罩 + 白色字幕 + 右上"AI 生成"水印。
     # 上部完全透明,合成时不遮画面;整层静态,不随 Ken Burns 推拉。
     layer = Image.new("RGBA", FRAME, (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer, "RGBA")
@@ -68,7 +68,11 @@ def overlay_layer(caption: str, out: Path) -> None:
     draw.text((FRAME[0] - wm_font.getlength(WATERMARK) - 24, 20), WATERMARK,
               font=wm_font, fill=(255, 255, 255, 180),
               stroke_width=2, stroke_fill=(0, 0, 0, 160))
-    layer.save(out)
+    return layer
+
+
+def overlay_layer(caption: str, out: Path) -> None:
+    overlay_image(caption).save(out)
 
 
 def _text_card(lines: list[str], sizes: list[int], out: Path) -> None:

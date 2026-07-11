@@ -62,6 +62,8 @@ class GenerationParams(BaseModel):
     duration_min: Literal[1, 3, 5] = 3
     audience: Literal["儿童", "大众"] = "大众"
     tone: Literal["温情", "奇幻", "悬疑"] = "温情"
+    voice: str = ""
+    speed: float = 1.0
 
 
 class Project(BaseModel):
