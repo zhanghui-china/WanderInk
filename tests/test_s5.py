@@ -145,21 +145,24 @@ def test_s5_resynthesizes_when_file_missing(mock_probe, mock_sh, tmp_path: Path)
 
 
 @patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
-@patch("shanhai.steps.s5_audio.probe_duration_ms")
-def test_s5_retries_truncated_tts_keeps_longest(mock_probe, mock_sh, tmp_path: Path):
-    # 小模型 TTS 偶发截断:首次 2000ms(< 10字×380=3800 floor,疑似截断)→ 重合成 5000ms,取长
-    # 第3次 probe 是修剪后 out 的时长(4200),即 S6 使用的真实时长
-    mock_probe.side_effect = [2000, 5000, 4200]
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_single_shot_preferred(mock_probe, mock_sh, tmp_path: Path):
+    # P1:CosyVoice2 类稳定模型整段单发一次(不分句)。probe 6800 ≥ 28字×150 floor → 采用单发,
+    # 仅一次合成、一次修剪、不拼接(避免弱模型时代逐句合成的多次调用与句间硬拼)。
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
     p = Project(project_id="x", scenic_spot="雷峰塔")
+    cap = "黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。"
     p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
-                                   caption="一二三四五六七八九十", emotion="宁静")]
+                                   caption=cap, emotion="宁静")]
     tts = _writing_tts()
     p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
-    assert tts.synthesize.call_count == 2            # 无标点走单句路径,截断后重合成
-    assert "silenceremove" in " ".join(mock_sh.call_args.args[0])   # 单句也修剪静音
-    assert p.storyboard[0].duration_ms == 4200       # 修剪后真实时长
+    tts.synthesize.assert_called_once()              # 整段一次,不逐句
+    assert tts.synthesize.call_args.args[0] == cap
+    cmds = [" ".join(c.args[0]) for c in mock_sh.call_args_list]
+    assert sum("silenceremove" in c for c in cmds) == 1     # 只整段修剪一次
+    assert not any("-f concat" in c for c in cmds)          # 单发无需拼接
+    assert p.storyboard[0].duration_ms == 6800
 
 
 @patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
@@ -185,23 +188,27 @@ def test_s5_split_clauses_unit():
 
 
 @patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
-@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=5000)
-def test_s5_splits_caption_into_clauses_and_concats(mock_probe, mock_sh, tmp_path: Path):
+@patch("shanhai.steps.s5_audio.probe_duration_ms")
+def test_s5_falls_back_to_chunked_when_truncated(mock_probe, mock_sh, tmp_path: Path):
+    # P1 兜底:弱模型整段单发疑似截断(300ms << 28字×150=4200 floor)→ 退化逐句合成;
+    # 且逐句路径里首句再截断(500<1050)时重合成取最长(1200)——保留旧防截断能力做兜底。
+    # probe 序列:①单发300 ②③句1两试500/1200 ④句2=5000 ⑤句3=5000 ⑥拼接总时长8000
+    mock_probe.side_effect = [300, 500, 1200, 5000, 5000, 8000]
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
     p = Project(project_id="x", scenic_spot="雷峰塔")
+    cap = "黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。"
     p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
-                                   caption="黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。",
-                                   emotion="宁静")]
+                                   caption=cap, emotion="宁静")]
     tts = _writing_tts()
     p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
-    assert tts.synthesize.call_count == 3            # 每句各合成一次
     said = [c.args[0] for c in tts.synthesize.call_args_list]
-    assert said == ["黄昏的西湖边，", "雷峰塔映入水中，", "像藏着一封千年未拆的旧信。"]
-    trims = sum("silenceremove" in " ".join(c.args[0]) for c in mock_sh.call_args_list)
-    assert trims == 3                                 # 每句各修剪一次静音
-    assert "-f concat" in " ".join(mock_sh.call_args.args[0])   # 最后一次 sh 是拼接
-    assert p.storyboard[0].duration_ms == 5000        # 拼接后真实总时长
+    assert said[0] == cap                            # 首次整段单发(截断)
+    assert said[1] == said[2] == "黄昏的西湖边，"      # 退化后首句因截断重合成
+    assert said[3:] == ["雷峰塔映入水中，", "像藏着一封千年未拆的旧信。"]
+    cmds = [" ".join(c.args[0]) for c in mock_sh.call_args_list]
+    assert any("-f concat" in c for c in cmds)       # 退化路径拼接
+    assert p.storyboard[0].duration_ms == 8000
 
 
 @patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
