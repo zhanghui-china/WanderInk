@@ -8,6 +8,7 @@ from shanhai.config import Settings
 from shanhai.runtime_config import STAGE_CLIENTS, AppConfig, resolve_settings
 from shanhai.providers.image import ImageClient
 from shanhai.providers.llm import LLMClient
+from shanhai.providers.music import MusicClient
 from shanhai.providers.tts import TTSClient
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s6_compose)
@@ -32,10 +33,11 @@ def _validate_params(minutes: int, audience: str, tone: str, style: str) -> None
         raise typer.BadParameter(f"--style 须为 {'/'.join(STYLE_PRESETS)},收到 {style}")
 
 
-def _clients(s: Settings) -> tuple[LLMClient, ImageClient, TTSClient]:
+def _clients(s: Settings) -> tuple[LLMClient, ImageClient, TTSClient, MusicClient]:
     llm_base, llm_key = s.llm_endpoint
     img_base, img_key = s.image_endpoint
     tts_base, tts_key = s.tts_endpoint
+    music_base, music_key = s.music_endpoint
     if s.llm_provider == "ollama":
         from shanhai.providers.llm_ollama import OllamaLLMClient
         llm = OllamaLLMClient(llm_base, llm_key, s.llm_model, timeout=s.llm_timeout)
@@ -43,12 +45,13 @@ def _clients(s: Settings) -> tuple[LLMClient, ImageClient, TTSClient]:
         llm = LLMClient(llm_base, llm_key, s.llm_model, timeout=s.llm_timeout)
     return (llm,
             ImageClient(img_base, img_key, s.image_model, s.image_api_mode),
-            TTSClient(tts_base, tts_key, s.tts_model))
+            TTSClient(tts_base, tts_key, s.tts_model),
+            MusicClient(music_base, music_key, s.music_model))
 
 
 def resolve_stage_clients(
     cfg: AppConfig | None = None,
-) -> tuple[dict[str, Settings], dict[str, tuple[LLMClient, ImageClient, TTSClient]]]:
+) -> tuple[dict[str, Settings], dict[str, tuple[LLMClient, ImageClient, TTSClient, MusicClient]]]:
     """为每个用到 client 的环节(STAGE_CLIENTS 键,S0–S5)解析生效 Settings 与 (llm,image,tts)。
     api._pipeline 与 cli.run 共用,避免两处硬编码环节列表与解析样板(环节列表以 STAGE_CLIENTS 为单一真源)。"""
     settings = {st: resolve_settings(st, cfg) for st in STAGE_CLIENTS}
@@ -79,7 +82,7 @@ _STORY_FILE = typer.Option(None, exists=True, dir_okay=False, readable=True)
 def new(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str = "温情",
         style: str = "guofeng_ink", story_file: Path | None = _STORY_FILE):
     _validate_params(minutes, audience, tone, style)
-    llm, _, _ = _clients(resolve_settings("s0"))
+    llm, _, _, _ = _clients(resolve_settings("s0"))
     story = _read_story(story_file)
     p = store.create_project(scenic_spot)
     _apply_params(p, minutes, audience, tone, style)
@@ -109,7 +112,7 @@ def pick(project_id: str, index: int):
 @app.command()
 def step(project_id: str, name: str):
     s = resolve_settings(name)
-    llm, image, tts = _clients(s)
+    llm, image, tts, music = _clients(s)
     p = store.load(project_id)
     workdir = store.project_dir(project_id)
     t0 = time.time()
@@ -122,7 +125,7 @@ def step(project_id: str, name: str):
     elif name == "s4":
         p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency)
     elif name == "s5":
-        p = s5_audio.run(p, tts, s.tts_voice, workdir)
+        p = s5_audio.run(p, tts, s.tts_voice, workdir, music)
     elif name == "s6":
         p = s6_compose.run(p, workdir)
     else:
@@ -158,7 +161,8 @@ def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str 
                                                settings["s3"].image_size)),
               ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
                                           strict=settings["s4"].strict_consistency)),
-              ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir)),
+              ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir,
+                                         clients["s5"][3])),
               ("s6", lambda: s6_compose.run(p, workdir))]
     for name, fn in stages:
         t0 = time.time()
