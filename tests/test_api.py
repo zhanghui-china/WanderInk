@@ -1,12 +1,13 @@
 import os
 import subprocess
 import sys
+import threading
 from concurrent.futures import Future
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from shanhai import api
+from shanhai import api, store
 from shanhai.schema import CharacterCard, Legend, Project, Script, StoryboardCell
 
 client = TestClient(api.app)
@@ -202,6 +203,87 @@ def test_create_rejects_when_queue_full():
         api._JOBS.update(saved)
 
 
+@patch("shanhai.api.Settings")             # 不读 .env / 建真实客户端
+@patch("shanhai.api.store.save")
+@patch("shanhai.api.store.create_project")
+def test_concurrent_create_cleanup_consistent(mock_create, _save, _settings):
+    # A6 回归:旧代码在 create_project 里裸迭代 _JOBS 做「清理已完成句柄」,两线程各自
+    # 拿到重叠快照后 del 同一键 → 第二个 KeyError → 500。加 _JOBS_LOCK 后清理+背压+提交
+    # 原子化,并发建项目既不 500 也不破坏 _JOBS。submit 打桩为即完成 Future,只测锁逻辑、
+    # 不给共享单 worker _EXECUTOR 留后台任务(否则污染后续 run_step 用例)。
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    for i in range(5):  # 预置已完成句柄,供并发 create 竞相清理
+        fut = Future(); fut.set_result(None)
+        api._JOBS[f"done{i}"] = fut
+    mock_create.side_effect = lambda spot: Project(project_id=os.urandom(4).hex(),
+                                                   scenic_spot=spot)
+    errors: list = []
+
+    def _fake_submit(*_a, **_k) -> Future:
+        fut = Future(); fut.set_result(None)
+        return fut
+
+    def _go() -> None:
+        try:
+            api.create_project(api.NewProject(scenic_spot="峨眉山", minutes=1))
+        except api.HTTPException as e:
+            if e.status_code != 429:            # 背压 429 是合法结果
+                errors.append(e.status_code)
+        except Exception as e:                  # noqa: BLE001 — KeyError 等即旧 bug
+            errors.append(repr(e))
+
+    try:
+        with patch.object(api._EXECUTOR, "submit", side_effect=_fake_submit):
+            threads = [threading.Thread(target=_go) for _ in range(24)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        assert not errors                       # 无 500 / 无 KeyError
+        assert not any(k.startswith("done") for k in api._JOBS)  # 已完成句柄被清理干净
+    finally:
+        for f in api._JOBS.values():
+            if not f.done():
+                f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
+def test_reconcile_zombie_jobs(tmp_path):
+    # A5:重启后 _JOBS 为空,磁盘上 running/queued 都是永远推不动的僵尸 → 改写为 error。
+    running = store.create_project("running项目", root=tmp_path)
+    running.status["pipeline"] = "running"
+    store.save(running, root=tmp_path)
+    queued = store.create_project("queued项目", root=tmp_path)
+    queued.status["pipeline"] = "queued"
+    store.save(queued, root=tmp_path)
+    done = store.create_project("done项目", root=tmp_path)
+    done.status["pipeline"] = "done"
+    store.save(done, root=tmp_path)
+
+    n = api.reconcile_zombie_jobs(tmp_path)
+    assert n == 2                                # running + queued 各一条
+    assert store.load(running.project_id, root=tmp_path).status["pipeline"].startswith("error")
+    assert store.load(queued.project_id, root=tmp_path).status["pipeline"].startswith("error")
+    assert store.load(done.project_id, root=tmp_path).status["pipeline"] == "done"  # 非僵尸不动
+
+
+def test_export_rejects_when_job_pending():
+    # A3:项目有未完成生成作业时导出返回 409,避免读半成品/回滚管线进度。
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f = Future()
+    api._JOBS["expbusy"] = f
+    try:
+        r = client.post("/api/projects/expbusy/export")
+        assert r.status_code == 409
+    finally:
+        f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
 # ---------- 编辑端点 ----------
 
 def test_patch_cell_clears_audio_on_caption_change():
@@ -261,6 +343,21 @@ def test_run_step_rejects_unknown_name():
     assert r.status_code == 400
 
 
+def test_run_step_rejects_when_job_pending():
+    # A4:同项目已有未完成作业时 run_step 拒绝重复提交(_editable 与锁内复检双重保障)。
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f = Future()
+    api._JOBS["runbusy"] = f
+    try:
+        r = client.post("/api/projects/runbusy/steps/s6")
+        assert r.status_code == 409
+    finally:
+        f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
 @patch("shanhai.api._run_step")           # 不真跑单步
 @patch("shanhai.api.Settings")            # 不读 .env / 建真实客户端
 def test_run_step_queues_job(_settings, mock_run_step):
@@ -286,3 +383,22 @@ def test_run_step_marks_queued_before_submit(_settings, _run):
     assert p.status["pipeline"] == "queued"
     mock_save.assert_called()               # queued 已落盘
     api._JOBS["qid"].result(timeout=2)
+
+
+@patch("shanhai.api._run_step")
+@patch("shanhai.api.Settings")
+def test_run_step_persists_fresh_reload_not_stale_snapshot(_settings, _run):
+    # finding-1 回归:run_step 写 queued 必须在 per-project 锁内重新 store.load 最新快照,
+    # 而非复用 _editable 锁外拿到的陈旧 p —— 否则会覆盖此间发生的并发编辑(丢更新)。
+    stale = Project(project_id="freshid", scenic_spot="旧")   # _editable 锁外拿到的陈旧快照
+    fresh = Project(project_id="freshid", scenic_spot="新")   # 锁内重载应拿到的最新快照
+    loads = [stale, fresh]                                    # 第 1 次 _editable、第 2 次锁内重载
+    saved = {}
+    with patch("shanhai.api.store.load", side_effect=lambda *a, **k: loads.pop(0)), \
+         patch("shanhai.api.store.save", side_effect=lambda p, **k: saved.update(obj=p)):
+        r = client.post("/api/projects/freshid/steps/s6")
+    assert r.status_code == 202
+    assert saved["obj"] is fresh             # 落盘的是锁内重载的 fresh,不是陈旧的 stale
+    assert fresh.status["pipeline"] == "queued"
+    assert stale.status.get("pipeline") != "queued"   # 陈旧快照没被当作落盘对象
+    api._JOBS["freshid"].result(timeout=2)
