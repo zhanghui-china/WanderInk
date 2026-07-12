@@ -1,4 +1,6 @@
 import type {
+  AppConfigInput,
+  AppConfigView,
   CellPatch,
   InsertCellFields,
   Meta,
@@ -80,4 +82,13 @@ export const api = {
     fetch(`/api/projects/${id}/steps/${name}`, { method: 'POST' }).then((r) =>
       j<{ queued: boolean }>(r)
     ),
+
+  getConfig: () => fetch('/api/config').then((r) => j<AppConfigView>(r)),
+
+  saveConfig: (body: AppConfigInput) =>
+    fetch('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => j<AppConfigView>(r)),
 }
