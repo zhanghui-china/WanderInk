@@ -5,9 +5,10 @@ import threading
 from concurrent.futures import Future
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
-from shanhai import api, store
+from shanhai import api, runtime_config, store
 from shanhai.schema import CharacterCard, Legend, Project, Script, StoryboardCell
 
 client = TestClient(api.app)
@@ -467,3 +468,160 @@ def test_patch_cell_rejects_oversized_fields():
                         json={"visual_desc": "x" * 2001}).status_code == 422   # visual_desc > 2000
     assert client.patch("/api/projects/anyid/cells/1",
                         json={"characters": ["c"] * 51}).status_code == 400     # characters > 50
+
+
+# ---------- 端点/模型配置(全局默认 + 按环节覆盖) ----------
+
+@pytest.fixture
+def _isolated_config_path(tmp_path, monkeypatch):
+    """把 runtime_config.CONFIG_PATH 指到 tmp_path,隔离测试对真实 config.json 的读写。"""
+    monkeypatch.setattr(runtime_config, "CONFIG_PATH", tmp_path / "config.json")
+
+
+def test_get_config_never_leaks_plaintext_api_key(_isolated_config_path):
+    real_key = os.environ.get("SHANHAI_API_KEY", "")
+    r = client.get("/api/config")
+    assert r.status_code == 200
+    assert real_key and real_key not in r.text          # 明文密钥绝不出现在响应体中
+    assert r.json()["defaults"]["api_key"] is True       # .env 已配置 → defaults 回 true(非明文)
+
+
+def test_get_config_masks_configured_secret(_isolated_config_path):
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        global_=runtime_config.ConfigOverride(llm_api_key="sk-secret-value"),
+    ))
+    r = client.get("/api/config")
+    assert "sk-secret-value" not in r.text
+    assert r.json()["global"]["llm_api_key"] == runtime_config.MASK   # 已配置密钥呈掩码
+
+
+def test_put_config_blocked_in_readonly(monkeypatch, _isolated_config_path):
+    monkeypatch.setattr(api, "_READONLY", True)
+    r = client.put("/api/config", json={"global": {}, "stages": {}})
+    assert r.status_code == 403
+
+
+def test_put_config_rejects_illegal_llm_provider(_isolated_config_path):
+    r = client.put("/api/config", json={"global": {"llm_provider": "bogus"}, "stages": {}})
+    assert r.status_code == 422
+
+
+def test_put_config_rejects_unknown_stage(_isolated_config_path):
+    r = client.put("/api/config", json={"global": {}, "stages": {"s9": {}}})
+    assert r.status_code == 400
+
+
+def test_put_config_sentinel_semantics(_isolated_config_path):
+    # 新值:更新
+    r1 = client.put("/api/config", json={"global": {"llm_api_key": "sk-first"}, "stages": {}})
+    assert r1.status_code == 200
+    assert r1.json()["global"]["llm_api_key"] == runtime_config.MASK
+
+    # 哨兵 __UNCHANGED__:保持已存值不变(顺带更新非密钥字段)
+    r2 = client.put("/api/config", json={
+        "global": {"llm_api_key": runtime_config.SENTINEL, "llm_model": "m2"}, "stages": {},
+    })
+    assert r2.status_code == 200
+    assert r2.json()["global"]["llm_api_key"] == runtime_config.MASK   # 仍已配置
+    assert r2.json()["global"]["llm_model"] == "m2"
+    assert runtime_config.load_overrides().global_.llm_api_key == "sk-first"   # 底层值未变
+
+    # 空字符串:清除继承
+    r3 = client.put("/api/config", json={"global": {"llm_api_key": ""}, "stages": {}})
+    assert r3.status_code == 200
+    assert r3.json()["global"]["llm_api_key"] is None
+    assert runtime_config.load_overrides().global_.llm_api_key is None
+
+    # 再次给新值:更新
+    r4 = client.put("/api/config", json={"global": {"llm_api_key": "sk-second"}, "stages": {}})
+    assert r4.status_code == 200
+    assert runtime_config.load_overrides().global_.llm_api_key == "sk-second"
+
+
+def test_get_config_readable_in_readonly(monkeypatch, _isolated_config_path):
+    """只读模式仍可读配置(仅 PUT 被 403),readonly 标志置真。"""
+    monkeypatch.setattr(api, "_READONLY", True)
+    r = client.get("/api/config")
+    assert r.status_code == 200
+    assert r.json()["readonly"] is True
+
+
+def test_put_config_rejects_extra_field(_isolated_config_path):
+    """越权/多余字段(如 readonly)被 extra=forbid 拒绝。"""
+    r = client.put("/api/config", json={"global": {"readonly": True}, "stages": {}})
+    assert r.status_code == 422
+
+
+def test_get_config_masks_stage_secret(_isolated_config_path):
+    """环节层密钥同样脱敏(不只 global)。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        stages={"s5": runtime_config.ConfigOverride(tts_api_key="sk-tts")}))
+    r = client.get("/api/config")
+    assert "sk-tts" not in r.text
+    assert r.json()["stages"]["s5"]["tts_api_key"] == runtime_config.MASK
+
+
+def test_put_preserves_unsent_global_fields(_isolated_config_path):
+    """只发一个 global 字段,其余(尤其前端不渲染的 base_url/api_key)保留,不被静默抹掉。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(global_=runtime_config.ConfigOverride(
+        base_url="https://root", api_key="sk-root", llm_model="m1")))
+    r = client.put("/api/config", json={"global": {"llm_model": "m2"}, "stages": {}})
+    assert r.status_code == 200
+    stored = runtime_config.load_overrides().global_
+    assert stored.llm_model == "m2"
+    assert stored.base_url == "https://root"   # 未随请求发送 → 保留(不被抹掉)
+    assert stored.api_key == "sk-root"
+
+
+def test_put_preserves_unsent_stages(_isolated_config_path):
+    """部分 PUT 只带 s2,不误删其它已存环节(s5)。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(stages={
+        "s2": runtime_config.ConfigOverride(llm_model="a"),
+        "s5": runtime_config.ConfigOverride(tts_model="b")}))
+    r = client.put("/api/config", json={"global": {}, "stages": {"s2": {"llm_model": "a2"}}})
+    assert r.status_code == 200
+    stages = runtime_config.load_overrides().stages
+    assert stages["s2"].llm_model == "a2"
+    assert stages["s5"].tts_model == "b"       # 未在 PUT 出现 → 保留
+
+
+def test_put_empty_stage_is_pruned(_isolated_config_path):
+    """清空某环节的全部字段 → 该环节覆盖被删除。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(stages={
+        "s2": runtime_config.ConfigOverride(llm_model="a")}))
+    r = client.put("/api/config", json={"global": {}, "stages": {"s2": {"llm_model": ""}}})
+    assert r.status_code == 200
+    assert "s2" not in runtime_config.load_overrides().stages
+
+
+def test_put_mask_echo_keeps_existing_secret(_isolated_config_path):
+    """客户端把 GET 的掩码原样回填,不应被当成新密钥写入。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        global_=runtime_config.ConfigOverride(llm_api_key="sk-real")))
+    r = client.put("/api/config", json={"global": {"llm_api_key": runtime_config.MASK}, "stages": {}})
+    assert r.status_code == 200
+    assert runtime_config.load_overrides().global_.llm_api_key == "sk-real"
+
+
+def test_files_blocks_runtime_config_basename(monkeypatch):
+    """/files 静态托管按运行时 CONFIG_PATH.name 动态拦截配置文件:文件存在但仍 404 且不泄露内容。"""
+    monkeypatch.setattr(runtime_config, "CONFIG_PATH", store.DEFAULT_ROOT / "secrets.json")
+    served = store.DEFAULT_ROOT / "secrets.json"
+    served.parent.mkdir(exist_ok=True)
+    served.write_text("PLAINTEXT_KEY", encoding="utf-8")
+    try:
+        r = client.get("/files/secrets.json")
+        assert r.status_code == 404               # 文件存在但被拦 → 证明是 basename 拦截而非"不存在"
+        assert "PLAINTEXT_KEY" not in r.text
+    finally:
+        served.unlink(missing_ok=True)
+
+
+def test_create_project_validates_settings_before_creating(monkeypatch):
+    """.env 基线无效(Settings 构造失败)时急切失败,不创建孤儿 queued 项目。"""
+    monkeypatch.setattr(api, "Settings", lambda: (_ for _ in ()).throw(RuntimeError("坏 .env")))
+    created: list = []
+    monkeypatch.setattr(store, "create_project", lambda *a, **k: created.append(1))
+    with pytest.raises(RuntimeError):
+        client.post("/api/projects", json={"scenic_spot": "测试景区"})
+    assert created == []   # Settings 校验先于建项目 → 未落盘任何项目
