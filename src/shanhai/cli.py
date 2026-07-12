@@ -12,7 +12,7 @@ from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s6_compose)
 from shanhai.styles import STYLE_PRESETS
 
-app = typer.Typer(help="山海:景区传说有声连环画生成器(CLI 骨架)")
+app = typer.Typer(help="WanderInk:景区传说有声连环画生成器(CLI 骨架)")
 
 _MINUTES = (1, 3, 5)
 _AUDIENCES = ("儿童", "大众")

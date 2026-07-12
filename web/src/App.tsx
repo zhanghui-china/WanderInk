@@ -73,11 +73,11 @@ export default function App() {
         <div className="mx-auto flex h-[66px] max-w-6xl items-center justify-between px-6">
           <div className="flex items-center gap-3.5">
             <div className="flex h-11 w-11 items-center justify-center rounded-[10px] bg-gradient-to-br from-cinnabar to-cinnabar-deep shadow-[0_3px_10px_rgba(138,43,34,0.28)]">
-              <span className="font-brush text-3xl leading-none text-rice">山</span>
+              <span className="font-brush text-3xl leading-none text-rice">W</span>
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="font-serif text-xl font-bold leading-none tracking-[2px] text-ink">
-                山海
+                WanderInk
               </span>
               <span className="text-[11px] leading-none tracking-[3px] text-muted">
                 景区传说 · 有声连环画

@@ -24,7 +24,7 @@ from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s6_compose)
 from shanhai.styles import STYLE_PRESETS
 
-app = FastAPI(title="山海 · 有声连环画生成器")
+app = FastAPI(title="WanderInk · 有声连环画生成器")
 
 # CORS 来源可经 SHANHAI_CORS_ORIGINS(逗号分隔)收敛;默认 * 便于本地 dev。
 # 此处直接读环境变量而非构造 Settings():middleware 在 import 期注册,

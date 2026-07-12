@@ -1,6 +1,6 @@
-# shanhai web
+# WanderInk web
 
-山海有声连环画生成器的 web 前端(React + Vite + Tailwind),后端为 `src/shanhai/api.py`(FastAPI)。
+WanderInk 有声连环画生成器的 web 前端(React + Vite + Tailwind),后端为 `src/shanhai/api.py`(FastAPI)。
 
 ## 本地开发
 
