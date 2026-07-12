@@ -13,8 +13,10 @@ from shanhai.schema import Project
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[3] / "assets" / "bgm" / "manifest.json"
 CHARS_PER_SEC = 4.0       # 解说语速估算(与 PRD S1 字数-时长模型同量级)
 MIN_MS = 2500             # 单页最短显示时长
-MIN_MS_PER_CHAR = 380     # 完整解说约 420+ms/字;低于字数×380ms 几乎必是 TTS 截断
-TTS_TRIES = 3             # 小模型 TTS 偶发截断/空返回,重合成取最长的一次
+# DGX 实测 CosyVoice2 连读约 240–270ms/字(见 docs/deploy-dgx.md P1 实证):旧值 380 高于真实语速,
+# 会把正常语音误判为截断而空转 TTS_TRIES;下调到 150 只兜住真正的严重截断(<150ms/字)。
+MIN_MS_PER_CHAR = 150     # 低于字数×150ms 才判疑似截断(既做整段截断兜底,也做分句重试阈值)
+TTS_TRIES = 3             # 弱模型 TTS 偶发截断/空返回,分句退化路径里重合成取最长的一次
 CLAUSE_DELIMS = "。！？；，、：!?;,:\n"  # 全角+半角句/读点;短输入避开小模型的确定性提前停止
 MIN_CLAUSE_CHARS = 3      # 短于此的碎片并入相邻句,避免逐字合成发碎
 S5_CONCURRENCY = 3        # 逐页配音并发上限,与 S4 同量级(代理过载/本地 TTS 排队保守取值)
@@ -75,7 +77,35 @@ def _synthesize_clause(tts: TTSClient, text: str, voice: str, dest: Path,
 
 def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path,
                      speed: float = 1.0) -> int:
-    """按标点分句、逐句合成(避开确定性截断)、逐句修剪首尾静音、拼接为整页音轨。
+    """整段单发优先:CosyVoice2 类稳定模型一次合成整句最自然、且不截断(DGX 实测,见
+    docs/deploy-dgx.md P1),省去逐句的多次调用与句间硬拼。仅当单发结果疑似截断
+    (时长 < 字数×MIN_MS_PER_CHAR)才退化到逐句合成,兼容会确定性截断的弱模型。
+    返回真实时长 ms;失败向上抛。"""
+    if not caption.strip():
+        raise ValueError("空文案,无法合成")
+    ms = _synthesize_single(tts, caption, voice, out, speed=speed)
+    floor = len(caption) * MIN_MS_PER_CHAR
+    if ms >= floor:
+        return ms
+    print(f"⚠️ 整段合成疑似截断({ms}ms<{floor}ms),退化逐句合成")
+    return _synthesize_chunked(tts, caption, voice, out, speed=speed)
+
+
+def _synthesize_single(tts: TTSClient, caption: str, voice: str, out: Path,
+                       speed: float = 1.0) -> int:
+    """整段一次性合成 + 修剪首尾静音。返回时长 ms。"""
+    raw = out.with_suffix(".raw.mp3")
+    try:
+        tts.synthesize(caption, voice, raw, speed=speed)
+        ffmpeg.sh(ffmpeg.trim_silence_cmd(raw, out))
+        return probe_duration_ms(out)
+    finally:
+        raw.unlink(missing_ok=True)
+
+
+def _synthesize_chunked(tts: TTSClient, caption: str, voice: str, out: Path,
+                        speed: float = 1.0) -> int:
+    """退化路径:按标点分句、逐句合成(避开弱模型的确定性截断)、逐句修剪首尾静音、拼接为整页音轨。
     返回真实总时长 ms;失败向上抛。"""
     clauses = _split_clauses(caption)
     if not clauses:

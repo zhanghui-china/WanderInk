@@ -101,3 +101,11 @@ R1 已验证 DGX(GX10/GB10,119G 统一内存,Ubuntu 24.04 aarch64,团队共用)�
 - 服务:`systemctl --user {status,restart} shanhai-web`;日志 `journalctl --user -u shanhai-web -f`
 - 隧道模板:`ssh -p 14801 -L 8080:127.0.0.1:8080 huntun@21.tcp.vip.cpolar.cn`
 - 回传作品到 Mac(展示):`rsync -a huntun@…:~/shanhai/projects/ ~/Work/shanhai/projects/`
+
+## P1 实证:CosyVoice2 单发 vs 分句(2026-07-12)
+在 DGX 直连 CosyVoice2 shim(:8090)对短/中/长/超长文案做对照,判断旧「分句 + 三试取最长 + MIN_MS_PER_CHAR 截断检测」启发式是否仍必要(这套是为旧云端弱模型的确定性截断而设):
+- **不截断**:67 字长句单发 3 次时长稳定(~16s),whisper ASR 转写完整覆盖首尾(含末句「流传千年的旧事」)——无确定性截断,与旧弱模型不同。
+- **旧 floor 误判**:CosyVoice2 连读约 240–270ms/字,而旧 `MIN_MS_PER_CHAR=380` 高于真实语速 → 每句都被误判截断、空转 `TTS_TRIES=3`(即审计 PERF3)。
+- **分句更糟**:长句分句合成 19.3s vs 单发 16s,句间硬拼更长更碎;分句的唯一收益(防截断)对 CosyVoice2 已消失,只剩 N× 调用成本。
+
+**结论/改动**:`s5_audio._synthesize_full` 改为**整段单发优先**(1 次调用、自然),仅当单发疑似截断(时长 < 字数×`MIN_MS_PER_CHAR`)才**自动退化**到旧的分句路径(兼容会截断的弱模型,如 Mac Qwen3);`MIN_MS_PER_CHAR` 380→150(只兜真正的严重截断)。跨后端安全、无需新配置。
