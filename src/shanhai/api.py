@@ -17,9 +17,13 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from shanhai import editing, export, store
-from shanhai.cli import _AUDIENCES, _MINUTES, _TONES, _clients
+from shanhai import editing, export, runtime_config, store
+from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _clients,
+                         resolve_stage_clients)
 from shanhai.config import Settings, load_env
+from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig, apply_put,
+                                     config_view, load_overrides,
+                                     resolve_settings, update_overrides)
 from shanhai.schema import Project
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s6_compose)
@@ -101,18 +105,19 @@ def _deliverable_status(p: Project) -> str:
     return "done"
 
 
-def _pipeline(project_id: str, s: Settings, story: str | None) -> None:
+def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
     """在后台线程里从 S0 一路跑到 MP4,每步落盘,pipeline 状态写入 project.status。"""
     p = store.load(project_id)
     workdir = store.project_dir(project_id)
-    llm, image, tts = _clients(s)
+    # 逐环节解析生效 Settings 与 client(同一 cfg 快照,作业内配置一致;不同环节可用不同端点/模型)。
+    settings, clients = resolve_stage_clients(cfg)
     try:
         p.status["pipeline"] = "running"
         _locked_save(p)
         if story is not None:
-            p = s0_legend.from_text(p, llm, story)
+            p = s0_legend.from_text(p, clients["s0"][0], story)
         else:
-            p = s0_legend.run(p, llm)
+            p = s0_legend.run(p, clients["s0"][0])
             if not p.legend_candidates:
                 p.status["pipeline"] = "error: 未检索到可靠传说,请提供自备故事"
                 _locked_save(p)
@@ -120,12 +125,13 @@ def _pipeline(project_id: str, s: Settings, story: str | None) -> None:
             p.legend = p.legend_candidates[0]
         _locked_save(p)
         stages = [
-            ("s1", lambda: s1_script.run(p, llm)),
-            ("s2", lambda: s2_storyboard.run(p, llm)),
-            ("s3", lambda: s3_characters.run(p, llm, image, workdir, s.image_size)),
-            ("s4", lambda: s4_pages.run(p, image, workdir, s.image_size,
-                                        strict=s.strict_consistency)),
-            ("s5", lambda: s5_audio.run(p, tts, s.tts_voice, workdir)),
+            ("s1", lambda: s1_script.run(p, clients["s1"][0])),
+            ("s2", lambda: s2_storyboard.run(p, clients["s2"][0])),
+            ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
+                                             settings["s3"].image_size)),
+            ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
+                                        strict=settings["s4"].strict_consistency)),
+            ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir)),
             ("s6", lambda: s6_compose.run(p, workdir)),
         ]
         for _name, fn in stages:
@@ -232,6 +238,8 @@ def create_project(body: NewProject) -> dict:
     if _READONLY:
         raise HTTPException(403, "公开演示为只读,生成请在本机或 tailnet 内进行")
     _validate(body)
+    Settings()  # 急切校验 .env 必填项(base_url/api_key):坏环境立刻失败,不建孤儿 queued 项目
+    cfg = load_overrides()  # 配置快照,挪到临界区之前(_JOBS_LOCK 内不做磁盘 I/O);作业内配置一致
     # 清理→背压→建项目→提交 整段在 _JOBS_LOCK 内,保证 check-cleanup-submit 原子:
     # 清理用 items() 快照后再 del,避免并发迭代改写;背压判定与写回 _JOBS 不被抢跑。
     # 背压先于建项目,故 429 时不留下孤儿 queued 项目(与原语义一致)。
@@ -240,7 +248,6 @@ def create_project(body: NewProject) -> dict:
             del _JOBS[done]
         if len(_JOBS) >= MAX_PENDING:
             raise HTTPException(429, f"生成队列已满(上限 {MAX_PENDING}),请稍后再试")
-        s = Settings()
         p = store.create_project(body.scenic_spot)
         p.params.duration_min = body.minutes
         p.params.audience = body.audience
@@ -250,7 +257,7 @@ def create_project(body: NewProject) -> dict:
         p.style_preset = body.style
         p.status["pipeline"] = "queued"
         store.save(p)
-        _JOBS[p.project_id] = _EXECUTOR.submit(_pipeline, p.project_id, s, body.story)
+        _JOBS[p.project_id] = _EXECUTOR.submit(_pipeline, p.project_id, cfg, body.story)
     return {"project_id": p.project_id}
 
 
@@ -419,11 +426,12 @@ def redraw_character(project_id: str, name: str) -> dict:
 _STEP_NAMES = ("s2", "s3", "s4", "s5", "s6")
 
 
-def _run_step(project_id: str, name: str, s: Settings) -> None:
+def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
     """后台线程跑单步,复用 _pipeline 的状态写入 + 异常兜底语义(不复用其整段管线循环,
     因为这里只跑调用方指定的一步)。"""
     p = store.load(project_id)
     workdir = store.project_dir(project_id)
+    s = resolve_settings(name, cfg)  # 该环节生效 Settings + client
     llm, image, tts = _clients(s)
     try:
         p.status["pipeline"] = "running"
@@ -454,7 +462,8 @@ def run_step(project_id: str, name: str) -> JSONResponse:
     if name not in _STEP_NAMES:
         raise HTTPException(400, f"未知步骤: {name}")
     _editable(project_id)  # 403/409/404 快速前置校验(返回丢弃,下面锁内重载最新快照)
-    s = Settings()         # 锁外读环境;失败则不会留下孤儿 queued
+    Settings()  # 急切校验 .env 必填项:坏环境立刻失败,不留孤儿 queued
+    cfg = load_overrides()  # 锁外读配置快照
     # 锁序恒为 project→jobs:先占 project 锁(与编辑端点同序,queued 落盘不覆盖并发编辑),
     # 内层 _JOBS_LOCK 保证 清理→复检→背压→提交 原子。两锁始终同序嵌套,无死锁。
     with _project_lock(project_id):
@@ -472,7 +481,7 @@ def run_step(project_id: str, name: str) -> JSONResponse:
             p = store.load(project_id)
             p.status["pipeline"] = "queued"
             store.save(p)
-            _JOBS[project_id] = _EXECUTOR.submit(_run_step, project_id, name, s)
+            _JOBS[project_id] = _EXECUTOR.submit(_run_step, project_id, name, cfg)
     return JSONResponse({"queued": True}, status_code=202)
 
 
@@ -482,18 +491,44 @@ def meta() -> dict:
     return {
         "minutes": list(_MINUTES), "audiences": list(_AUDIENCES),
         "tones": list(_TONES), "styles": list(STYLE_PRESETS),
-        "voices": Settings().tts_voices_list,
+        "voices": resolve_settings().tts_voices_list,
         "readonly": _READONLY,
     }
 
 
+# ---------- 端点/模型配置(全局默认 + 按环节覆盖) ----------
+# 合并/脱敏/视图契约集中在 runtime_config(与模型同处、CLI 亦可复用);此处仅 HTTP 薄封装。
+
+@app.get("/api/config")
+def read_config() -> dict:
+    return config_view(_READONLY)
+
+
+@app.put("/api/config")
+def write_config(body: AppConfig) -> dict:
+    """写入端点/模型覆盖。校验(Literal/extra=forbid)由 AppConfig 解析完成:非法 provider/越权字段→422;
+    只读→403;未知 stage→400。读-合并-写在 update_overrides 写锁内原子完成(避免并发 PUT 丢更新),
+    合并语义(部分更新/密钥哨兵/环节保留与剪枝)见 runtime_config.apply_put。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止修改配置")
+    unknown = [st for st in body.stages if st not in STAGE_CLIENTS]
+    if unknown:
+        raise HTTPException(400, f"未知环节: {unknown}(合法环节 {list(STAGE_CLIENTS)})")
+    update_overrides(lambda existing: apply_put(existing, body))
+    return config_view(_READONLY)
+
+
 class _ArtifactStatic(StaticFiles):
     """产物静态托管,但禁下载任何 project.json(含用户 story、legend sources、角色 feature_prompt
-    等内部态)。在 StaticFiles 已把 URL 规范化(折叠 ../ 双斜杠尾斜杠)成 path 之后按 basename 拦截,
-    故尾随斜杠/双斜杠/x/../project.json/大小写/HEAD 等在具体路由层可绕过的变体在此统一 404。"""
+    等内部态)与运行时配置文件(含明文密钥)。在 StaticFiles 已把 URL 规范化(折叠 ../ 双斜杠尾斜杠)成
+    path 之后按 basename 拦截,故尾随斜杠/双斜杠/x/../project.json/大小写/HEAD 等在具体路由层可绕过的
+    变体在此统一 404。受保护的配置文件名取运行时实际值 runtime_config.CONFIG_PATH(随 SHANHAI_CONFIG_PATH
+    变化、可被测试 monkeypatch),而非 import 期冻结的常量。config.json 默认在 cwd 根、本不在挂载目录内,
+    此拦截是运维误把它指进 projects/ 时的防御纵深(真正的护栏仍是把 CONFIG_PATH 留在被托管目录之外)。"""
 
     async def get_response(self, path: str, scope):  # noqa: ANN001 — 与父类签名一致
-        if Path(path).name.lower() == "project.json":
+        protected = {"project.json", runtime_config.CONFIG_PATH.name.lower()}
+        if Path(path).name.lower() in protected:
             raise HTTPException(404)
         return await super().get_response(path, scope)
 

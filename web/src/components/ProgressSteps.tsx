@@ -1,14 +1,5 @@
+import { STAGES } from '../stages'
 import type { ProjectDetail } from '../types'
-
-const STEPS: { key: string; label: string; sub: string }[] = [
-  { key: 's0', label: '传说', sub: 'LEGEND' },
-  { key: 's1', label: '剧本', sub: 'SCRIPT' },
-  { key: 's2', label: '分镜', sub: 'BOARD' },
-  { key: 's3', label: '角色', sub: 'ROLE' },
-  { key: 's4', label: '漫画页', sub: 'PAGES' },
-  { key: 's5', label: '配音', sub: 'VOICE' },
-  { key: 's6', label: '合成', sub: 'FILM' },
-]
 
 type Cell = { dot: string; label: string; sub: string; tag: string }
 
@@ -53,7 +44,7 @@ function cell(status: string | undefined, running: boolean): Cell {
 export function ProgressSteps({ project }: { project: ProjectDetail }) {
   const running = project.pipeline === 'running' || project.pipeline === 'queued'
   // 第一个未完成步骤即“当前步”
-  const currentIdx = STEPS.findIndex((s) => project.status[s.key] !== 'done')
+  const currentIdx = STAGES.findIndex((s) => project.status[s.key] !== 'done')
 
   return (
     <div className="rounded-2xl border border-band bg-paper p-5 shadow-paper">
@@ -72,7 +63,7 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
       </div>
 
       <ol className="flex flex-wrap items-start gap-y-4">
-        {STEPS.map((s, i) => {
+        {STAGES.map((s, i) => {
           const isCurrent = running && i === currentIdx
           const c = cell(project.status[s.key], isCurrent)
           const done = project.status[s.key] === 'done'
@@ -89,7 +80,7 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
                 </span>
                 <span className={`text-[9px] tracking-[2px] ${c.sub}`}>{s.sub}</span>
               </div>
-              {i < STEPS.length - 1 && (
+              {i < STAGES.length - 1 && (
                 <span
                   className={`mx-1 h-px flex-1 ${done ? 'bg-cinnabar' : 'bg-line'}`}
                   style={{ minWidth: 12 }}

@@ -3,6 +3,7 @@ import { api } from './api'
 import { NewProjectForm } from './components/NewProjectForm'
 import { ProjectDetailView } from './components/ProjectDetail'
 import { ProjectList } from './components/ProjectList'
+import { SettingsPanel } from './components/SettingsPanel'
 import type { Meta, ProjectDetail, ProjectSummary } from './types'
 
 const ACTIVE = new Set(['queued', 'running'])
@@ -13,6 +14,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [showSettings, setShowSettings] = useState(false)
 
   const refreshList = useCallback(async () => {
     try {
@@ -84,18 +86,30 @@ export default function App() {
               </span>
             </div>
           </div>
-          <div className="flex items-center gap-2 rounded-full border border-line bg-[rgba(251,246,234,0.7)] px-3.5 py-[7px]">
-            <span
-              className={`h-[7px] w-[7px] rounded-full ${
-                activeCount > 0 ? 'animate-shy-pulse bg-cinnabar' : 'bg-jade'
-              }`}
-            />
-            <span className="text-[13px] text-ink-soft">
-              {activeCount > 0 ? `${activeCount} 部生成中` : `${list.length} 部作品`}
-            </span>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 rounded-full border border-line bg-[rgba(251,246,234,0.7)] px-3.5 py-[7px]">
+              <span
+                className={`h-[7px] w-[7px] rounded-full ${
+                  activeCount > 0 ? 'animate-shy-pulse bg-cinnabar' : 'bg-jade'
+                }`}
+              />
+              <span className="text-[13px] text-ink-soft">
+                {activeCount > 0 ? `${activeCount} 部生成中` : `${list.length} 部作品`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowSettings(true)}
+              aria-label="配置"
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-line bg-paper text-ink-soft transition hover:text-cinnabar"
+            >
+              ⚙
+            </button>
           </div>
         </div>
       </header>
+
+      {showSettings && <SettingsPanel meta={meta} onClose={() => setShowSettings(false)} />}
 
       <div className="mx-auto max-w-6xl px-6 py-8">
         <div className="grid grid-cols-1 gap-7 lg:grid-cols-[21rem_1fr]">

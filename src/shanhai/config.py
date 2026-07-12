@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     tts_model: str = "gpt-4o-mini-tts"
     tts_voice: str = "alloy"
     tts_voices: str = ""  # 逗号分隔的可选音色列表;空则回退 [tts_voice]
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
     image_base_url: str | None = None
     image_api_key: str | None = None
     tts_base_url: str | None = None
@@ -40,6 +42,10 @@ class Settings(BaseSettings):
     def tts_voices_list(self) -> list[str]:
         voices = [v.strip() for v in self.tts_voices.split(",") if v.strip()]
         return voices or [self.tts_voice]
+
+    @property
+    def llm_endpoint(self) -> tuple[str, str]:
+        return (self.llm_base_url or self.base_url, self.llm_api_key or self.api_key)
 
     @property
     def image_endpoint(self) -> tuple[str, str]:
