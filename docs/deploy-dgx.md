@@ -1,7 +1,24 @@
 # shanhai 部署到 DGX Spark(团队内网 · 可生成 · 本地 LLM + GPU TTS)
 
-> 状态:P0/P1 已上线(2026-07-11);P2(GPU TTS)spike 待开;P3(Ollama 适配器)已开发待部署。
+> 状态:P0/P1/**P2(GPU TTS)均已上线**(2026-07-11/12);P3(Ollama 适配器)已开发待部署。DGX 现为"本地 LLM+云图像+本地 GPU TTS+本地合成"完整闭环。
 > 前置:R1 冒烟见 [decisions/0006](decisions/0006-r1-local-llm-smoke.md)。
+
+## P2 GPU TTS 已上线(2026-07-12)
+
+**结论**:CosyVoice2-0.5B 在 GB10(Blackwell,sm_121)上用 PyTorch nightly cu128 跑通,OpenAI 兼容 shim 接入 shanhai,端到端验证通过(黄鹤楼项目 10 页真人声,107s 成片)。
+
+**硬件坑(记录以防重装踩坑)**:
+- 标准 PyPI torch(cu124 及更早)**不支持 GB10 的 sm_121** —— `torch.cuda.is_available()` 会**假阳性**返回 True,但真跑算子报 `no kernel image is available for execution on the device`。**必须验证真实 GPU 计算(矩阵乘法),不能只信 `is_available()`。**
+- 修复:装 PyTorch **nightly**(`pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128`),含完整 Blackwell 内核,已验证 `torch 2.12.0.dev20260408+cu128` 可用。`torchaudio`/`torchcodec` 需配套装(同索引 nightly 装 torchaudio;torchcodec 标准 PyPI 有 aarch64 轮子)。
+- CosyVoice 官方 `requirements.txt` 锁 `torch==2.3.1` 等旧版本 —— **装依赖时必须排除 torch/torchaudio/numpy 的精确版本锁**(否则会把刚装好的兼容 torch 覆盖掉),`pyworld` 需要 numpy 1.26.4(和 numpy 2.x C API 不兼容),`onnxruntime-gpu==1.18.0` 无 aarch64 轮子(退到不锁版本的 CPU 版 onnxruntime,只影响一个小的说话人特征提取组件,不影响主链路 GPU 加速)。
+
+**部署结构**:
+- 独立 conda 环境 `shanhai-tts`(不碰任何共享环境),CosyVoice 官方仓库 clone 在 `~/CosyVoice`(含 `third_party/Matcha-TTS` 子模块),权重经 ModelScope SDK 下载到 `~/.cache/modelscope/models/iic--CosyVoice2-0.5B`。
+- Shim:`~/CosyVoice/tts_shim.py`(FastAPI,`POST /v1/audio/speech`,模型常驻内存启动时加载一次;`speed` 参数走 ffmpeg atempo 后处理转码为 mp3)。
+- systemd:`shanhai-tts.service`(:8090,同 `shanhai-web.service` 模式:`RequiresMountsFor`+`network-online.target`)。
+- 接入:DGX `.env` 追加 `SHANHAI_TTS_BASE_URL=http://127.0.0.1:8090/v1`、`SHANHAI_TTS_MODEL=cosyvoice2`、`SHANHAI_TTS_VOICE=default`、`SHANHAI_TTS_VOICES=default`。
+- 音色:目前只有 `default`(CosyVoice2 仓库自带零样本参考音频)。**Uncle_Fu 音色克隆待办**——需从 Mac 本地 Qwen3-TTS(localhost:8000,今天检查时未运行)生成一段参考音频传到 DGX,在 `tts_shim.py` 的 `VOICES` 字典里加一条即可,不需要改代码结构。
+- 运维:`systemctl --user {status,restart} shanhai-tts`;日志 `journalctl --user -u shanhai-tts -f`。
 >
 > **2026-07-11 事故记录**:首次端到端冒烟在 S3(角色三视图,4 个中处理 2 个后)报
 > `Server disconnected without sending a response` 并杀死整条 pipeline。根因:
