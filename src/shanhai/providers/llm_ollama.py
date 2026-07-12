@@ -9,7 +9,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from shanhai.providers._http import request_with_retry
-from shanhai.providers.llm import LLMError
+from shanhai.providers.llm import LLMError, _extract_json
 
 
 class OllamaLLMClient:
@@ -48,8 +48,8 @@ class OllamaLLMClient:
         for _ in range(retries + 1):
             try:
                 text = self._chat(system, prompt, temperature=0.3, fmt=fmt, retries=retries)
-                return schema.model_validate_json(text)
-            except (httpx.HTTPError, ValidationError, ValueError,
+                return schema.model_validate_json(_extract_json(text))
+            except (ValidationError, ValueError,
                     TypeError, KeyError, IndexError) as e:
                 last_err = e
                 prompt = f"{user}\n\n上一次输出不合法:{e}\n请修正后重新只输出 JSON。"

@@ -1,3 +1,5 @@
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -6,6 +8,27 @@ import pytest
 from shanhai.schema import Legend, Project, StoryboardCell
 from shanhai.steps import s6_compose
 from shanhai.steps.s6_compose import _credits_lines
+
+
+def _multi_page_project(tmp_path: Path, n: int) -> Project:
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.legend = Legend(title="白蛇传", summary="s", source_type="民间传说", sources=["《警世通言》"])
+    (tmp_path / "pages").mkdir(parents=True); (tmp_path / "audio").mkdir()
+    cells = []
+    for i in range(1, n + 1):
+        (tmp_path / f"pages/page_{i:02d}.png").write_bytes(b"png")
+        (tmp_path / f"audio/page_{i:02d}.mp3").write_bytes(b"mp3")
+        cells.append(StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc="v", characters=[],
+                                    caption=f"第{i}页", emotion="宁静",
+                                    image=f"pages/page_{i:02d}.png",
+                                    audio=f"audio/page_{i:02d}.mp3",
+                                    duration_ms=6800, status="confirmed"))
+    p.storyboard = cells
+    return p
+
+
+def _concat_inputs(cmd: list[str]) -> list[str]:
+    return [cmd[i + 1] for i in range(len(cmd)) if cmd[i] == "-i"]
 
 
 def test_s6_builds_and_records_output(tmp_path: Path):
@@ -105,6 +128,79 @@ def test_s6_refuses_empty_when_no_content_cells(tmp_path: Path):
             s6_compose.run(p, tmp_path)
     assert sh.call_count == 0            # 空片提前拒绝,不浪费任何 ffmpeg 合成
     assert "s6" not in p.status          # 未标记 done
+
+
+def test_s6_parallel_encode_preserves_page_order(tmp_path: Path):
+    # PERF2:并行编码下,完成顺序可能与页序相反,但 clips/durations 必须按索引回填、严格保持页序
+    n = 5
+    p = _multi_page_project(tmp_path, n)
+
+    def _sh(cmd):
+        # 第 1 页人为拖慢,制造"后提交先完成"的乱序,验证结果仍按页序回填而非 as_completed 完成序
+        if "clips/01.mp4" in " ".join(cmd):
+            time.sleep(0.05)
+
+    with patch("shanhai.steps.s6_compose.ffmpeg.sh", side_effect=_sh) as sh, \
+         patch("shanhai.steps.s6_compose.typeset.title_card"), \
+         patch("shanhai.steps.s6_compose.typeset.credits_card"), \
+         patch("shanhai.steps.s6_compose.typeset.overlay_layer") as ov:
+        s6_compose.run(p, tmp_path)
+
+    assert ov.call_count == n                       # 每页各生成一次 overlay
+    page_calls = [c.args[0] for c in sh.call_args_list if "zoompan" in " ".join(c.args[0])]
+    assert len(page_calls) == n                      # 每页各编码一次
+
+    concat_cmd = next(c.args[0] for c in sh.call_args_list
+                      if "xfade=transition=fade" in " ".join(c.args[0]))
+    names = [Path(i).name for i in _concat_inputs(concat_cmd)]
+    expected = ["00_title.mp4"] + [f"{i:02d}.mp4" for i in range(1, n + 1)] + ["99_credits.mp4"]
+    assert names == expected                          # xfade 拼接顺序与页序严格一致
+
+
+def test_s6_page_clips_encode_concurrently(tmp_path: Path):
+    # PERF2:验证确有并行——多页编码时间窗口重叠,而非逐页串行
+    n = 4
+    p = _multi_page_project(tmp_path, n)
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def _sh(cmd):
+        nonlocal active, max_active
+        if "zoompan" not in " ".join(cmd):            # 仅正文页 clip 编码模拟耗时
+            return
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+
+    with patch("shanhai.steps.s6_compose.ffmpeg.sh", side_effect=_sh), \
+         patch("shanhai.steps.s6_compose.typeset.title_card"), \
+         patch("shanhai.steps.s6_compose.typeset.credits_card"), \
+         patch("shanhai.steps.s6_compose.typeset.overlay_layer"):
+        s6_compose.run(p, tmp_path)
+
+    assert max_active > 1                             # 确有多页同时编码
+    assert max_active <= s6_compose.S6_CONCURRENCY     # 不超并发上限
+
+
+def test_s6_page_encode_exception_propagates(tmp_path: Path):
+    # 某页编码异常须向上抛,与既有语义一致:S6 编码失败即 pipeline error,不静默吞掉
+    p = _multi_page_project(tmp_path, 3)
+
+    def _sh(cmd):
+        if "clips/02.mp4" in " ".join(cmd):
+            raise RuntimeError("ffmpeg 崩了")
+
+    with patch("shanhai.steps.s6_compose.ffmpeg.sh", side_effect=_sh), \
+         patch("shanhai.steps.s6_compose.typeset.title_card"), \
+         patch("shanhai.steps.s6_compose.typeset.credits_card"), \
+         patch("shanhai.steps.s6_compose.typeset.overlay_layer"):
+        with pytest.raises(RuntimeError, match="ffmpeg 崩了"):
+            s6_compose.run(p, tmp_path)
+    assert "s6" not in p.status
 
 
 def test_credits_original_not_labeled_as_legend():

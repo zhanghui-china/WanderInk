@@ -105,6 +105,31 @@ def test_s5_skips_existing_audio(mock_probe, tmp_path: Path):
     tts.synthesize.assert_not_called()               # 已配音且文件在则跳过合成
 
 
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=1200)
+def test_s5_existing_audio_raised_to_min_ms(mock_probe, tmp_path: Path):
+    # M6:续跑复用既有真人音轨也要套 MIN_MS 下限,否则短音轨在成片里一闪而过。
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = _project()
+    (tmp_path / "audio").mkdir(parents=True)
+    (tmp_path / "audio" / "page_01.mp3").write_bytes(b"mp3")
+    p.storyboard[0].audio = "audio/page_01.mp3"
+    s5_audio.run(p, MagicMock(), "alloy", tmp_path, manifest_path=manifest)
+    assert p.storyboard[0].duration_ms == 2500       # 1200 < MIN_MS(2500)→ 抬到下限
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_survives_manifest_track_missing_file(mock_probe, mock_sh, tmp_path: Path):
+    # H4:manifest 是合法 JSON 但 track 缺 file 字段,不该抛 KeyError 拖垮已完成的合成。
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [{"emotions": ["宁静"]}]}), encoding="utf-8")
+    p = s5_audio.run(_project(), _writing_tts(), "alloy", tmp_path, manifest_path=manifest)
+    assert p.bgm == ""                               # 选曲失败降级为无配乐
+    assert p.storyboard[0].audio.endswith("page_01.mp3")   # 配音仍完成
+    assert p.status["s5"] == "done"
+
+
 @patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
 @patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
 def test_s5_resynthesizes_when_file_missing(mock_probe, mock_sh, tmp_path: Path):
@@ -256,3 +281,64 @@ def test_s5_partial_when_fallback_also_fails(mock_probe, mock_sh, tmp_path: Path
     p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
     assert p.storyboard[0].audio == "" and p.storyboard[0].duration_ms == 0
     assert p.status["s5"] == "partial"               # TTS + 兜底均失败 -> partial
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_survives_missing_manifest(mock_probe, mock_sh, tmp_path: Path):
+    # H4:manifest 缺失不抛,合成照常完成,仅跳过配乐(project.bgm 为空)
+    p = _project()
+    tts = _writing_tts()
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=tmp_path / "nope.json")
+    assert p.bgm == ""                                     # 无 manifest → 无配乐
+    assert p.storyboard[0].audio.endswith("page_01.mp3")   # 各页仍有音轨,合成完整
+    assert p.storyboard[0].silent is False
+    assert p.status["s5"] == "done"
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_survives_corrupt_manifest(mock_probe, mock_sh, tmp_path: Path):
+    # H4:manifest 损坏(非法 JSON)不抛,合成照常完成
+    bad = tmp_path / "manifest.json"
+    bad.write_text("{not valid json", encoding="utf-8")
+    p = _project()
+    tts = _writing_tts()
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=bad)
+    assert p.bgm == ""                                     # 损坏 → 跳过配乐
+    assert p.storyboard[0].audio.endswith("page_01.mp3")   # 合成不受影响
+    assert p.status["s5"] == "done"
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=2000)
+def test_s5_raises_short_audio_to_min_ms(mock_probe, mock_sh, tmp_path: Path):
+    # M6:真实合成 2000ms(≥ floor 1900,无重试)但 < MIN_MS(2500)→ 抬到 MIN_MS,避免页面一闪而过
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = _project()                                         # caption="西湖初遇。"(floor=5×380=1900)
+    tts = _writing_tts()
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    assert p.storyboard[0].duration_ms == s5_audio.MIN_MS  # 抬到最短显示时长
+    assert p.storyboard[0].silent is False                 # 仍是真人解说,只是偏短
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_parallel_pages_no_crosstalk(mock_probe, mock_sh, tmp_path: Path):
+    # PERF1:多页并行,各自写各自音轨、各自时长,无串扰;状态诚实为 done
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.storyboard = [
+        StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc="v", characters=[],
+                       caption=f"第{i}页解说词。", emotion="宁静")
+        for i in range(1, 6)
+    ]
+    tts = _writing_tts()
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    for i, c in enumerate(p.storyboard, start=1):
+        assert c.audio.endswith(f"page_{i:02d}.mp3")       # 每页写各自文件,无串扰
+        assert c.duration_ms == 6800                       # 各页时长独立正确
+        assert c.silent is False
+    assert p.status["s5"] == "done"

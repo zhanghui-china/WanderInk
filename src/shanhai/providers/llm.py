@@ -40,7 +40,7 @@ class LLMClient:
             try:
                 text = self.chat(sys_prompt, prompt, temperature=0.3)
                 return schema.model_validate_json(_extract_json(text))
-            except (httpx.HTTPError, ValidationError, ValueError,
+            except (ValidationError, ValueError,
                     TypeError, KeyError, IndexError) as e:
                 last_err = e
                 prompt = f"{user}\n\n上一次输出不合法:{e}\n请修正后重新只输出 JSON。"
@@ -48,10 +48,16 @@ class LLMClient:
 
 
 def _extract_json(text: str) -> str:
+    """从模型输出里抠出第一个 JSON 对象。用 stdlib json.raw_decode 做括号配平——它原生理解
+    字符串字面量与转义,故字段值里出现 { / } 不会误判(手搓深度计数器会,曾致合法对象被丢弃)。"""
     m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
     if m:
-        return m.group(1).strip()
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
+        text = m.group(1).strip()
+    start = text.find("{")
+    if start == -1:
         raise ValueError("响应中没有 JSON 对象")
-    return text[start:end + 1]
+    try:
+        _, end = json.JSONDecoder().raw_decode(text, start)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"响应中没有合法 JSON 对象: {e}") from e
+    return text[start:end]

@@ -2,7 +2,7 @@ import json
 from unittest.mock import patch
 import httpx, respx, pytest
 from pydantic import BaseModel
-from shanhai.providers.llm import LLMClient, LLMError
+from shanhai.providers.llm import LLMClient, LLMError, _extract_json
 
 BASE = "https://p.example.com/v1"
 
@@ -83,3 +83,23 @@ def test_structured_wraps_empty_choices():
         return_value=httpx.Response(200, json={"choices": []}))
     with pytest.raises(LLMError):                     # 空 choices 包成 LLMError 而非 IndexError
         LLMClient(BASE, "sk", "m").structured("sys", "user", Pet, retries=1)
+
+
+@respx.mock
+def test_structured_does_not_retry_400():
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(400, json={"error": {"message": "model not supported"}}))
+    with pytest.raises(httpx.HTTPStatusError):         # 认证/请求错误不可重试,原样向上抛
+        LLMClient(BASE, "sk", "m").structured("sys", "user", Pet)
+    assert route.call_count == 1                       # 不当作"输出不合法"重发
+
+
+def test_extract_json_ignores_trailing_text():
+    text = '{"name": "咪咪", "age": 3} 说明:以上为结果'
+    assert _extract_json(text) == '{"name": "咪咪", "age": 3}'
+
+
+def test_extract_json_handles_braces_inside_strings():
+    # 字段值里含 { / } 不应破坏抽取——raw_decode 原生理解字符串字面量;手搓深度计数器会误判丢弃。
+    text = '{"note": "用 { 表示对象、} 收尾"} 尾随说明'
+    assert _extract_json(text) == '{"note": "用 { 表示对象、} 收尾"}'
