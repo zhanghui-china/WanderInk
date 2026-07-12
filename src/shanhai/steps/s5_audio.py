@@ -7,12 +7,28 @@ from pathlib import Path
 
 from shanhai import ffmpeg
 from shanhai.ffmpeg import probe_duration_ms
+from shanhai.providers.music import MusicClient
 from shanhai.providers.tts import TTSClient
 from shanhai.schema import Project
 
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[3] / "assets" / "bgm" / "manifest.json"
 CHARS_PER_SEC = 4.0       # 解说语速估算(与 PRD S1 字数-时长模型同量级)
 MIN_MS = 2500             # 单页最短显示时长
+
+# 情绪基调 → 器乐风格标签(ACE-Step 的 style 是音乐风格描述,不经 LLM,直接查表拼装)。
+TONE_MUSIC_TAGS = {
+    "温情": ["Warm strings", "Gentle piano", "Slow tempo", "Nostalgic"],
+    "奇幻": ["Cinematic orchestral", "Mystical", "Ethereal choir pads", "Sweeping"],
+    "悬疑": ["Dark ambient", "Tense strings", "Low drones", "Suspenseful"],
+}
+# 画风 style_preset(styles.py) → 配器风格标签,保持声音质感与画面质感呼应。
+STYLE_PRESET_MUSIC_TAGS = {
+    "guofeng_ink": ["Guzheng", "Erhu", "Traditional Chinese instrumentation", "Ink-wash ambience"],
+    "kids_picture_book": ["Playful woodwinds", "Glockenspiel", "Light and bouncy", "Storybook whimsy"],
+    "modern_illust": ["Modern cinematic", "Soft synth pads", "Clean acoustic guitar"],
+}
+MUSIC_MAX_S = 180.0       # ACE-Step 单曲合理上限;超时长交给 finalize_cmd 的 -stream_loop 循环兜底
+MUSIC_RETRIES = 1         # 见 providers/music.py 的取舍说明:单次生成慢,不宜死磕重试
 # DGX 实测 CosyVoice2 连读约 240–270ms/字(见 docs/deploy-dgx.md P1 实证):旧值 380 高于真实语速,
 # 会把正常语音误判为截断而空转 TTS_TRIES;下调到 150 只兜住真正的严重截断(<150ms/字)。
 MIN_MS_PER_CHAR = 150     # 低于字数×150ms 才判疑似截断(既做整段截断兜底,也做分句重试阈值)
@@ -163,22 +179,64 @@ def _process_cell(cell, tts: TTSClient, voice: str, speed: float,
             cell.silent = False   # 无音轨,silent 复位,免让 UI 误标"静音兜底"
 
 
+def _build_music_prompt(project: Project) -> str:
+    """纯器乐 BGM 风格描述,拼给 ACE-Step 的 style 文本。不含地名/传说名——style 节点是
+    音乐风格描述,不是歌词/主题文本,放进去对生成无意义甚至误导。"""
+    tags = TONE_MUSIC_TAGS.get(project.params.tone, []) \
+         + STYLE_PRESET_MUSIC_TAGS.get(project.style_preset, [])
+    tags.append("Instrumental")  # 双保险:即便 lyrics 字段未生效,style 里也显式声明纯器乐
+    dedup = list(dict.fromkeys(tags))  # 去重保序
+    return "Style:\n" + "\n".join(f"- {t}" for t in dedup)
+
+
+def _target_music_duration_s(project: Project) -> float:
+    return min(project.params.duration_min * 60, MUSIC_MAX_S)
+
+
+def _select_manifest_bgm(project: Project, manifest_path: Path) -> str | None:
+    """静态曲库按情绪选曲。曲库为空/无内容页 → None(正常的"无 BGM",不是异常);
+    manifest 缺失/损坏/字段不全等才是异常,向上抛给调用方 catch。"""
+    tracks = json.loads(manifest_path.read_text(encoding="utf-8")).get("tracks", [])
+    if not tracks or not project.storyboard:
+        return None
+    mood = Counter(c.emotion for c in project.storyboard).most_common(1)[0][0]
+    match = next((t for t in tracks if mood in t.get("emotions", [])), tracks[0])
+    return str(manifest_path.parent / match["file"])
+
+
+def _generate_ai_bgm(project: Project, music: MusicClient, workdir: Path) -> str:
+    """调本机 ACE-Step shim 生成纯器乐 BGM,写入 workdir/audio/bgm.mp3。
+    失败(shim 未部署/超时/非法响应)直接向上抛,由 run() 捕获后降级到 manifest 曲库。"""
+    prompt = _build_music_prompt(project)
+    duration_s = _target_music_duration_s(project)
+    audio_dir = workdir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    out = audio_dir / "bgm.mp3"
+    music.generate(prompt, duration_s, out, retries=MUSIC_RETRIES)
+    return str(out)
+
+
 def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
-        manifest_path: Path = DEFAULT_MANIFEST) -> Project:
+        music: MusicClient | None = None, manifest_path: Path = DEFAULT_MANIFEST) -> Project:
     effective_voice = project.params.voice or voice
     speed = project.params.speed
     audio_dir = workdir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     # H4:BGM 选曲前置并「整体」兜底——manifest 缺失/损坏/字段不全(如 track 缺 file)都不该
     # 毁掉后面已完成的合成,故置于 TTS 之前且整段捕获:BGM 是非关键增强,任何失败都降级为无配乐。
-    try:
-        tracks = json.loads(manifest_path.read_text(encoding="utf-8")).get("tracks", [])
-        if tracks and project.storyboard:
-            mood = Counter(c.emotion for c in project.storyboard).most_common(1)[0][0]
-            match = next((t for t in tracks if mood in t.get("emotions", [])), tracks[0])
-            project.bgm = str(manifest_path.parent / match["file"])
-    except Exception as e:  # noqa: BLE001 BGM 非关键,任何失败都跳过配乐而非拖垮 S5
-        print(f"⚠️ BGM 选曲失败({manifest_path}),跳过配乐:{e}")
+    # 三级降级:AI 生成 → 静态曲库 → 无 BGM。任一级失败都不拖垮配音这个更关键的环节。
+    bgm_path: str | None = None
+    if music is not None:
+        try:
+            bgm_path = _generate_ai_bgm(project, music, workdir)
+        except Exception as e:  # noqa: BLE001 AI BGM 非关键,失败降级到静态曲库
+            print(f"⚠️ AI BGM 生成失败,降级到静态曲库:{e}")
+    if bgm_path is None:
+        try:
+            bgm_path = _select_manifest_bgm(project, manifest_path)
+        except Exception as e:  # noqa: BLE001 BGM 非关键,任何失败都跳过配乐而非拖垮 S5
+            print(f"⚠️ BGM 选曲失败({manifest_path}),跳过配乐:{e}")
+    project.bgm = bgm_path or ""
     # PERF1:逐页配音并行(仿 S4)。线程安全:每页写各自 page_NN.mp3 与各自 cell,
     # _synthesize_full 的临时文件均由 out 派生(page_NN.*),各页互不相干;单页异常已在
     # _process_cell 内吞掉并兜底,as_completed 收集不让一页炸掉线程池。
