@@ -5,6 +5,7 @@ import typer
 
 from shanhai import store
 from shanhai.config import Settings
+from shanhai.runtime_config import STAGE_CLIENTS, AppConfig, resolve_settings
 from shanhai.providers.image import ImageClient
 from shanhai.providers.llm import LLMClient
 from shanhai.providers.tts import TTSClient
@@ -32,16 +33,27 @@ def _validate_params(minutes: int, audience: str, tone: str, style: str) -> None
 
 
 def _clients(s: Settings) -> tuple[LLMClient, ImageClient, TTSClient]:
+    llm_base, llm_key = s.llm_endpoint
     img_base, img_key = s.image_endpoint
     tts_base, tts_key = s.tts_endpoint
     if s.llm_provider == "ollama":
         from shanhai.providers.llm_ollama import OllamaLLMClient
-        llm = OllamaLLMClient(s.base_url, s.api_key, s.llm_model, timeout=s.llm_timeout)
+        llm = OllamaLLMClient(llm_base, llm_key, s.llm_model, timeout=s.llm_timeout)
     else:
-        llm = LLMClient(s.base_url, s.api_key, s.llm_model, timeout=s.llm_timeout)
+        llm = LLMClient(llm_base, llm_key, s.llm_model, timeout=s.llm_timeout)
     return (llm,
             ImageClient(img_base, img_key, s.image_model, s.image_api_mode),
             TTSClient(tts_base, tts_key, s.tts_model))
+
+
+def resolve_stage_clients(
+    cfg: AppConfig | None = None,
+) -> tuple[dict[str, Settings], dict[str, tuple[LLMClient, ImageClient, TTSClient]]]:
+    """为每个用到 client 的环节(STAGE_CLIENTS 键,S0–S5)解析生效 Settings 与 (llm,image,tts)。
+    api._pipeline 与 cli.run 共用,避免两处硬编码环节列表与解析样板(环节列表以 STAGE_CLIENTS 为单一真源)。"""
+    settings = {st: resolve_settings(st, cfg) for st in STAGE_CLIENTS}
+    clients = {st: _clients(settings[st]) for st in settings}
+    return settings, clients
 
 
 def _apply_params(p, minutes: int, audience: str, tone: str, style: str) -> None:
@@ -67,8 +79,7 @@ _STORY_FILE = typer.Option(None, exists=True, dir_okay=False, readable=True)
 def new(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str = "温情",
         style: str = "guofeng_ink", story_file: Path | None = _STORY_FILE):
     _validate_params(minutes, audience, tone, style)
-    s = Settings()
-    llm, _, _ = _clients(s)
+    llm, _, _ = _clients(resolve_settings("s0"))
     story = _read_story(story_file)
     p = store.create_project(scenic_spot)
     _apply_params(p, minutes, audience, tone, style)
@@ -97,7 +108,7 @@ def pick(project_id: str, index: int):
 
 @app.command()
 def step(project_id: str, name: str):
-    s = Settings()
+    s = resolve_settings(name)
     llm, image, tts = _clients(s)
     p = store.load(project_id)
     workdir = store.project_dir(project_id)
@@ -125,27 +136,29 @@ def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str 
         style: str = "guofeng_ink", story_file: Path | None = _STORY_FILE):
     """快速模式:自动选第一个候选传说,一路跑到 MP4。"""
     _validate_params(minutes, audience, tone, style)
-    s = Settings()
-    llm, image, tts = _clients(s)
+    # 每环节各自解析生效 Settings 与 client(与 api._pipeline 同构:不同环节可用不同端点/模型)。
+    settings, clients = resolve_stage_clients()
     story = _read_story(story_file)
     p = store.create_project(scenic_spot)
     _apply_params(p, minutes, audience, tone, style)
     workdir = store.project_dir(p.project_id)
     total0 = time.time()
     if story is not None:
-        p = s0_legend.from_text(p, llm, story)
+        p = s0_legend.from_text(p, clients["s0"][0], story)
     else:
-        p = s0_legend.run(p, llm)
+        p = s0_legend.run(p, clients["s0"][0])
         if not p.legend_candidates:
             typer.echo("没有检索到可靠传说,请用 --story-file 提供自备故事")
             raise typer.Exit(1)
         p.legend = p.legend_candidates[0]
     store.save(p)
-    stages = [("s1", lambda: s1_script.run(p, llm)),
-              ("s2", lambda: s2_storyboard.run(p, llm)),
-              ("s3", lambda: s3_characters.run(p, llm, image, workdir, s.image_size)),
-              ("s4", lambda: s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency)),
-              ("s5", lambda: s5_audio.run(p, tts, s.tts_voice, workdir)),
+    stages = [("s1", lambda: s1_script.run(p, clients["s1"][0])),
+              ("s2", lambda: s2_storyboard.run(p, clients["s2"][0])),
+              ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
+                                               settings["s3"].image_size)),
+              ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
+                                          strict=settings["s4"].strict_consistency)),
+              ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir)),
               ("s6", lambda: s6_compose.run(p, workdir))]
     for name, fn in stages:
         t0 = time.time()
