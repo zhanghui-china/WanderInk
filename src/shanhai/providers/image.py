@@ -1,12 +1,11 @@
 # src/shanhai/providers/image.py
 import base64
 import re
-import time
 from pathlib import Path
 
 import httpx
 
-_TRANSIENT_STATUS = {429, 500, 502, 503, 504}  # 代理瞬时过载/超时,可重试;400/内容问题不重试
+from shanhai.providers._http import request_with_retry
 
 
 class ImageGenError(Exception):
@@ -27,53 +26,43 @@ class ImageClient:
 
     def generate(self, prompt: str, size: str = "1536x1024",
                  references: list[Path] | None = None, retries: int = 2) -> bytes:
-        # 瞬时网络错误重试;gpt-image-2 经代理偶发 ReadTimeout/连接被对端掐断,S3 三视图无外层重试。
-        # httpx.TransportError 是 TimeoutException/ConnectError/RemoteProtocolError(“Server
-        # disconnected without sending a response”)等的公共基类,窄写漏抓过 RemoteProtocolError
-        # 导致单次瞬时故障直接杀死整条 S3(DGX 经隧道链路更易触发)。
-        for attempt in range(retries + 1):
-            try:
-                return self._dispatch(prompt, size, references)
-            except httpx.TransportError:
-                if attempt == retries:
-                    raise
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code not in _TRANSIENT_STATUS or attempt == retries:
-                    raise
-            time.sleep(2 * (attempt + 1))
-        raise ImageGenError("unreachable")  # pragma: no cover
+        # 网络调用统一走 request_with_retry(TransportError/瞬时状态码重试);
+        # 非瞬时 HTTPStatusError(如内容审核 400)在各 _via_* 里 raise_for_status() 后直接抛出。
+        return self._dispatch(prompt, size, references, retries)
 
-    def _dispatch(self, prompt: str, size: str, references: list[Path] | None) -> bytes:
+    def _dispatch(self, prompt: str, size: str, references: list[Path] | None,
+                  retries: int) -> bytes:
         if self.mode == "chat_api":
-            return self._via_chat(prompt, references or [])
+            return self._via_chat(prompt, references or [], retries)
         if references:
-            return self._via_edits(prompt, references, size)
-        return self._via_generations(prompt, size)
+            return self._via_edits(prompt, references, size, retries)
+        return self._via_generations(prompt, size, retries)
 
-    def _via_generations(self, prompt: str, size: str) -> bytes:
-        r = self._client.post("/images/generations",
-                              json={"model": self.model, "prompt": prompt, "size": size, "n": 1})
+    def _via_generations(self, prompt: str, size: str, retries: int) -> bytes:
+        r = request_with_retry(lambda: self._client.post(
+            "/images/generations",
+            json={"model": self.model, "prompt": prompt, "size": size, "n": 1}), retries)
         r.raise_for_status()
         return _decode(_first(r.json()))
 
-    def _via_edits(self, prompt: str, references: list[Path], size: str) -> bytes:
+    def _via_edits(self, prompt: str, references: list[Path], size: str, retries: int) -> bytes:
         files = [("image[]", (p.name, p.read_bytes(), "image/png")) for p in references]
-        r = self._client.post("/images/edits",
-                              data={"model": self.model, "prompt": prompt, "size": size},
-                              files=files)
+        r = request_with_retry(lambda: self._client.post(
+            "/images/edits",
+            data={"model": self.model, "prompt": prompt, "size": size}, files=files), retries)
         r.raise_for_status()
         return _decode(_first(r.json()))
 
-    def _via_chat(self, prompt: str, references: list[Path]) -> bytes:
+    def _via_chat(self, prompt: str, references: list[Path], retries: int) -> bytes:
         content: list[dict] = [{"type": "text", "text": prompt}]
         for p in references:
             b64 = base64.b64encode(p.read_bytes()).decode()
             content.append({"type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{b64}"}})
-        r = self._client.post("/chat/completions", json={
+        r = request_with_retry(lambda: self._client.post("/chat/completions", json={
             "model": self.model,
             "messages": [{"role": "user", "content": content}],
-        })
+        }), retries)
         r.raise_for_status()
         msg = r.json()["choices"][0]["message"]
         for img in msg.get("images") or []:
@@ -99,7 +88,8 @@ def _decode(item: dict) -> bytes:
     if item.get("b64_json"):
         return base64.b64decode(item["b64_json"])
     if item.get("url"):
-        r = httpx.get(item["url"], timeout=120)
+        # 下载也走瞬时重试:免因单次抖断而回退到"重出整张图"(会重复计费)
+        r = request_with_retry(lambda: httpx.get(item["url"], timeout=120), retries=2)
         r.raise_for_status()
         return r.content
     raise ImageGenError(f"未知的响应格式: {list(item)}")

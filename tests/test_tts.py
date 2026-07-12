@@ -14,13 +14,27 @@ def _mp3() -> httpx.Response:
 
 
 @respx.mock
-@patch("shanhai.providers.tts.time.sleep")
+@patch("shanhai.providers._http.time.sleep")
 def test_synthesize_retries_transient_then_succeeds(_sleep, tmp_path):
     route = respx.post(f"{BASE}/audio/speech")
     route.side_effect = [httpx.Response(503, text="资源不足"), _mp3()]
     out = tmp_path / "a.mp3"
     TTSClient(BASE, "sk", "m").synthesize("你好", "alloy", out)
     assert route.call_count == 2                       # 503 后重试成功
+    assert out.read_bytes().startswith(b"\xff\xf3")
+
+
+@respx.mock
+@patch("shanhai.providers._http.time.sleep")
+def test_synthesize_retries_on_transport_error(_sleep, tmp_path):
+    # 之前裸 self._client.post() 无 try/except:RemoteProtocolError 直接不重试地传播,
+    # 瞬时故障(DGX 经隧道链路更易触发)会直接杀死 TTS(→静音页)
+    route = respx.post(f"{BASE}/audio/speech")
+    route.side_effect = [
+        httpx.RemoteProtocolError("Server disconnected without sending a response"), _mp3()]
+    out = tmp_path / "e.mp3"
+    TTSClient(BASE, "sk", "m").synthesize("你好", "alloy", out)
+    assert route.call_count == 2
     assert out.read_bytes().startswith(b"\xff\xf3")
 
 

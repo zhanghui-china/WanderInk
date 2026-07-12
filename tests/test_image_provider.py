@@ -18,7 +18,7 @@ def test_generations_b64():
 
 
 @respx.mock
-@patch("shanhai.providers.image.time.sleep")
+@patch("shanhai.providers._http.time.sleep")
 def test_generate_retries_on_timeout(mock_sleep):
     route = respx.post(f"{BASE}/images/generations")
     route.side_effect = [httpx.ReadTimeout("slow"),
@@ -29,7 +29,7 @@ def test_generate_retries_on_timeout(mock_sleep):
 
 
 @respx.mock
-@patch("shanhai.providers.image.time.sleep")
+@patch("shanhai.providers._http.time.sleep")
 def test_generate_retries_on_remote_protocol_error(mock_sleep):
     # "Server disconnected without sending a response" 是 RemoteProtocolError,
     # 曾被窄写的 except (TimeoutException, ConnectError) 漏抓,单次瞬时故障直接杀死整条 S3

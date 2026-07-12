@@ -63,6 +63,7 @@ def update_cell(project: Project, index: int, *, caption: str | None = None,
         cell.caption = caption
         cell.audio = ""
         cell.duration_ms = 0
+        cell.silent = False
     if visual_desc is not None:
         cell.visual_desc = visual_desc
         cell.status = "draft"
@@ -89,6 +90,7 @@ def mark_revoice(project: Project, index: int) -> None:
     cell = _cell_at(project, index)
     cell.audio = ""
     cell.duration_ms = 0
+    cell.silent = False
     project.output.clear()
 
 

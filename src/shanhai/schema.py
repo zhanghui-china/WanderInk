@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 SourceType = Literal["正史", "地方志", "民间传说", "文学作品", "原创演绎"]
 
@@ -46,6 +46,10 @@ class Script(BaseModel):
 
 
 class StoryboardCell(BaseModel):
+    # validate_assignment:属性赋值也校验,堵住编辑端点绕过 caption max_length 写入
+    # 永久不可加载的 project.json(pydantic ValidationError 是 ValueError 子类,端点直接转 400)。
+    model_config = ConfigDict(validate_assignment=True)
+
     index: int
     scene_ref: str
     visual_desc: str
@@ -55,6 +59,8 @@ class StoryboardCell(BaseModel):
     image: str = ""
     audio: str = ""
     duration_ms: int = 0
+    # silent=True 表示该页音频是静音兜底(非真人解说);用于状态诚实化与重跑重合成。
+    silent: bool = False
     status: Literal["draft", "confirmed", "failed"] = "draft"
 
 
@@ -78,3 +84,16 @@ class Project(BaseModel):
     storyboard: list[StoryboardCell] = Field(default_factory=list)
     bgm: str = ""
     output: dict[str, str] = Field(default_factory=dict)
+
+    def content_summary(self) -> dict[str, int]:
+        """成片内容盘点:出图页、真人解说页、静音兜底页数。供状态诚实化与前端展示。"""
+        return {
+            "total": len(self.storyboard),
+            "imaged": sum(1 for c in self.storyboard if c.status == "confirmed" and c.image),
+            "narrated": sum(1 for c in self.storyboard if c.audio and not c.silent),
+            "silent": sum(1 for c in self.storyboard if c.audio and c.silent),
+        }
+
+    def is_deliverable(self) -> bool:
+        """真正的成片至少要有一页出图;全程失败的空片不算可交付。"""
+        return self.content_summary()["imaged"] >= 1

@@ -22,11 +22,19 @@ export interface Page {
   emotion: string
   status: 'draft' | 'confirmed' | 'failed'
   duration_ms: number
+  silent: boolean
   scene_ref: string
   visual_desc: string
   characters: string[]
   image: string | null
   audio: string | null
+}
+
+export interface ContentSummary {
+  total: number
+  imaged: number
+  narrated: number
+  silent: number
 }
 
 export interface Character {
@@ -46,6 +54,8 @@ export interface ProjectDetail {
   script_title: string | null
   characters: Character[]
   pages: Page[]
+  deliverable: boolean
+  content_summary: ContentSummary
   mp4: string | null
   pdf: string | null
   zip: string | null

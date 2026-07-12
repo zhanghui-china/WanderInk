@@ -5,14 +5,11 @@
 S0–S2 每步 5–7 分钟;原生 API `think:false` 实测快 10×。结构化输出用
 Ollama 的 `format=<JSON Schema>` 约束解码,产出天然合法 JSON。
 """
-import time
-
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from shanhai.providers.llm import LLMError
-
-_TRANSIENT = {429, 500, 502, 503, 504}
+from shanhai.providers._http import request_with_retry
+from shanhai.providers.llm import LLMError, _extract_json
 
 
 class OllamaLLMClient:
@@ -36,14 +33,9 @@ class OllamaLLMClient:
         }
         if fmt is not None:
             body["format"] = fmt
-        for attempt in range(retries + 1):
-            r = self._client.post("/api/chat", json=body)
-            if r.status_code in _TRANSIENT and attempt < retries:
-                time.sleep(2 * (attempt + 1))
-                continue
-            r.raise_for_status()
-            return r.json()["message"]["content"]
-        raise LLMError("unreachable")  # pragma: no cover
+        r = request_with_retry(lambda: self._client.post("/api/chat", json=body), retries)
+        r.raise_for_status()
+        return r.json()["message"]["content"]
 
     def chat(self, system: str, user: str, temperature: float = 0.7, retries: int = 2) -> str:
         return self._chat(system, user, temperature, fmt=None, retries=retries)
@@ -56,8 +48,8 @@ class OllamaLLMClient:
         for _ in range(retries + 1):
             try:
                 text = self._chat(system, prompt, temperature=0.3, fmt=fmt, retries=retries)
-                return schema.model_validate_json(text)
-            except (httpx.HTTPError, ValidationError, ValueError,
+                return schema.model_validate_json(_extract_json(text))
+            except (ValidationError, ValueError,
                     TypeError, KeyError, IndexError) as e:
                 last_err = e
                 prompt = f"{user}\n\n上一次输出不合法:{e}\n请修正后重新只输出 JSON。"

@@ -29,6 +29,12 @@ def run(project: Project, llm: LLMClient) -> Project:
     user = (f"页数要求:{lo}~{hi} 页。\n剧本 JSON:\n"
             + project.script.model_dump_json(indent=1))
     project.storyboard = llm.structured(SYSTEM, user, _Cells).cells
+    if len(project.storyboard) == 0:  # 诚实链:零页不算成功,让管线记 error 而非空书
+        raise ValueError("分镜为空,S2 未产出任何页")
+    # index 强制重排为 1..n:LLM 可能给出重复/跳号 index,而下游 S4/S5/S6 与并行落盘
+    # 均以 page_{index:02d} 为唯一文件名——重复 index 会让并行页互相踩踏临时/产物文件(丢解说)。
+    for i, cell in enumerate(project.storyboard, 1):
+        cell.index = i
     for cell in project.storyboard:   # 防御:剔除误入出场角色的旁白/叙事者
         cell.characters = [n for n in cell.characters if not is_narrator(n)]
     project.status["s2"] = "done"
