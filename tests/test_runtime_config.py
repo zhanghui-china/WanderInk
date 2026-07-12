@@ -6,8 +6,10 @@ import pytest
 from shanhai import runtime_config
 from shanhai.cli import _clients
 from shanhai.config import Settings
-from shanhai.runtime_config import (MASK, SENTINEL, AppConfig, ConfigOverride,
-                                     apply_put, load_overrides, merge_override,
+from shanhai.runtime_config import (MASK, SECRET_FIELDS, SENTINEL, STAGE_CLIENTS,
+                                     AppConfig, ConfigOverride, apply_put,
+                                     defaults_view, load_overrides,
+                                     merge_override, override_view,
                                      resolve_settings, save_overrides,
                                      update_overrides)
 
@@ -159,5 +161,39 @@ def test_apply_put_preserves_and_prunes_stages():
 def test_clients_use_resolved_tts_base_url_override():
     cfg = AppConfig(stages={"s5": ConfigOverride(tts_base_url="https://tts.local/v1")})
     s = resolve_settings("s5", cfg, base=_base())
-    _, _, tts = _clients(s)
+    _, _, tts, _ = _clients(s)
     assert str(tts._client.base_url).rstrip("/") == "https://tts.local/v1"
+
+
+# ---------- music provider 接入(STAGE_CLIENTS / SECRET_FIELDS / 合并 / 脱敏) ----------
+
+def test_stage_clients_s5_includes_music():
+    assert STAGE_CLIENTS["s5"] == ("tts", "music")
+
+
+def test_music_api_key_is_secret_field():
+    assert "music_api_key" in SECRET_FIELDS
+
+
+def test_resolve_stage_music_override():
+    cfg = AppConfig(stages={"s5": ConfigOverride(music_model="custom-model")})
+    s = resolve_settings("s5", cfg, base=_base())
+    assert s.music_model == "custom-model"
+
+
+def test_music_base_url_only_affects_music_endpoint():
+    s = Settings(_env_file=None, base_url="https://p.example.com/v1", api_key="sk-1",
+                 music_base_url="https://music.example.com/v1")
+    assert s.music_endpoint == ("https://music.example.com/v1", "sk-1")
+    assert s.tts_endpoint == ("https://p.example.com/v1", "sk-1")     # 不受影响
+
+
+def test_defaults_view_includes_music_fields():
+    d = defaults_view()
+    assert "music_model" in d and "music_base_url" in d and "music_api_key" in d
+    assert isinstance(d["music_api_key"], bool)   # 密钥字段=bool,不回显明文
+
+
+def test_override_view_masks_music_api_key():
+    ov = ConfigOverride(music_api_key="sk-music")
+    assert override_view(ov)["music_api_key"] == MASK
