@@ -53,8 +53,28 @@ def test_create_validates_input():
     assert client.post("/api/projects", json={"scenic_spot": "x", "tone": "搞笑"}).status_code == 400
 
 
+def test_create_validates_speed_range():
+    # A7:speed 越界会让 TTS/ffmpeg atempo 出错,须在 [0.5, 2.0] 内。
+    assert client.post("/api/projects", json={"scenic_spot": "x", "speed": 0}).status_code == 400
+    assert client.post("/api/projects", json={"scenic_spot": "x", "speed": 5}).status_code == 400
+
+
+def test_create_rejects_oversized_story():
+    # A7:story 无上限会把超大体喂给 LLM。
+    r = client.post("/api/projects", json={"scenic_spot": "x", "story": "长" * 20001})
+    assert r.status_code == 422
+
+
 def test_get_missing_project_404():
     assert client.get("/api/projects/does_not_exist_xyz").status_code == 404
+
+
+def test_get_illegal_project_id_404():
+    # M7:project_id 含非法字符(路径遍历/空白等)时 project_dir 校验抛 ValueError,
+    # 须映射为 404 而非 500(store.project_dir 是唯一落盘入口)。
+    assert client.get("/api/projects/..%2F..%2Fetc").status_code == 404
+    assert client.get("/api/projects/bad.id").status_code == 404
+    assert client.get("/api/projects/bad%20id").status_code == 404
 
 
 def test_url_helpers_normalize_paths():
@@ -401,4 +421,49 @@ def test_run_step_persists_fresh_reload_not_stale_snapshot(_settings, _run):
     assert saved["obj"] is fresh             # 落盘的是锁内重载的 fresh,不是陈旧的 stale
     assert fresh.status["pipeline"] == "queued"
     assert stale.status.get("pipeline") != "queued"   # 陈旧快照没被当作落盘对象
-    api._JOBS["freshid"].result(timeout=2)
+
+
+def test_create_cell_rejects_oversized_visual_desc():
+    # A7:visual_desc 无上限会喂给下游成图 prompt。
+    r = client.post("/api/projects/anyid/cells", json={
+        "after_index": 0, "caption": "c", "visual_desc": "长" * 2001,
+    })
+    assert r.status_code == 422
+
+
+def test_create_cell_rejects_too_many_characters():
+    # A7:characters 无上限,超限拒绝(在 create_cell 端点挡)。
+    r = client.post("/api/projects/anyid/cells", json={
+        "after_index": 0, "caption": "c", "visual_desc": "v",
+        "characters": [f"c{i}" for i in range(51)],
+    })
+    assert r.status_code == 400
+
+
+# ---------- 静态文件 ----------
+
+def test_files_hides_project_json():
+    # FP8:project.json(含用户 story、legend sources、角色 feature_prompt 等内部态)不经
+    # /files 暴露。在 StaticFiles 规范化 path 之后按 basename 拦截,故各绕过变体都应 404,
+    # 而其它产物正常托管。写真实 projects/ 目录再验证(否则文件不存在测不出"拦截 vs 未命中")。
+    import shutil
+    d = store.DEFAULT_ROOT / "fp8test"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "project.json").write_text('{"secret": "内部 prompt"}', encoding="utf-8")
+    (d / "art.txt").write_text("ok", encoding="utf-8")     # 对照:非 project.json 正常托管
+    try:
+        assert client.get("/files/fp8test/project.json").status_code == 404       # 规范路径
+        assert client.get("/files/fp8test/project.json/").status_code == 404      # 尾随斜杠绕过
+        assert client.get("/files/fp8test/PROJECT.JSON").status_code == 404        # 大小写绕过
+        assert client.head("/files/fp8test/project.json").status_code == 404       # HEAD 绕过
+        assert client.get("/files/fp8test/art.txt").status_code == 200             # 其它产物不受影响
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_patch_cell_rejects_oversized_fields():
+    # A7:编辑路径(PATCH)与插入路径同等挡超大 visual_desc/characters(否则经编辑绕过上限喂下游)。
+    assert client.patch("/api/projects/anyid/cells/1",
+                        json={"visual_desc": "x" * 2001}).status_code == 422   # visual_desc > 2000
+    assert client.patch("/api/projects/anyid/cells/1",
+                        json={"characters": ["c"] * 51}).status_code == 400     # characters > 50

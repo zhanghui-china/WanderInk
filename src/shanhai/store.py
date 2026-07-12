@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -7,8 +8,14 @@ from shanhai.schema import Project
 
 DEFAULT_ROOT = Path("projects")
 
+# project_id 形状校验:仅允许字母数字下划线短横线,堵住路径遍历(../、/、空白等)。
+_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
 
 def project_dir(project_id: str, root: Path = DEFAULT_ROOT) -> Path:
+    """project_id 落盘路径的唯一入口:load/save/create 均经此函数,故此处校验一劳永逸。"""
+    if not _PROJECT_ID_RE.fullmatch(project_id):
+        raise ValueError(f"非法 project_id: {project_id!r}")
     return root / project_id
 
 

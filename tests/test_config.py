@@ -2,6 +2,7 @@
 import os
 
 import pytest
+from pydantic import ValidationError
 
 from shanhai.config import Settings, load_env
 
@@ -60,6 +61,21 @@ def test_load_env_sets_key_not_in_process_env(tmp_path):
         assert os.environ[key] == "from_dotenv"
     finally:
         os.environ.pop(key, None)
+
+def test_llm_provider_rejects_typo(monkeypatch):
+    # FP9:非法 llm_provider(如拼写错误)须在构造 Settings 时即报错,而非运行时误落到 OpenAI 客户端。
+    monkeypatch.setenv("SHANHAI_BASE_URL", "https://p.example.com/v1")
+    monkeypatch.setenv("SHANHAI_API_KEY", "sk-1")
+    monkeypatch.setenv("SHANHAI_LLM_PROVIDER", "olama")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+def test_llm_provider_accepts_known_values(monkeypatch):
+    monkeypatch.setenv("SHANHAI_BASE_URL", "https://p.example.com/v1")
+    monkeypatch.setenv("SHANHAI_API_KEY", "sk-1")
+    for value in ("openai", "ollama"):
+        monkeypatch.setenv("SHANHAI_LLM_PROVIDER", value)
+        assert Settings(_env_file=None).llm_provider == value
 
 def test_load_env_does_not_override_process_env(monkeypatch, tmp_path):
     # 进程环境变量(如 systemd EnvironmentFile 注入)优先于 .env,不能被覆盖

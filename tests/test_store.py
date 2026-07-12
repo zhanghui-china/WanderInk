@@ -11,6 +11,20 @@ def test_load_missing_raises(tmp_path):
         store.load("does_not_exist", root=tmp_path)
 
 
+def test_project_dir_rejects_path_traversal(tmp_path):
+    # M7:project_id 须是合法形状,不能靠它拼出越界路径。
+    with pytest.raises(ValueError):
+        store.project_dir("../etc", root=tmp_path)
+    with pytest.raises(ValueError):
+        store.project_dir("a/b", root=tmp_path)
+    with pytest.raises(ValueError):
+        store.project_dir("", root=tmp_path)
+
+
+def test_project_dir_accepts_legal_id(tmp_path):
+    assert store.project_dir("abc123_-XY", root=tmp_path) == tmp_path / "abc123_-XY"
+
+
 def test_create_save_load(tmp_path):
     p = store.create_project("雷峰塔", root=tmp_path)
     p.legend = Legend(title="白蛇传", summary="s", source_type="民间传说", sources=["http://x"])

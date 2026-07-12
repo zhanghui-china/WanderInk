@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shanhai import editing, export, store
 from shanhai.cli import _AUDIENCES, _MINUTES, _TONES, _clients
@@ -196,7 +196,7 @@ def _editable(project_id: str) -> Project:
         raise HTTPException(409, "该项目有未完成的生成作业,请等待完成后再编辑")
     try:
         return store.load(project_id)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
 
 
@@ -206,7 +206,7 @@ class NewProject(BaseModel):
     audience: str = "大众"
     tone: str = "温情"
     style: str = "guofeng_ink"
-    story: str | None = None
+    story: str | None = Field(default=None, max_length=20000)  # 自备故事上限,防超大体喂 LLM
     voice: str = ""
     speed: float = 1.0
 
@@ -222,6 +222,8 @@ def _validate(body: NewProject) -> None:
         raise HTTPException(400, f"tone 须为 {list(_TONES)}")
     if body.style not in STYLE_PRESETS:
         raise HTTPException(400, f"style 须为 {list(STYLE_PRESETS)}")
+    if not 0.5 <= body.speed <= 2.0:
+        raise HTTPException(400, "speed 须落在 [0.5, 2.0]")
 
 
 @app.post("/api/projects")
@@ -272,7 +274,7 @@ def list_projects() -> list[dict]:
 def get_project(project_id: str) -> dict:
     try:
         p = store.load(project_id)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
     return _serialize(p)
 
@@ -289,7 +291,7 @@ def export_project(project_id: str) -> dict:
             raise HTTPException(409, "该项目有生成作业进行中,请稍后再导出")
         try:
             p = store.load(project_id)
-        except FileNotFoundError as e:
+        except (FileNotFoundError, ValueError) as e:
             raise HTTPException(404, f"项目不存在: {project_id}") from e
         p = export.build_exports(p, store.project_dir(project_id))
         store.save(p)
@@ -300,14 +302,16 @@ def export_project(project_id: str) -> dict:
 
 
 class CellPatch(BaseModel):
-    caption: str | None = None
-    visual_desc: str | None = None
+    caption: str | None = None                                   # caption 由 schema max_length=80 兜
+    visual_desc: str | None = Field(default=None, max_length=2000)
     emotion: str | None = None
     characters: list[str] | None = None
 
 
 @app.patch("/api/projects/{project_id}/cells/{index}")
 def patch_cell(project_id: str, index: int, body: CellPatch) -> dict:
+    if body.characters is not None and len(body.characters) > 50:   # A7:编辑路径同样挡超大 characters
+        raise HTTPException(400, "characters 数量上限 50")
     with _project_lock(project_id):
         p = _editable(project_id)
         try:
@@ -346,16 +350,18 @@ def revoice_cell(project_id: str, index: int) -> dict:
 class CellInsert(BaseModel):
     after_index: int
     caption: str
-    visual_desc: str
+    visual_desc: str = Field(max_length=2000)
     emotion: str = "宁静"
     characters: list[str] | None = None
 
 
 @app.post("/api/projects/{project_id}/cells")
 def create_cell(project_id: str, body: CellInsert) -> dict:
-    workdir = store.project_dir(project_id)
+    if body.characters is not None and len(body.characters) > 50:
+        raise HTTPException(400, "characters 数量超限(≤ 50)")
     with _project_lock(project_id):
         p = _editable(project_id)
+        workdir = store.project_dir(project_id)
         try:
             editing.insert_cell(p, workdir, body.after_index, caption=body.caption,
                                 visual_desc=body.visual_desc, emotion=body.emotion,
@@ -368,9 +374,9 @@ def create_cell(project_id: str, body: CellInsert) -> dict:
 
 @app.delete("/api/projects/{project_id}/cells/{index}")
 def delete_cell(project_id: str, index: int) -> dict:
-    workdir = store.project_dir(project_id)
     with _project_lock(project_id):
         p = _editable(project_id)
+        workdir = store.project_dir(project_id)
         try:
             editing.delete_cell(p, workdir, index)
         except ValueError as e:
@@ -385,9 +391,9 @@ class ReorderBody(BaseModel):
 
 @app.post("/api/projects/{project_id}/cells/reorder")
 def reorder_cells(project_id: str, body: ReorderBody) -> dict:
-    workdir = store.project_dir(project_id)
     with _project_lock(project_id):
         p = _editable(project_id)
+        workdir = store.project_dir(project_id)
         try:
             editing.reorder_cells(p, workdir, body.order)
         except ValueError as e:
@@ -481,9 +487,20 @@ def meta() -> dict:
     }
 
 
+class _ArtifactStatic(StaticFiles):
+    """产物静态托管,但禁下载任何 project.json(含用户 story、legend sources、角色 feature_prompt
+    等内部态)。在 StaticFiles 已把 URL 规范化(折叠 ../ 双斜杠尾斜杠)成 path 之后按 basename 拦截,
+    故尾随斜杠/双斜杠/x/../project.json/大小写/HEAD 等在具体路由层可绕过的变体在此统一 404。"""
+
+    async def get_response(self, path: str, scope):  # noqa: ANN001 — 与父类签名一致
+        if Path(path).name.lower() == "project.json":
+            raise HTTPException(404)
+        return await super().get_response(path, scope)
+
+
 # 产物静态托管 + 前端 build 产物(存在才挂,避免 dev 期报错)
 store.DEFAULT_ROOT.mkdir(exist_ok=True)
-app.mount("/files", StaticFiles(directory=str(store.DEFAULT_ROOT)), name="files")
+app.mount("/files", _ArtifactStatic(directory=str(store.DEFAULT_ROOT)), name="files")
 
 _WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 if _WEB_DIST.exists():
