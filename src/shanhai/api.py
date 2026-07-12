@@ -131,7 +131,8 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
                                              settings["s3"].image_size)),
             ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
                                         strict=settings["s4"].strict_consistency)),
-            ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir)),
+            ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir,
+                                        clients["s5"][3])),
             ("s6", lambda: s6_compose.run(p, workdir)),
         ]
         for _name, fn in stages:
@@ -432,7 +433,7 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
     p = store.load(project_id)
     workdir = store.project_dir(project_id)
     s = resolve_settings(name, cfg)  # 该环节生效 Settings + client
-    llm, image, tts = _clients(s)
+    llm, image, tts, music = _clients(s)
     try:
         p.status["pipeline"] = "running"
         _locked_save(p)
@@ -443,7 +444,7 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
         elif name == "s4":
             p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency)
         elif name == "s5":
-            p = s5_audio.run(p, tts, s.tts_voice, workdir)
+            p = s5_audio.run(p, tts, s.tts_voice, workdir, music)
         elif name == "s6":
             p = s6_compose.run(p, workdir)
         if name != "s6":

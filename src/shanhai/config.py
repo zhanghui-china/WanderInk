@@ -28,12 +28,15 @@ class Settings(BaseSettings):
     tts_model: str = "gpt-4o-mini-tts"
     tts_voice: str = "alloy"
     tts_voices: str = ""  # 逗号分隔的可选音色列表;空则回退 [tts_voice]
+    music_model: str = "ace-step-v1.5xl"
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     image_base_url: str | None = None
     image_api_key: str | None = None
     tts_base_url: str | None = None
     tts_api_key: str | None = None
+    music_base_url: str | None = None
+    music_api_key: str | None = None
     strict_consistency: bool = False  # True 时 S4 无三视图直接失败(堵 M0 绕过);默认告警继续
     # readonly 不在此声明:公网只读靠 api.py 模块级 os.getenv(SHANHAI_READONLY)读取一次
     # (见 api.py _READONLY),避免与本类形成双真相源——Settings 在每次请求里都会重新构造一份。
@@ -54,3 +57,7 @@ class Settings(BaseSettings):
     @property
     def tts_endpoint(self) -> tuple[str, str]:
         return (self.tts_base_url or self.base_url, self.tts_api_key or self.api_key)
+
+    @property
+    def music_endpoint(self) -> tuple[str, str]:
+        return (self.music_base_url or self.base_url, self.music_api_key or self.api_key)

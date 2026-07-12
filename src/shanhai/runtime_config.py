@@ -26,11 +26,11 @@ STAGE_CLIENTS: dict[str, tuple[str, ...]] = {
     "s2": ("llm",),
     "s3": ("llm", "image"),
     "s4": ("image",),
-    "s5": ("tts",),
+    "s5": ("tts", "music"),
 }
 
 # 密钥字段:GET 脱敏、PUT 哨兵语义均据此集合区分密钥与普通字段。
-SECRET_FIELDS = {"api_key", "llm_api_key", "image_api_key", "tts_api_key"}
+SECRET_FIELDS = {"api_key", "llm_api_key", "image_api_key", "tts_api_key", "music_api_key"}
 
 # GET 脱敏掩码 / PUT 哨兵:表示密钥"已配置但不回显" / "保持已存值不变"。二者都不会被写成真实密钥。
 MASK = "••••••"
@@ -65,6 +65,9 @@ class ConfigOverride(BaseModel):
     tts_model: str | None = None
     tts_voice: str | None = None
     tts_voices: str | None = None
+    music_base_url: str | None = None
+    music_api_key: str | None = None
+    music_model: str | None = None
 
 
 class AppConfig(BaseModel):

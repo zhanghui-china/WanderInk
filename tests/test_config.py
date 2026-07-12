@@ -32,6 +32,21 @@ def test_modality_override(monkeypatch):
     assert s.image_endpoint == ("https://img.example.com/v1", "sk-1")
     assert s.tts_endpoint == ("https://p.example.com/v1", "sk-1")
 
+def test_music_endpoint_falls_back_to_base_url(monkeypatch):
+    monkeypatch.setenv("SHANHAI_BASE_URL", "https://p.example.com/v1")
+    monkeypatch.setenv("SHANHAI_API_KEY", "sk-1")
+    s = Settings(_env_file=None)
+    assert s.music_endpoint == ("https://p.example.com/v1", "sk-1")
+
+def test_music_endpoint_override(monkeypatch):
+    monkeypatch.setenv("SHANHAI_BASE_URL", "https://p.example.com/v1")
+    monkeypatch.setenv("SHANHAI_API_KEY", "sk-1")
+    monkeypatch.setenv("SHANHAI_MUSIC_BASE_URL", "https://music.example.com/v1")
+    s = Settings(_env_file=None)
+    assert s.music_endpoint == ("https://music.example.com/v1", "sk-1")
+    assert s.image_endpoint == ("https://p.example.com/v1", "sk-1")   # 不受影响
+    assert s.tts_endpoint == ("https://p.example.com/v1", "sk-1")     # 不受影响
+
 def test_strict_consistency_defaults_false(monkeypatch):
     monkeypatch.setenv("SHANHAI_BASE_URL", "https://p.example.com/v1")
     monkeypatch.setenv("SHANHAI_API_KEY", "sk-1")

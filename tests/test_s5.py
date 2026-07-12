@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx, pytest, respx
+from shanhai.providers.music import MusicClient
 from shanhai.providers.tts import TTSClient, TTSError
 from shanhai.schema import Project, StoryboardCell
 from shanhai.steps import s5_audio
@@ -349,3 +350,79 @@ def test_s5_parallel_pages_no_crosstalk(mock_probe, mock_sh, tmp_path: Path):
         assert c.duration_ms == 6800                       # 各页时长独立正确
         assert c.silent is False
     assert p.status["s5"] == "done"
+
+
+# ---------- AI BGM 三级降级(AI 生成 → 静态曲库 → 无 BGM) ----------
+
+def _writing_music() -> MagicMock:
+    music = MagicMock()
+    music.generate.side_effect = \
+        lambda prompt, duration_s, out, **kw: Path(out).write_bytes(b"\xff\xf3mp3")
+    return music
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_uses_ai_bgm_when_music_client_succeeds(mock_probe, mock_sh, tmp_path: Path):
+    manifest = tmp_path / "manifest.json"
+    # manifest 也配了曲目,证明 AI 生成优先、不会去查 manifest
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
+    p = s5_audio.run(_project(), _writing_tts(), "alloy", tmp_path,
+                     music=_writing_music(), manifest_path=manifest)
+    assert p.bgm == str(tmp_path / "audio" / "bgm.mp3")
+    assert Path(p.bgm).read_bytes() == b"\xff\xf3mp3"
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_falls_back_to_manifest_when_ai_bgm_fails(mock_probe, mock_sh, tmp_path: Path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
+    music = MagicMock()
+    music.generate.side_effect = RuntimeError("shim 未部署")
+    p = s5_audio.run(_project(), _writing_tts(), "alloy", tmp_path,
+                     music=music, manifest_path=manifest)
+    assert p.bgm.endswith("calm.mp3")                   # 降级到静态曲库
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_no_bgm_when_ai_fails_and_manifest_empty(mock_probe, mock_sh, tmp_path: Path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    music = MagicMock()
+    music.generate.side_effect = RuntimeError("shim 未部署")
+    p = s5_audio.run(_project(), _writing_tts(), "alloy", tmp_path,
+                     music=music, manifest_path=manifest)
+    assert p.bgm == ""
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_no_music_client_falls_back_to_manifest_unchanged(mock_probe, mock_sh, tmp_path: Path):
+    # music 未传(默认 None)——行为须与改动前完全一致(回归保护)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
+    p = s5_audio.run(_project(), _writing_tts(), "alloy", tmp_path, manifest_path=manifest)
+    assert p.bgm.endswith("calm.mp3")
+
+
+def test_build_music_prompt_includes_tone_and_style_tags():
+    p = _project()
+    p.params.tone = "奇幻"
+    p.style_preset = "guofeng_ink"
+    prompt = s5_audio._build_music_prompt(p)
+    assert "Mystical" in prompt
+    assert "Guzheng" in prompt
+    assert "Instrumental" in prompt
+
+
+def test_target_music_duration_caps_at_max():
+    p = _project()
+    p.params.duration_min = 5
+    assert s5_audio._target_music_duration_s(p) == 180.0    # 300s 封顶到 180.0
+    p.params.duration_min = 1
+    assert s5_audio._target_music_duration_s(p) == 60.0      # 未封顶
