@@ -1,6 +1,6 @@
 # shanhai 部署到 DGX Spark(团队内网 · 可生成 · 本地 LLM + GPU TTS)
 
-> 状态:P0/P1/**P2(GPU TTS)均已上线**(2026-07-11/12);P3(Ollama 适配器)已开发待部署。DGX 现为"本地 LLM+云图像+本地 GPU TTS+本地合成"完整闭环。
+> 状态:P0/P1/**P2(GPU TTS)均已上线**(2026-07-11/12);P3(Ollama 适配器)已开发待部署。**P4(端点/模型配置 Web 界面)已上线**(2026-07-12)。DGX 现为"本地 LLM+云图像+本地 GPU TTS+本地合成"完整闭环,且支持 Web 端按环节切换端点/模型。
 > 前置:R1 冒烟见 [decisions/0006](decisions/0006-r1-local-llm-smoke.md)。
 
 ## P2 GPU TTS 已上线(2026-07-12)
@@ -109,3 +109,32 @@ R1 已验证 DGX(GX10/GB10,119G 统一内存,Ubuntu 24.04 aarch64,团队共用)�
 - **分句更糟**:长句分句合成 19.3s vs 单发 16s,句间硬拼更长更碎;分句的唯一收益(防截断)对 CosyVoice2 已消失,只剩 N× 调用成本。
 
 **结论/改动**:`s5_audio._synthesize_full` 改为**整段单发优先**(1 次调用、自然),仅当单发疑似截断(时长 < 字数×`MIN_MS_PER_CHAR`)才**自动退化**到旧的分句路径(兼容会截断的弱模型,如 Mac Qwen3);`MIN_MS_PER_CHAR` 380→150(只兜真正的严重截断)。跨后端安全、无需新配置。
+
+## P4:端点/模型配置 Web 界面已上线(2026-07-12)
+
+**内容**:Web header 齿轮按钮 → 配置面板,可在线设置 LLM/图像/TTS 的端点/密钥/模型,支持**全局默认 + 按环节(S0–S5)覆盖**(如 S1 走云端强模型、S2 走本地 Ollama),运行时生效、无需改 `.env` 或重启。持久化于 `~/shanhai/config.json`(gitignore,叠加在 `.env` 之上;不覆盖不重跑不影响已有配置)。开发过程:brainstorm → ultracode 多 agent 落地 → 4 镜头对抗审计 → `/code-review` xhigh 复审(10 镜头,修正合并语义等正确性问题)。Mac 侧 233 pytest 全绿。
+
+**部署记录**:
+- 常规流程:Mac `main`(commit `e94142b`)→ 确认 DGX 无在途任务 → rsync(`--exclude .env --exclude projects --exclude config.json`)→ DGX `uv sync`(无新依赖)→ DGX `uv run pytest -q`(aarch64,233 passed)→ `systemctl --user restart shanhai-web`。
+- **一次性状况**:重启前检测到一个 `queued` 任务(`stepid`/雷峰塔,提交仅 3 分钟,非重启前遗留僵尸),用户明确指示终止重启;`reconcile_zombie_jobs()` 按既有机制在启动时自动把它对账为 `error: 服务重启,生成中断`,符合设计,无需额外处理。
+- **验证**:`/api/meta`、新增 `/api/config`(GET 返回 `stage_clients`/`defaults`/`global`/`stages`,密钥脱敏)均 200;内网入口 `192.168.199.107:8080` 200;cpolar 隧道进程未受影响(独立进程,重启 `shanhai-web` 不涉及);dist 清理了 rsync 遗留的旧构建 hash 文件(无功能影响,仅整洁)。
+- 团队使用:内网 `http://192.168.199.107:8080` 打开后点右上角齿轮即可配置。
+
+## LLM 模型变更(2026-07-12):gpt-oss:120b → glm-4.7-flash:latest
+
+**背景**:探查 DGX 实际生效配置时发现 `.env` 已与本文档记录脱节——图像早已从云端 tu-zi 迁移到本地 `shanhai-image.service`(ComfyUI shim,`127.0.0.1:8091`→`127.0.0.1:8188`,ComfyUI 由共用机上另一系统用户 `wuzi` 跑),LLM 模型是 `gpt-oss:120b` 而非文档写的 `qwen3.5:122b`;且 `SHANHAI_LLM_PROVIDER` 未设置(默认 `openai` 兼容层,P3 原生 Ollama 适配器已开发但未启用,按 [decisions/0006](decisions/0006-r1-local-llm-smoke.md) 原生适配器快 10×,待办)。
+
+**本次变更**:`SHANHAI_LLM_MODEL` 从 `gpt-oss:120b`(65.4G)改为 `glm-4.7-flash:latest`(19G on disk / ~40G resident)。原因:`glm-4.7-flash` 是 `ollama ps` 里当时**已常驻显存**的模型(可能被 `wuzi` 或团队其他人占用中),而 `gpt-oss:120b` 未加载,每次生成都要先触发 Ollama 换模型,拖慢首次响应且加剧共用机显存压力。
+
+**操作**:直接改 DGX `~/shanhai/.env`(不经 Mac/rsync,机器专属配置)→ 确认 `/api/projects` 无活跃任务 → `systemctl --user restart shanhai-web`(`EnvironmentFile` 只在启动时读取,必须重启生效)→ 验证 `/proc/<pid>/environ` 确认新值已加载。
+
+**已知现状(本文档当前的真实基线,供下次核对用)**:
+```
+SHANHAI_BASE_URL=http://127.0.0.1:11434/v1        # 本机 Ollama
+SHANHAI_LLM_MODEL=glm-4.7-flash:latest
+SHANHAI_IMAGE_BASE_URL=http://127.0.0.1:8091/v1    # 本地 shanhai-image.service → ComfyUI:8188
+SHANHAI_IMAGE_MODEL=comfyui-local
+SHANHAI_TTS_BASE_URL=http://127.0.0.1:8090/v1      # shanhai-tts.service,CosyVoice2
+SHANHAI_TTS_MODEL=cosyvoice2
+```
+**待办**(发现但未处理,留给下次):`SHANHAI_LLM_PROVIDER=ollama` 未启用(原生适配器提速 10×);团队共用 Ollama 显存,当前常驻模型会随其他用户使用漂移,生成前建议 `ollama ps` 确认。
