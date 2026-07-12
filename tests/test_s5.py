@@ -201,9 +201,49 @@ def test_s5_silent_fallback_on_tts_failure(mock_probe, mock_sh, tmp_path: Path):
     p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
     assert p.storyboard[0].audio.endswith("page_01.mp3")   # 坏页走静音兜底,仍有音轨
     assert p.storyboard[0].duration_ms == 2500             # max(2500, 3字/4)
+    assert p.storyboard[0].silent is True                  # 坏页标记静音兜底
     assert mock_sh.called                                  # 调用了 ffmpeg 生成静音
     assert p.storyboard[1].audio.endswith("page_02.mp3")   # 好页正常合成
-    assert p.status["s5"] == "done"                        # 全页有音频(含兜底)
+    assert p.storyboard[1].silent is False                 # 好页真人解说,非静音
+    assert p.status["s5"] == "partial"                     # 含静音页 → 不诚实地报 done
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_all_silent_is_partial(mock_probe, mock_sh, tmp_path: Path):
+    # 全页 TTS 失败 → 全部静音兜底:仍有音轨但不算真人解说,状态须诚实为 partial
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.storyboard = [
+        StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
+                       caption="页一。", emotion="宁静"),
+        StoryboardCell(index=2, scene_ref="1-2", visual_desc="v", characters=[],
+                       caption="页二。", emotion="宁静"),
+    ]
+    tts = MagicMock(); tts.synthesize.side_effect = TTSError("boom")
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    assert p.status["s5"] == "partial"                     # 全静音不算 done
+    assert all(c.silent is True for c in p.storyboard)     # 每页均标记静音兜底
+    assert all(c.audio for c in p.storyboard)              # 仍有静音音轨,成片完整
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_resynthesizes_silent_fallback_on_rerun(mock_probe, mock_sh, tmp_path: Path):
+    # C4:上轮静音兜底的页(audio 有值但 silent=True)重跑时不被跳过,应再次尝试真人合成
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = _project()                                         # caption="西湖初遇。"
+    (tmp_path / "audio").mkdir(parents=True)
+    (tmp_path / "audio" / "page_01.mp3").write_bytes(b"silent")
+    p.storyboard[0].audio = "audio/page_01.mp3"
+    p.storyboard[0].silent = True                          # 上轮静音兜底,文件已存在
+    tts = _writing_tts()
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    tts.synthesize.assert_called()                         # TTS 恢复,静音页重合成而非跳过
+    assert p.storyboard[0].silent is False                 # 补回真人解说
+    assert p.status["s5"] == "done"
 
 
 @patch("shanhai.ffmpeg.sh", side_effect=RuntimeError("no ffmpeg"))

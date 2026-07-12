@@ -6,6 +6,7 @@ dependencies = [
   "httpx>=0.27",
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
+  "python-dotenv>=1.0",  # config.load_env 直接依赖(勿只靠 pydantic-settings 传递)
   "typer>=0.12",
   "pillow>=10.3",
   "fastapi>=0.111",

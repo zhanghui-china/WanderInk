@@ -398,6 +398,7 @@ function InsertPageForm({
       <textarea
         className={`${fieldCls} h-14 resize-none`}
         placeholder="旁白"
+        maxLength={80}
         value={caption}
         onChange={(e) => setCaption(e.target.value)}
       />
@@ -565,6 +566,7 @@ function PageCard({
             <span className="text-[10px] tracking-[2px] text-muted">旁白</span>
             <textarea
               className={`${fieldCls} mt-0.5 h-16 resize-none`}
+              maxLength={80}
               value={caption}
               onChange={(e) => setCaption(e.target.value)}
             />
@@ -656,6 +658,9 @@ function PageCard({
             </span>
             {pg.duration_ms > 0 && (
               <span className="text-muted">{(pg.duration_ms / 1000).toFixed(1)}s</span>
+            )}
+            {pg.silent && pg.audio && (
+              <span className="rounded-full bg-kraft px-2 py-0.5 text-muted">静音兜底</span>
             )}
             {pg.status === 'failed' && <span className="text-cinnabar">生成失败</span>}
           </div>

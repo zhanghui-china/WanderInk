@@ -40,10 +40,22 @@ def test_structured_sends_json_schema_as_format():
 
 
 @respx.mock
-@patch("shanhai.providers.llm_ollama.time.sleep")
+@patch("shanhai.providers._http.time.sleep")
 def test_chat_retries_transient(_sleep):
     route = respx.post("http://dgx.example.com:11434/api/chat")
     route.side_effect = [httpx.Response(503), _resp("好")]
+    assert OllamaLLMClient(BASE, "ollama", "m").chat("s", "u") == "好"
+    assert route.call_count == 2
+
+
+@respx.mock
+@patch("shanhai.providers._http.time.sleep")
+def test_chat_retries_on_transport_error(_sleep):
+    # 之前裸 self._client.post() 无 try/except:RemoteProtocolError 直接不重试地传播,
+    # 瞬时故障(DGX 经隧道链路更易触发)会直接杀死 Ollama 路径
+    route = respx.post("http://dgx.example.com:11434/api/chat")
+    route.side_effect = [
+        httpx.RemoteProtocolError("Server disconnected without sending a response"), _resp("好")]
     assert OllamaLLMClient(BASE, "ollama", "m").chat("s", "u") == "好"
     assert route.call_count == 2
 

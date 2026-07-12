@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from shanhai.schema import Legend, Project, StoryboardCell
 from shanhai.steps import s6_compose
 from shanhai.steps.s6_compose import _credits_lines
@@ -57,8 +59,38 @@ def test_s6_kenburns_xfade_pipeline(tmp_path: Path):
 def test_s6_skips_missing_and_unconfirmed_cells(tmp_path: Path):
     p = Project(project_id="x", scenic_spot="雷峰塔")
     p.legend = Legend(title="白蛇传", summary="s", source_type="民间传说", sources=["《警世通言》"])
+    (tmp_path / "pages").mkdir(parents=True); (tmp_path / "audio").mkdir()
+    (tmp_path / "pages/page_01.png").write_bytes(b"png")
+    (tmp_path / "audio/page_01.mp3").write_bytes(b"mp3")
     p.storyboard = [
+        # confirmed 且产物文件齐备 -> 入选,产出正文页 clip
+        StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[], caption="c",
+                       emotion="宁静", image="pages/page_01.png", audio="audio/page_01.mp3",
+                       duration_ms=6800, status="confirmed"),
         # confirmed 但产物文件不存在 -> A5 应跳过而非喂给 ffmpeg 崩溃
+        StoryboardCell(index=2, scene_ref="1-2", visual_desc="v", characters=[], caption="c",
+                       emotion="宁静", image="pages/page_02.png", audio="audio/page_02.mp3",
+                       duration_ms=6800, status="confirmed"),
+        # 未确认页 -> 跳过
+        StoryboardCell(index=3, scene_ref="1-3", visual_desc="v", characters=[], caption="c",
+                       emotion="宁静", status="draft"),
+    ]
+    with patch("shanhai.steps.s6_compose.ffmpeg.sh") as sh, \
+         patch("shanhai.steps.s6_compose.typeset.title_card"), \
+         patch("shanhai.steps.s6_compose.typeset.credits_card"), \
+         patch("shanhai.steps.s6_compose.typeset.overlay_layer") as ov:
+        p = s6_compose.run(p, tmp_path)
+    assert sh.call_count == 5           # 片头 + 1 正文页 + 片尾 + concat + finalize,跳过另两页
+    assert ov.call_count == 1           # 仅入选页生成 overlay
+    assert p.status["s6"] == "done"
+
+
+def test_s6_refuses_empty_when_no_content_cells(tmp_path: Path):
+    # 0 个 confirmed+image+audio 页 -> 拒绝产出仅片头/片尾的空片,raise 让管线记 error
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.legend = Legend(title="白蛇传", summary="s", source_type="民间传说", sources=["《警世通言》"])
+    p.storyboard = [
+        # confirmed 但产物文件不存在 -> 跳过
         StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[], caption="c",
                        emotion="宁静", image="pages/page_01.png", audio="audio/page_01.mp3",
                        duration_ms=6800, status="confirmed"),
@@ -69,9 +101,10 @@ def test_s6_skips_missing_and_unconfirmed_cells(tmp_path: Path):
     with patch("shanhai.steps.s6_compose.ffmpeg.sh") as sh, \
          patch("shanhai.steps.s6_compose.typeset.title_card"), \
          patch("shanhai.steps.s6_compose.typeset.credits_card"):
-        p = s6_compose.run(p, tmp_path)
-    assert sh.call_count == 4           # 仅 片头 + 片尾 + concat + finalize,无正文页 clip
-    assert p.status["s6"] == "done"
+        with pytest.raises(ValueError, match="拒绝产出空片"):
+            s6_compose.run(p, tmp_path)
+    assert sh.call_count == 0            # 空片提前拒绝,不浪费任何 ffmpeg 合成
+    assert "s6" not in p.status          # 未标记 done
 
 
 def test_credits_original_not_labeled_as_legend():

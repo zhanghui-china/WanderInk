@@ -1,11 +1,10 @@
 import json
 import re
-import time
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
-_TRANSIENT = {429, 500, 502, 503, 504}  # 代理瞬时过载(如"资源不足"503),可重试;400 不可重试
+from shanhai.providers._http import request_with_retry
 
 
 class LLMError(Exception):
@@ -22,27 +21,14 @@ class LLMClient:
         )
 
     def chat(self, system: str, user: str, temperature: float = 0.7, retries: int = 2) -> str:
-        for attempt in range(retries + 1):
-            try:
-                r = self._client.post("/chat/completions", json={
-                    "model": self.model,
-                    "temperature": temperature,
-                    "messages": [{"role": "system", "content": system},
-                                 {"role": "user", "content": user}],
-                })
-            except httpx.TransportError:
-                # 连接层瞬时故障(超时/连接被对端掐断等),与下面的 5xx 重试同一退避节奏;
-                # 本地大模型单次耗时数分钟,长连接经隧道更易被中间网络设备断开。
-                if attempt == retries:
-                    raise
-                time.sleep(2 * (attempt + 1))
-                continue
-            if r.status_code in _TRANSIENT and attempt < retries:
-                time.sleep(2 * (attempt + 1))
-                continue
-            r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"]
-        raise LLMError("unreachable")  # pragma: no cover
+        r = request_with_retry(lambda: self._client.post("/chat/completions", json={
+            "model": self.model,
+            "temperature": temperature,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+        }), retries)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
 
     def structured[T: BaseModel](self, system: str, user: str,
                                  schema: type[T], retries: int = 2) -> T:

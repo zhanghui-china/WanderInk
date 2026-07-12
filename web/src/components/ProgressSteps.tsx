@@ -61,7 +61,13 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
         <span className="font-serif text-base font-semibold tracking-wide text-ink">生成进度</span>
         {running && <span className="h-2 w-2 animate-shy-pulse rounded-full bg-cinnabar" />}
         <span className="text-xs tracking-wide text-muted">
-          {running ? '正在生成…' : project.pipeline === 'done' ? '全部完成' : project.pipeline}
+          {running
+            ? '正在生成…'
+            : project.pipeline === 'done'
+              ? '全部完成'
+              : project.pipeline.startsWith('done(降级')
+                ? '完成(部分页静音兜底)'
+                : project.pipeline}
         </span>
       </div>
 

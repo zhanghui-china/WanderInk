@@ -18,13 +18,17 @@ from pydantic import BaseModel
 
 from shanhai import editing, export, store
 from shanhai.cli import _AUDIENCES, _MINUTES, _TONES, _clients
-from shanhai.config import Settings
+from shanhai.config import Settings, load_env
 from shanhai.schema import Project
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s6_compose)
 from shanhai.styles import STYLE_PRESETS
 
 app = FastAPI(title="WanderInk · 有声连环画生成器")
+
+# 把 .env 加载进 os.environ,供下面的 os.getenv 与之后的 Settings() 读取。
+# override=False:已存在的进程环境变量(如 systemd EnvironmentFile 注入)优先于 .env。
+load_env()
 
 # CORS 来源可经 SHANHAI_CORS_ORIGINS(逗号分隔)收敛;默认 * 便于本地 dev。
 # 此处直接读环境变量而非构造 Settings():middleware 在 import 期注册,
@@ -46,6 +50,21 @@ _JOBS: dict[str, Future] = {}
 
 
 # ---------- 后台管线 ----------
+
+def _deliverable_status(p: Project) -> str:
+    """诚实闸门:据当前状态判定「整体是否已交付一部成片」。
+    无 output['mp4'](未合成/编辑后已失效)→ partial:尚未合成,而非 done(单步重跑 s2–s5 会走到这)。
+    有 mp4 但无成图页面 → error(理论不该发生,防御);
+    有 mp4 且含静音兜底页 → 降级 done;全程真人解说才 → 纯 done。"""
+    if not p.output.get("mp4"):
+        return "partial: 尚未合成成片"
+    if not p.is_deliverable():
+        return "error: 生成未产出可交付内容(无成图页面)"
+    s = p.content_summary()
+    if s["silent"] > 0:
+        return f"done(降级:{s['narrated']}/{s['total']} 页真人解说,{s['silent']} 页静音兜底)"
+    return "done"
+
 
 def _pipeline(project_id: str, s: Settings, story: str | None) -> None:
     """在后台线程里从 S0 一路跑到 MP4,每步落盘,pipeline 状态写入 project.status。"""
@@ -77,7 +96,7 @@ def _pipeline(project_id: str, s: Settings, story: str | None) -> None:
         for _name, fn in stages:
             fn()
             store.save(p)
-        p.status["pipeline"] = "done"
+        p.status["pipeline"] = _deliverable_status(p)
         store.save(p)
     except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
         p.status["pipeline"] = f"error: {e}"
@@ -101,7 +120,7 @@ def _mp4_url(mp4: str) -> str | None:
 def _serialize(p: Project) -> dict:
     pages = [{
         "index": c.index, "caption": c.caption, "emotion": c.emotion,
-        "status": c.status, "duration_ms": c.duration_ms,
+        "status": c.status, "duration_ms": c.duration_ms, "silent": c.silent,
         "scene_ref": c.scene_ref, "visual_desc": c.visual_desc, "characters": c.characters,
         "image": _file_url(p.project_id, c.image),
         "audio": _file_url(p.project_id, c.audio),
@@ -121,6 +140,8 @@ def _serialize(p: Project) -> dict:
         "script_title": p.script.title if p.script else None,
         "characters": characters,
         "pages": pages,
+        "deliverable": p.is_deliverable(),
+        "content_summary": p.content_summary(),
         "mp4": _mp4_url(p.output.get("mp4", "")),
         "zip": _mp4_url(p.output.get("zip", "")),
         "pdf": _mp4_url(p.output.get("pdf", "")),
@@ -358,8 +379,10 @@ def _run_step(project_id: str, name: str, s: Settings) -> None:
             p = s5_audio.run(p, tts, s.tts_voice, workdir)
         elif name == "s6":
             p = s6_compose.run(p, workdir)
+        if name != "s6":
+            p.output.clear()   # 重跑上游步骤使已合成的 mp4/zip/pdf 失效,清掉避免残留"假成片"
         store.save(p)
-        p.status["pipeline"] = "done"
+        p.status["pipeline"] = _deliverable_status(p)
         store.save(p)
     except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
         p.status["pipeline"] = f"error: {e}"

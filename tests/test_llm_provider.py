@@ -14,7 +14,7 @@ def _resp(text: str) -> httpx.Response:
     return httpx.Response(200, json={"choices": [{"message": {"content": text}}]})
 
 @respx.mock
-@patch("shanhai.providers.llm.time.sleep")
+@patch("shanhai.providers._http.time.sleep")
 def test_chat_retries_transient_then_succeeds(mock_sleep):
     route = respx.post(f"{BASE}/chat/completions")
     route.side_effect = [httpx.Response(503, text="资源不足"), _resp("好")]
@@ -22,7 +22,7 @@ def test_chat_retries_transient_then_succeeds(mock_sleep):
     assert route.call_count == 2                      # 503 后重试成功
 
 @respx.mock
-@patch("shanhai.providers.llm.time.sleep")
+@patch("shanhai.providers._http.time.sleep")
 def test_chat_retries_on_transport_error(mock_sleep):
     # chat() 之前对 self._client.post() 无任何 try/except:连接被对端掐断
     # (RemoteProtocolError 等)会直接不重试地传播,DGX 经隧道链路更易触发

@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from concurrent.futures import Future
 from unittest.mock import patch
 
@@ -26,6 +29,21 @@ def test_create_blocked_in_readonly(monkeypatch):
     r = client.post("/api/projects", json={"scenic_spot": "雷峰塔"})
     assert r.status_code == 403                  # 只读模式拒绝新建生成
     assert client.get("/api/meta").json()["readonly"] is True
+
+
+def test_readonly_engaged_via_env_file_only(tmp_path):
+    # H7/P6 回归(真集成,子进程隔离):只在 .env 写 SHANHAI_READONLY=true、进程环境里没有,
+    # 全新进程 import shanhai.api 后其模块级 _READONLY 必须为 True——即真正走 api.py 的
+    # load_env()→os.getenv 顺序,而非在测试里旁路重放一遍解析逻辑(那样重构挪动/删掉
+    # load_env 也测不出)。子进程避免污染本进程 os.environ 与已加载的 api 模块。
+    (tmp_path / ".env").write_text("SHANHAI_READONLY=true\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SHANHAI_")}
+    r = subprocess.run(
+        [sys.executable, "-c", "import shanhai.api as a; print(a._READONLY)"],
+        cwd=tmp_path, env=env, capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "True"
 
 
 def test_create_validates_input():
@@ -70,6 +88,60 @@ def test_serialize_builds_urls():
     assert d["pages"][0]["characters"] == ["白娘子"]
     assert d["characters"][0]["image"] == "/files/abcd/characters/白娘子.png"
     assert d["script_title"] == "白蛇传"
+    assert d["pages"][0]["silent"] is False              # 真人解说页非静音
+    assert d["deliverable"] is True                      # 有成图页 → 可交付
+    assert d["content_summary"] == {"total": 1, "imaged": 1, "narrated": 1, "silent": 0}
+
+
+def _imaged_page(**kw) -> StoryboardCell:
+    base = dict(index=1, scene_ref="1-1", visual_desc="v", characters=[], caption="c",
+                emotion="宁静", image="pages/page_01.png", audio="audio/page_01.mp3",
+                duration_ms=3200, status="confirmed")
+    base.update(kw)
+    return StoryboardCell(**base)
+
+
+def test_pipeline_status_done_when_fully_narrated():
+    p = Project(project_id="dlv1", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]                      # 有图 + 真人解说(silent 默认 False)
+    p.output["mp4"] = "projects/dlv1/output/final.mp4"   # 已合成成片
+    assert api._deliverable_status(p) == "done"
+
+
+def test_pipeline_status_degraded_when_silent_pages():
+    p = Project(project_id="dlv2", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page(silent=True)]           # 有图但静音兜底
+    p.output["mp4"] = "projects/dlv2/output/final.mp4"
+    st = api._deliverable_status(p)
+    assert st.startswith("done(降级")                    # 诚实标注降级
+    assert "1 页静音兜底" in st
+
+
+def test_pipeline_status_error_when_nothing_imaged():
+    p = Project(project_id="dlv3", scenic_spot="雷峰塔")
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
+                                   caption="c", emotion="宁静", status="draft")]
+    p.output["mp4"] = "projects/dlv3/output/final.mp4"   # 有 mp4 却无成图页(防御分支)
+    assert api._deliverable_status(p).startswith("error")   # 无成图页 → 不可交付
+
+
+def test_pipeline_status_partial_when_not_composed():
+    # 回归(rootcause 验证复现):有图 + 真人解说但尚未合成 mp4(如编辑后单步重跑 s5),
+    # 不能报 done —— 否则 pipeline=done 而 mp4=null 就是被本次改动要根除的"假成片"。
+    p = Project(project_id="dlv4", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]                      # 内容齐全但 output 为空
+    assert api._deliverable_status(p) == "partial: 尚未合成成片"
+    assert not p.output.get("mp4")
+
+
+def test_serialize_marks_silent_and_non_deliverable():
+    p = Project(project_id="ser2", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page(silent=True), _imaged_page(index=2, status="draft",
+                                                            image="", audio="")]
+    d = api._serialize(p)
+    assert d["pages"][0]["silent"] is True
+    assert d["content_summary"] == {"total": 2, "imaged": 1, "narrated": 0, "silent": 1}
+    assert d["deliverable"] is True                      # 至少一页成图
 
 
 @patch("shanhai.api._pipeline")            # 不真跑生成

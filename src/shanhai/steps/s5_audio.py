@@ -107,28 +107,35 @@ def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
     audio_dir.mkdir(parents=True, exist_ok=True)
     for cell in project.storyboard:
         out = audio_dir / f"page_{cell.index:02d}.mp3"
-        if cell.audio and out.exists():
+        # 静音兜底页不短路:即使已有音轨也应重试真人合成,以便 TTS 恢复后重跑补回解说。
+        if cell.audio and not cell.silent and out.exists():
             cell.duration_ms = probe_duration_ms(out)
             continue
         try:
             cell.duration_ms = _synthesize_full(tts, cell.caption, effective_voice, out,
                                                 speed=speed)
             cell.audio = str(out.relative_to(workdir))
+            cell.silent = False
         except Exception as e:  # noqa: BLE001 TTS/探测失败 → 静音兜底,成片完整但该页无解说
             try:
                 dur = _estimate_ms(cell.caption)
                 ffmpeg.sh(ffmpeg.silent_audio_cmd(dur, out))
                 cell.audio = str(out.relative_to(workdir))
                 cell.duration_ms = dur
+                cell.silent = True
                 print(f"第 {cell.index} 页 TTS 失败,静音兜底({dur}ms):{e}")
             except Exception as e2:  # noqa: BLE001 兜底也失败 → 留空,S6 跳过该页
                 print(f"第 {cell.index} 页配音+兜底均失败:{e2}")
                 cell.audio = ""
                 cell.duration_ms = 0
+                cell.silent = False   # 无音轨,silent 复位,免让 UI 误标"静音兜底"
     tracks = json.loads(manifest_path.read_text(encoding="utf-8")).get("tracks", [])
     if tracks and project.storyboard:
         mood = Counter(c.emotion for c in project.storyboard).most_common(1)[0][0]
         match = next((t for t in tracks if mood in t.get("emotions", [])), tracks[0])
         project.bgm = str(manifest_path.parent / match["file"])
-    project.status["s5"] = "done" if all(c.audio for c in project.storyboard) else "partial"
+    # 诚实状态:仅当每页都有真人解说(有音频且非静音兜底)才算 done;否则 partial
+    narrated = bool(project.storyboard) and all(
+        c.audio and not c.silent for c in project.storyboard)
+    project.status["s5"] = "done" if narrated else "partial"
     return project

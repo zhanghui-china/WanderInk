@@ -1,10 +1,24 @@
 from pathlib import Path
 
 from shanhai import export, ffmpeg, typeset
-from shanhai.schema import Legend, Project
+from shanhai.schema import Legend, Project, StoryboardCell
 
 TITLE_MS = 2500
 CREDITS_MS = 3000
+
+
+def _content_cells(project: Project, workdir: Path) -> list[StoryboardCell]:
+    """入选内容页:确认且图/音齐备、产物文件确实存在的页。跳过的页打印原因。"""
+    cells: list[StoryboardCell] = []
+    for cell in project.storyboard:
+        if cell.status != "confirmed" or not (cell.image and cell.audio):
+            print(f"跳过第 {cell.index} 页(status={cell.status})")
+            continue
+        if not (workdir / cell.image).exists() or not (workdir / cell.audio).exists():
+            print(f"跳过第 {cell.index} 页(产物缺失)")
+            continue
+        cells.append(cell)
+    return cells
 
 
 def _credits_lines(legend: Legend | None) -> list[str]:
@@ -29,6 +43,11 @@ def run(project: Project, workdir: Path) -> Project:
     overlays_dir = out_dir / "overlays"
     overlays_dir.mkdir(parents=True, exist_ok=True)
 
+    # 先筛入选内容页:0 页则拒绝产出(仅片头+片尾的)空片,让管线记 error 而非伪造成片
+    content_cells = _content_cells(project, workdir)
+    if not content_cells:
+        raise ValueError("无可用成图页面,拒绝产出空片")
+
     title_png = out_dir / "title.png"
     legend_title = project.legend.title if project.legend else ""
     typeset.title_card(project.scenic_spot, legend_title, title_png)
@@ -43,14 +62,8 @@ def run(project: Project, workdir: Path) -> Project:
     clips.append(head)
     durations.append(ffmpeg.clip_duration_s(TITLE_MS, has_audio=False))
     page_i = 0
-    for cell in project.storyboard:
-        if cell.status != "confirmed" or not (cell.image and cell.audio):
-            print(f"跳过第 {cell.index} 页(status={cell.status})")
-            continue
+    for cell in content_cells:
         img, aud = workdir / cell.image, workdir / cell.audio
-        if not img.exists() or not aud.exists():
-            print(f"跳过第 {cell.index} 页(产物缺失)")
-            continue
         clip = clips_dir / f"{cell.index:02d}.mp4"
         overlay = overlays_dir / f"page_{cell.index:02d}.png"
         typeset.overlay_layer(cell.caption, overlay)

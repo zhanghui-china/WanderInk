@@ -524,6 +524,7 @@ dependencies = [
     { name = "pillow" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "python-dotenv" },
     { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -542,6 +543,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.3" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.3" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
