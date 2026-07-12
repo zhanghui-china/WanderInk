@@ -1,11 +1,35 @@
 # tests/test_image_provider.py
 import base64
+import io
 from pathlib import Path
 from unittest.mock import patch
 import respx, httpx, pytest
+from PIL import Image
 from shanhai.providers.image import ImageClient, ImageGenError
 
-PNG = base64.b64encode(b"fakepng").decode()
+
+def _tiny_png() -> bytes:
+    """4x4 四色小图,有实质像素方差,满足 generate() 内置的合理性检查。
+    替代此前 b"fakepng"/b"realpng" 占位符(非法图片格式,会被新检查误判)。"""
+    im = Image.new("RGB", (4, 4))
+    for xy, color in zip([(0, 0), (1, 0), (0, 1), (1, 1)],
+                         [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]):
+        im.putpixel(xy, color)
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _solid_png(color=(0, 0, 0)) -> bytes:
+    """近似纯色图,模拟 VAE 解码出 NaN 被静默转黑图的失败场景(见 2026-07-13 DGX 实测)。"""
+    im = Image.new("RGB", (100, 100), color)
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+REAL_PNG = _tiny_png()
+PNG = base64.b64encode(REAL_PNG).decode()
 BASE = "https://p.example.com/v1"
 
 
@@ -14,7 +38,7 @@ def test_generations_b64():
     respx.post(f"{BASE}/images/generations").mock(
         return_value=httpx.Response(200, json={"data": [{"b64_json": PNG}]}))
     c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
-    assert c.generate("a cat") == b"fakepng"
+    assert c.generate("a cat") == REAL_PNG
 
 
 @respx.mock
@@ -24,7 +48,7 @@ def test_generate_retries_on_timeout(mock_sleep):
     route.side_effect = [httpx.ReadTimeout("slow"),
                          httpx.Response(200, json={"data": [{"b64_json": PNG}]})]
     c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
-    assert c.generate("a cat") == b"fakepng"           # 超时后重试成功
+    assert c.generate("a cat") == REAL_PNG           # 超时后重试成功
     assert route.call_count == 2
 
 
@@ -38,7 +62,7 @@ def test_generate_retries_on_remote_protocol_error(mock_sleep):
         httpx.RemoteProtocolError("Server disconnected without sending a response"),
         httpx.Response(200, json={"data": [{"b64_json": PNG}]})]
     c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
-    assert c.generate("a cat") == b"fakepng"
+    assert c.generate("a cat") == REAL_PNG
     assert route.call_count == 2
 
 
@@ -58,7 +82,7 @@ def test_edits_with_reference(tmp_path: Path):
     route = respx.post(f"{BASE}/images/edits").mock(
         return_value=httpx.Response(200, json={"data": [{"b64_json": PNG}]}))
     c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
-    assert c.generate("a cat", references=[ref]) == b"fakepng"
+    assert c.generate("a cat", references=[ref]) == REAL_PNG
     assert b"refpng" in route.calls[0].request.content
 
 
@@ -68,9 +92,9 @@ def test_generations_empty_b64_falls_back_to_url():
     respx.post(f"{BASE}/images/generations").mock(return_value=httpx.Response(200, json={
         "data": [{"b64_json": "", "url": "https://img.example.com/x.png", "revised_prompt": "r"}]}))
     respx.get("https://img.example.com/x.png").mock(
-        return_value=httpx.Response(200, content=b"realpng"))
+        return_value=httpx.Response(200, content=REAL_PNG))
     c = ImageClient(BASE, "sk", "gpt-image-2", mode="images_api")
-    assert c.generate("a cat") == b"realpng"
+    assert c.generate("a cat") == REAL_PNG
 
 
 @respx.mock
@@ -79,7 +103,7 @@ def test_chat_mode_images_field():
         "choices": [{"message": {"content": "",
             "images": [{"image_url": {"url": f"data:image/png;base64,{PNG}"}}]}}]}))
     c = ImageClient(BASE, "sk", "nano-banana", mode="chat_api")
-    assert c.generate("a cat") == b"fakepng"
+    assert c.generate("a cat") == REAL_PNG
 
 
 @respx.mock
@@ -108,6 +132,17 @@ def test_chat_mode_http_url_downloaded():
         "choices": [{"message": {"content": "",
             "images": [{"image_url": {"url": "https://img.example.com/x.png"}}]}}]}))
     respx.get("https://img.example.com/x.png").mock(
-        return_value=httpx.Response(200, content=b"realpng"))
+        return_value=httpx.Response(200, content=REAL_PNG))
     c = ImageClient(BASE, "sk", "nano-banana", mode="chat_api")
-    assert c.generate("a cat") == b"realpng"
+    assert c.generate("a cat") == REAL_PNG
+
+
+@respx.mock
+def test_generate_rejects_near_solid_color_image():
+    # 模拟 DGX 实测的 VAE 解码 NaN 静默转黑图场景:HTTP 200 + 结构合法,但像素近似纯色
+    solid = base64.b64encode(_solid_png()).decode()
+    respx.post(f"{BASE}/images/generations").mock(
+        return_value=httpx.Response(200, json={"data": [{"b64_json": solid}]}))
+    c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
+    with pytest.raises(ImageGenError):
+        c.generate("a cat")
