@@ -1,6 +1,6 @@
 # shanhai 部署到 DGX Spark(团队内网 · 可生成 · 本地 LLM + GPU TTS)
 
-> 状态:P0/P1/**P2(GPU TTS)均已上线**(2026-07-11/12);P3(Ollama 适配器)已开发待部署。**P4(端点/模型配置 Web 界面)已上线**(2026-07-12)。DGX 现为"本地 LLM+云图像+本地 GPU TTS+本地合成"完整闭环,且支持 Web 端按环节切换端点/模型。
+> 状态:P0/P1/**P2(GPU TTS)均已上线**(2026-07-11/12);P3(Ollama 适配器)已开发待部署。**P4(端点/模型配置 Web 界面)已上线**(2026-07-12)。**P5(AI 生成 BGM,ACE-Step)已上线**(2026-07-12/13)。DGX 现为"本地 LLM+本地图像(ComfyUI)+本地 GPU TTS+本地 AI BGM+本地合成"完整闭环,且支持 Web 端按环节切换端点/模型。
 > 前置:R1 冒烟见 [decisions/0006](decisions/0006-r1-local-llm-smoke.md)。
 
 ## P2 GPU TTS 已上线(2026-07-12)
@@ -138,3 +138,20 @@ SHANHAI_TTS_BASE_URL=http://127.0.0.1:8090/v1      # shanhai-tts.service,CosyVoi
 SHANHAI_TTS_MODEL=cosyvoice2
 ```
 **待办**(发现但未处理,留给下次):`SHANHAI_LLM_PROVIDER=ollama` 未启用(原生适配器提速 10×);团队共用 Ollama 显存,当前常驻模型会随其他用户使用漂移,生成前建议 `ollama ps` 确认。
+
+## P5:AI 生成 BGM 已上线(2026-07-12/13)
+
+**内容**:S5 环节新增三级降级——AI 生成(本机 ACE-Step,经新建的 `~/music-shim` 转发到 wuzi 的 ComfyUI `:8188`)→ 静态曲库(`assets/bgm/manifest.json`,现状为空,原逻辑原样保留)→ 无 BGM。纯器乐(`lyrics="[instrumental]"`),风格标签从 `project.params.tone`/`style_preset` 查表拼装(不经 LLM),目标时长按 `duration_min×60` 封顶 180s。S6/`ffmpeg.finalize_cmd` 完全不改——混音基础设施早就有,只是曲库一直是空的从未真正触发过。
+
+**`~/music-shim` 部署过程中修的两个真 bug**(记录以防重装踩坑):
+1. **ffmpeg 选错版本**:`/usr/local/bin/ffmpeg`(共享机默认 PATH)是残缺构建,**没有 `libmp3lame` 编码器**,ACE-Step 输出转 mp3 时报 `exit 8`。必须显式指定 `~/anaconda3/envs/shanhai-ffmpeg/bin/ffmpeg`(huntun 独立环境,含完整编码器集),与 `tts_shim.py` 早就踩过的同一个坑。
+2. **WebSocket 监听顺序反了**:最初实现是"先 `POST /prompt` 提交任务,再连 WebSocket 监听完成事件"——若 ComfyUI 命中节点缓存后近乎瞬间完成(两次几乎相同的请求参数很容易触发),会在连接建立前就已完成,监听方永久错过完成事件,直接卡到 `POLL_TIMEOUT_S`(300s)超时。修复为"先连 WebSocket、连上后才提交任务",与 wuzi 的参考脚本 `~/ComfyUI/generate_music_api.py`(`ws.connect()` 在 `queue_prompt()` 之前)同序。
+
+**纯器乐核验**(部署前明确标注为待实测的风险项,现已核验通过):用 `mlx-whisper`(Mac 本地,Apple Silicon)对生成样本做了两次独立转写——锁中文识别出经典的"无语音幻觉伪影"(短暂片段+胡编文本,非真实歌词);不锁语言自动检测,直接把整段转写成单词 `Music`(Whisper 训练数据对纯配乐场景的标准标注,业内公认的"无人声"信号)。DGX 本地也曾尝试用 `openai-whisper` 做同样核验,但因网络拉 torch 过慢(近一小时仅到 700M)而放弃,改用 Mac 本地 `mlx-whisper` 完成核验(轻量、Apple Silicon 原生,几分钟内出结果)。
+
+**部署记录**:
+- 常规流程:Mac 4 个 commit(provider/S5/CLI-API/测试)→ `--no-ff` 合并 main → rsync → DGX `uv sync` + 253 测试全绿(aarch64)→ `.env` 追加 `SHANHAI_MUSIC_BASE_URL=http://127.0.0.1:8092/v1`、`SHANHAI_MUSIC_MODEL=ace-step-v1.5xl` → 确认无在途任务 → `systemctl --user restart shanhai-web`。
+- **一次性状况**:重启前又出现同一个 `stepid`/雷峰塔测试项目(和 P4 部署那次一模一样的 project_id 与内容,疑似某处周期性生成的固定测试样本,非合法 uuid 格式,不可能经正常建作品流程产生),用户再次明确授权终止;`reconcile_zombie_jobs()` 照常对账为 `error: 服务重启,生成中断`。
+- **真实端到端验证**(非仅测 shim):通过生产 API 建了一个 1 分钟测试作品(`2cd9d616`),完整跑完 S0–S6:`project.bgm` 落在 AI 生成路径(`projects/2cd9d616/audio/bgm.mp3`,60.0s,精确匹配目标时长,证明走的是 AI 分支而非曲库兜底)、`final.mp4` 音视频流均正常(h264+aac,85.16s)。
+- 服务:`shanhai-music.service`(:8090 之后新增,`:8092`),systemd 部署,仿 `shanhai-tts.service`/`shanhai-image.service` 模式;`~/music-shim/main.py` 独立于 shanhai git 仓库(与 `image-shim`/`tts_shim.py` 现状一致)。
+- **待办**(已知但非阻塞):BGM 生成是 S5 里的同步网络调用,在 TTS 并发池之外顺序跑,GPU 排队(与 wuzi 的 ComfyUI、`shanhai-image.service` 共用同一张卡)可能显著拖慢单次生成;Web 配置面板(`SettingsPanel.tsx`)未补齐 music 字段的可视化,目前只能靠 `.env`/`config.json` 直改。

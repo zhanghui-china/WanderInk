@@ -1,15 +1,33 @@
 # src/shanhai/providers/image.py
 import base64
+import io
 import re
 from pathlib import Path
 
 import httpx
+from PIL import Image, ImageStat
 
 from shanhai.providers._http import request_with_retry
+
+# 低于此值判定为近似纯色/异常(NaN 解码静默转黑图,见 2026-07-13 DGX 实测:ComfyUI 的
+# VAE 解码输出 NaN 时,np.clip(NaN,0,255).astype(uint8) 静默转 0,execution_success 照常上报)。
+# 纯黑图 stddev 恰好是 0.0;真实插画哪怕大片留白,主体的色彩/线条变化也远高于这个值。
+MIN_CHANNEL_STDDEV = 2.0
 
 
 class ImageGenError(Exception):
     pass
+
+
+def _reject_if_blank(data: bytes) -> bytes:
+    try:
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+        stddev = ImageStat.Stat(im).stddev
+    except Exception as e:  # noqa: BLE001 无法解码本身也是一种生成异常,统一包成 ImageGenError
+        raise ImageGenError(f"生成图片无法解码: {e}") from e
+    if max(stddev) < MIN_CHANNEL_STDDEV:
+        raise ImageGenError(f"生成图片近似纯色(stddev={[round(s, 2) for s in stddev]}),疑似解码异常")
+    return data
 
 
 class ImageClient:
@@ -28,7 +46,9 @@ class ImageClient:
                  references: list[Path] | None = None, retries: int = 2) -> bytes:
         # 网络调用统一走 request_with_retry(TransportError/瞬时状态码重试);
         # 非瞬时 HTTPStatusError(如内容审核 400)在各 _via_* 里 raise_for_status() 后直接抛出。
-        return self._dispatch(prompt, size, references, retries)
+        # _reject_if_blank 做最后一道内容合理性检查:异常抛 ImageGenError,交给调用方
+        # (S3/S4 现有的 except Exception 重试/降级逻辑)接管,不在此重试。
+        return _reject_if_blank(self._dispatch(prompt, size, references, retries))
 
     def _dispatch(self, prompt: str, size: str, references: list[Path] | None,
                   retries: int) -> bytes:
