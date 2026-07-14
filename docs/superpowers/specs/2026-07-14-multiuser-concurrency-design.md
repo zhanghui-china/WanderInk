@@ -42,7 +42,7 @@
 - `POST /api/logout` → `request.session.clear()`。
 - `GET /api/me` → 返回当前登录用户名(前端用来判断登录态、决定是否跳转登录页)。
 
-**鉴权依赖**:新增 `src/shanhai/auth.py` 的 `current_user(request: Request) -> str`(FastAPI `Depends`),未登录抛 `HTTPException(401)`。**除 `POST /api/login`、`GET /api/logout` 和静态资源(`/`、`/files/*`)外,其余全部端点(含 `GET /api/meta`)都要求登录**——整个 SPA 进门先登录,不做"匿名可看列表"的折中。前端 `App.tsx` 顶层先 `GET /api/me` 判断登录态,未登录直接渲染 `LoginPage`,不发起其它任何 API 请求。
+**鉴权依赖**:新增 `src/shanhai/auth.py` 的 `current_user(request: Request) -> str`(FastAPI `Depends`),未登录抛 `HTTPException(401)`。**除 `POST /api/login`、`POST /api/logout` 和静态资源(`/`、`/files/*`)外,其余全部端点(含 `GET /api/meta`)都要求登录**——整个 SPA 进门先登录,不做"匿名可看列表"的折中。前端 `App.tsx` 顶层先 `GET /api/me` 判断登录态,未登录直接渲染 `LoginPage`,不发起其它任何 API 请求。
 
 **前端**:新增 `web/src/components/LoginPage.tsx`(用户名密码表单,复用 `NewProjectForm.tsx` 的卡片/field/label 样式);`App.tsx` 顶层先 `GET /api/me` 判断登录态,未登录渲染 `LoginPage`;header 加"当前用户 + 退出"按钮。
 
