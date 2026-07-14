@@ -1,5 +1,6 @@
 import { Fragment, useState } from 'react'
 import { api } from '../api'
+import { STYLE_LABEL } from '../styles'
 import type { Meta, ProjectDetail as Detail, Character, Page } from '../types'
 import { ProgressSteps } from './ProgressSteps'
 
@@ -107,7 +108,8 @@ export function ProjectDetailView({
               {project.script_title ?? project.scenic_spot}
             </h1>
             <p className="mt-1 text-[13px] tracking-wide text-muted">
-              {project.scenic_spot} · {project.style_preset} · {project.params.duration_min} 分钟 ·{' '}
+              {project.scenic_spot} · {STYLE_LABEL[project.style_preset] ?? project.style_preset} ·{' '}
+              {project.params.duration_min} 分钟 ·{' '}
               {project.params.audience} · {project.params.tone}
             </p>
           </div>
