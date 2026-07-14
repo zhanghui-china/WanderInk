@@ -46,7 +46,7 @@ class Script(BaseModel):
 
 
 class Panel(BaseModel):
-    """分格漫画的单个格子(仅 params.multi_panel=True 时使用)。"""
+    """漫画格子的单个构图描述(仅 params.multi_panel=True 时使用)。"""
     visual_desc: str
     shot_type: Literal["wide", "medium", "closeup", "insert"] = "medium"
     characters: list[str] = Field(default_factory=list)
