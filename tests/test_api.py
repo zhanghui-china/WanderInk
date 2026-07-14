@@ -383,7 +383,10 @@ def test_run_step_rejects_when_job_pending():
 @patch("shanhai.api.Settings")            # 不读 .env / 建真实客户端
 def test_run_step_queues_job(_settings, mock_run_step):
     p = Project(project_id="stepid", scenic_spot="雷峰塔")
-    with patch("shanhai.api.store.load", return_value=p):
+    # store.save 必须一并 mock——漏了这个之前会把 queued 状态真写进仓库根 projects/stepid/,
+    # 每次跑测试都污染真实数据目录(2026-07-14 实测:DGX 部署前多次撞见这个残留项目)。
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"):
         r = client.post("/api/projects/stepid/steps/s6")
     assert r.status_code == 202
     assert r.json() == {"queued": True}
