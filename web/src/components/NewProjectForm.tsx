@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api'
+import { STYLE_LABEL } from '../styles'
 import type { Meta } from '../types'
 
 export function NewProjectForm({
@@ -123,7 +124,7 @@ export function NewProjectForm({
           <select className={field} value={style} onChange={(e) => setStyle(e.target.value)}>
             {(meta?.styles ?? ['guofeng_ink']).map((s) => (
               <option key={s} value={s}>
-                {s}
+                {STYLE_LABEL[s] ?? s}
               </option>
             ))}
           </select>
