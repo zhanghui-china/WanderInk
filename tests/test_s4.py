@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from PIL import Image
 from shanhai.providers.image import ImageGenError
-from shanhai.schema import CharacterCard, Project, Script, StoryboardCell
+from shanhai.schema import CharacterCard, Panel, Project, Script, StoryboardCell
 from shanhai.steps import s4_pages
 
 def _png() -> bytes:
@@ -22,6 +22,14 @@ def _project(tmp_path: Path) -> Project:
     p.script = Script(title="t", theme="th", acts=[], characters=[card])
     p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="断桥",
                                    characters=["白素贞"], caption="西湖初遇。", emotion="宁静")]
+    return p
+
+def _multi_panel_project(tmp_path: Path, n_panels: int = 2) -> Project:
+    p = _project(tmp_path)
+    p.storyboard[0].panels = [
+        Panel(visual_desc=f"格{i}", shot_type="medium", characters=["白素贞"])
+        for i in range(1, n_panels + 1)
+    ]
     return p
 
 def test_s4_generates_and_composes(tmp_path: Path):
@@ -131,3 +139,58 @@ def test_page_tmpl_uses_species_neutral_wording():
     """PAGE_TMPL 的一致性约束不应假定角色是人类(发型/面部特征对动物角色不适用)。"""
     assert "发型" not in s4_pages.PAGE_TMPL
     assert "面部特征" not in s4_pages.PAGE_TMPL
+
+
+def test_s4_multi_panel_generates_one_call_per_panel_and_composes(tmp_path: Path):
+    image = MagicMock(); image.generate.return_value = _png()
+    p = s4_pages.run(_multi_panel_project(tmp_path, 3), image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 3
+    assert p.storyboard[0].status == "confirmed"
+    assert (tmp_path / "pages" / "page_01.png").exists()
+    assert (tmp_path / "pages" / "page_01_panel1.png").exists()
+    assert (tmp_path / "pages" / "page_01_panel3.png").exists()
+
+
+def test_s4_multi_panel_partial_failure_still_composes(tmp_path: Path):
+    # 3 格,第 2 格全部 3 次尝试都失败,第 1/3 格各一次成功——整页仍应 confirmed,
+    # 排版按实际拿到的 2 格算(不拿占位图硬凑)。
+    image = MagicMock()
+    calls = {"n": 0}
+
+    def side_effect(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] in (2, 3, 4):
+            raise ImageGenError("boom")
+        return _png()
+
+    image.generate.side_effect = side_effect
+    p = s4_pages.run(_multi_panel_project(tmp_path, 3), image, tmp_path, "1536x1024")
+    assert p.storyboard[0].status == "confirmed"
+    assert image.generate.call_count == 5  # 1(格1成功) + 3(格2三次失败) + 1(格3成功)
+    assert (tmp_path / "pages" / "page_01.png").exists()
+    assert not (tmp_path / "pages" / "page_01_panel2.png").exists()
+
+
+def test_s4_multi_panel_all_fail_marks_cell_failed(tmp_path: Path):
+    image = MagicMock(); image.generate.side_effect = ImageGenError("boom")
+    p = s4_pages.run(_multi_panel_project(tmp_path, 2), image, tmp_path, "1536x1024")
+    assert p.storyboard[0].status == "failed"
+    assert not (tmp_path / "pages" / "page_01.png").exists()
+
+
+def test_s4_multi_panel_prompt_includes_shot_hint(tmp_path: Path):
+    p = _multi_panel_project(tmp_path, 1)
+    p.storyboard[0].panels[0].shot_type = "closeup"
+    image = MagicMock(); image.generate.return_value = _png()
+    s4_pages.run(p, image, tmp_path, "1536x1024")
+    prompt = image.generate.call_args.args[0]
+    assert "特写" in prompt
+
+
+def test_s4_single_page_mode_unaffected(tmp_path: Path):
+    # 回归:panels 为空时必须走原有单图路径,字节级行为不变
+    image = MagicMock(); image.generate.return_value = _png()
+    p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 1
+    assert p.storyboard[0].status == "confirmed"
+    assert not (tmp_path / "pages" / "page_01_panel1.png").exists()

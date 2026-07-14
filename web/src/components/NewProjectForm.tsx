@@ -18,6 +18,7 @@ export function NewProjectForm({
   const [story, setStory] = useState('')
   const [voice, setVoice] = useState('')
   const [speed, setSpeed] = useState(1.0)
+  const [multiPanel, setMultiPanel] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const ro = !!meta?.readonly   // 公开演示只读:禁用生成
@@ -36,6 +37,7 @@ export function NewProjectForm({
         story: story.trim() || null,
         voice,
         speed,
+        multi_panel: multiPanel,
       })
       setSpot('')
       setStory('')
@@ -150,6 +152,19 @@ export function NewProjectForm({
             <option value={1.2}>1.2</option>
           </select>
         </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <input
+          id="multi-panel"
+          type="checkbox"
+          checked={multiPanel}
+          onChange={(e) => setMultiPanel(e.target.checked)}
+          className="h-4 w-4 rounded border-line accent-cinnabar"
+        />
+        <label htmlFor="multi-panel" className="text-xs text-ink-soft">
+          启用分格排版(日式分镜)
+        </label>
       </div>
 
       <div>
