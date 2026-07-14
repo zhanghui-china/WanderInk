@@ -26,6 +26,16 @@ const STEP_ACTIONS: { name: string; label: string; destructive?: boolean }[] = [
   { name: 's6', label: '合成' },
 ]
 
+// 各单步重跑按钮的真实前置条件,对应各 step 模块自己的守卫(s2/s3 需先完成 S1,
+// s4/s5/s6 需先有分镜)。按钮不检查这个会让用户点了必然失败的操作——
+// 后端 400 才提示"先完成 S1",体验上是死胡同(见 2026-07-14 zhanghui 花果山事件)。
+function stepReady(name: string, project: Detail): boolean {
+  const hasScript = project.script_title != null
+  const hasPages = project.pages.length > 0
+  if (name === 's2' || name === 's3') return hasScript
+  return hasPages
+}
+
 function SectionTitle({ glyph, children, extra }: { glyph: string; children: React.ReactNode; extra?: React.ReactNode }) {
   return (
     <div className="mb-4 flex items-center gap-2.5">
@@ -123,23 +133,32 @@ export function ProjectDetailView({
         <div className={card}>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium tracking-wide text-muted">补全重生成</span>
-            {STEP_ACTIONS.map((s) => (
-              <button
-                key={s.name}
-                type="button"
-                onClick={() => handleStep(s.name, s.label, s.destructive)}
-                disabled={generating || stepBusy !== null}
-                className={`${toolBtn} ${s.destructive ? 'text-cinnabar hover:border-cinnabar' : ''}`}
-              >
-                {stepBusy === s.name ? '入队中…' : s.label}
-              </button>
-            ))}
+            {STEP_ACTIONS.map((s) => {
+              const ready = stepReady(s.name, project)
+              return (
+                <button
+                  key={s.name}
+                  type="button"
+                  onClick={() => handleStep(s.name, s.label, s.destructive)}
+                  disabled={generating || stepBusy !== null || !ready}
+                  title={ready ? undefined : '前置步骤尚未完成,暂不可执行'}
+                  className={`${toolBtn} ${s.destructive ? 'text-cinnabar hover:border-cinnabar' : ''}`}
+                >
+                  {stepBusy === s.name ? '入队中…' : s.label}
+                </button>
+              )
+            })}
             {pendingCount > 0 && (
               <span className="ml-auto rounded-full bg-amber2/15 px-2.5 py-1 text-xs text-gold">
                 {pendingCount} 页待重生成
               </span>
             )}
           </div>
+          {project.status.s0 === 'done' && project.script_title == null && (
+            <p className="mt-3 text-xs text-cinnabar">
+              剧本生成(S1)未完成,无法补全后续步骤,请新建项目重新生成。
+            </p>
+          )}
         </div>
       )}
 
