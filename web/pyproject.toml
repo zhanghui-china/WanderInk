@@ -1,0 +1,35 @@
+[project]
+name = "shanhai"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx>=0.27",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "python-dotenv>=1.0",  # config.load_env 直接依赖(勿只靠 pydantic-settings 传递)
+  "typer>=0.12",
+  "pillow>=10.3",
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
+]
+
+[project.scripts]
+shanhai = "shanhai.cli:app"
+shanhai-web = "shanhai.api:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.5", "respx>=0.21"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shanhai"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E401", "E702"]
+"spike/**" = ["E702"]

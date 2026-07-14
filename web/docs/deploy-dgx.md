@@ -1,0 +1,157 @@
+# shanhai 部署到 DGX Spark(团队内网 · 可生成 · 本地 LLM + GPU TTS)
+
+> 状态:P0/P1/**P2(GPU TTS)均已上线**(2026-07-11/12);P3(Ollama 适配器)已开发待部署。**P4(端点/模型配置 Web 界面)已上线**(2026-07-12)。**P5(AI 生成 BGM,ACE-Step)已上线**(2026-07-12/13)。DGX 现为"本地 LLM+本地图像(ComfyUI)+本地 GPU TTS+本地 AI BGM+本地合成"完整闭环,且支持 Web 端按环节切换端点/模型。
+> 前置:R1 冒烟见 [decisions/0006](decisions/0006-r1-local-llm-smoke.md)。
+
+## P2 GPU TTS 已上线(2026-07-12)
+
+**结论**:CosyVoice2-0.5B 在 GB10(Blackwell,sm_121)上用 PyTorch nightly cu128 跑通,OpenAI 兼容 shim 接入 shanhai,端到端验证通过(黄鹤楼项目 10 页真人声,107s 成片)。
+
+**硬件坑(记录以防重装踩坑)**:
+- 标准 PyPI torch(cu124 及更早)**不支持 GB10 的 sm_121** —— `torch.cuda.is_available()` 会**假阳性**返回 True,但真跑算子报 `no kernel image is available for execution on the device`。**必须验证真实 GPU 计算(矩阵乘法),不能只信 `is_available()`。**
+- 修复:装 PyTorch **nightly**(`pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128`),含完整 Blackwell 内核,已验证 `torch 2.12.0.dev20260408+cu128` 可用。`torchaudio`/`torchcodec` 需配套装(同索引 nightly 装 torchaudio;torchcodec 标准 PyPI 有 aarch64 轮子)。
+- CosyVoice 官方 `requirements.txt` 锁 `torch==2.3.1` 等旧版本 —— **装依赖时必须排除 torch/torchaudio/numpy 的精确版本锁**(否则会把刚装好的兼容 torch 覆盖掉),`pyworld` 需要 numpy 1.26.4(和 numpy 2.x C API 不兼容),`onnxruntime-gpu==1.18.0` 无 aarch64 轮子(退到不锁版本的 CPU 版 onnxruntime,只影响一个小的说话人特征提取组件,不影响主链路 GPU 加速)。
+
+**部署结构**:
+- 独立 conda 环境 `shanhai-tts`(不碰任何共享环境),CosyVoice 官方仓库 clone 在 `~/CosyVoice`(含 `third_party/Matcha-TTS` 子模块),权重经 ModelScope SDK 下载到 `~/.cache/modelscope/models/iic--CosyVoice2-0.5B`。
+- Shim:`~/CosyVoice/tts_shim.py`(FastAPI,`POST /v1/audio/speech`,模型常驻内存启动时加载一次;`speed` 参数走 ffmpeg atempo 后处理转码为 mp3)。
+- systemd:`shanhai-tts.service`(:8090,同 `shanhai-web.service` 模式:`RequiresMountsFor`+`network-online.target`)。
+- 接入:DGX `.env` 追加 `SHANHAI_TTS_BASE_URL=http://127.0.0.1:8090/v1`、`SHANHAI_TTS_MODEL=cosyvoice2`、`SHANHAI_TTS_VOICE=default`、`SHANHAI_TTS_VOICES=default`。
+- 音色:目前只有 `default`(CosyVoice2 仓库自带零样本参考音频)。**Uncle_Fu 音色克隆待办**——需从 Mac 本地 Qwen3-TTS(localhost:8000,今天检查时未运行)生成一段参考音频传到 DGX,在 `tts_shim.py` 的 `VOICES` 字典里加一条即可,不需要改代码结构。
+- 运维:`systemctl --user {status,restart} shanhai-tts`;日志 `journalctl --user -u shanhai-tts -f`。
+>
+> **2026-07-11 事故记录**:首次端到端冒烟在 S3(角色三视图,4 个中处理 2 个后)报
+> `Server disconnected without sending a response` 并杀死整条 pipeline。根因:
+> `image.py`/`llm.py` 的网络重试窄写成 `(TimeoutException, ConnectError)`,漏抓
+> `httpx.RemoteProtocolError`(该异常的公共基类是 `TransportError`);`llm.py` 的
+> `chat()` 对请求本身甚至**零** try/except。DGX 经隧道的长连接比 Mac 直连更易触发此类
+> 瞬时故障。修复:两处改为捕获 `httpx.TransportError`(commit `ab49fed`)。教训:云端
+> provider 重试必须覆盖 httpx 完整 TransportError 家族,不能只挑 Timeout/Connect。
+>
+> **同日复发**:部署 `ab49fed` 后重发冒烟,S3 第 2 个角色又报同一异常(重试 3 次全部失败)。
+> 排查:curl 连打 5 轮(100%)、Python 精确复刻 ImageClient 持久连接池 6 轮(100%)均无法
+> 复现——网络路径本身不是确定性坏的,更像共用机上的间歇性抖动(122b 占极重资源,S3 恰好
+> 紧跟长时间本地推理之后)。**结论**:根因既不确定也不完全可控,重试次数调再高也只是概率
+> 游戏。真正的结构性修复是给 S3 补上 S4 早就有的**单元素容错隔离**——单角色三视图失败只
+> 退化为纯文字特征(同 MAX_TURNAROUND 之外的次要角色),不再 raise 拖垮整条 pipeline
+> (s3_characters.py + test_s3.py 新增 test_s3_single_character_failure_does_not_abort_others)。
+> 教训:对不受控的外部依赖,隔离失败范围比死磕重试参数更可靠。
+
+## ⚠️ 拓扑铁律(操作前核对)
+- **代码真源 = Mac** `/Users/nativeas/Work/shanhai`(唯一 git,无远程)。开发/测试/提交只在 Mac。
+- **DGX = 部署目标** `~/shanhai`(rsync 快照)。**绝不在 DGX 改代码**;DGX `.env` 机器专属、不入 git。
+- **发布流程**:Mac 改+测+commit → rsync(**必须 `--exclude .env --exclude projects`**,否则覆盖 DGX 配置/数据)→ 确认无管线在跑(`/api/projects` 无 running/queued)→ `systemctl --user restart shanhai-web`。
+- Mac 同一工作树还跑着两个实例(公网只读 :10000、本机编辑 :8081):重启前确认工作树是已提交可上线状态。
+- 作品数据各自生长:DGX `projects/`(生产)与 Mac `projects/`(展示)不互通、不互相 rsync 覆盖。
+
+## Context
+R1 已验证 DGX(GX10/GB10,119G 统一内存,Ubuntu 24.04 aarch64,团队共用)上 Ollama qwen3.5:122b 可直接驱动 S0–S2。现把整个项目部署上去:代码 + 历史作品(797M)迁移、systemd 服务化、团队内网访问、**LLM 走本机 Ollama(免隧道)**、图像暂走云端 tu-zi(R2 前)、**TTS 在 DGX 装 GPU 版**。Mac 上的公网只读站(:10000)保留不动——两边 `projects/` 会各自生长,DGX 为生产、Mac 为展示(后续可定期回传)。
+
+已核实:DGX 出网正常(pypi/tu-zi 可达)、:8080/:8000 空闲、systemd --user running(linger 未开)、cpolar 已装、字体已入库(16M)、本仓库无 git 远程(→ rsync 传含 `.git` 保历史)。
+
+## P0 传输与环境
+1. **小代码改动(Mac 先做)**:`api.py main()` 加 `SHANHAI_HOST`(默认 `127.0.0.1`;DGX 设 `0.0.0.0` 供内网访问),与既有 `SHANHAI_PORT` 同款。前端 `bun run build` 出最新 dist(DGX 不装 bun,直接带 dist)。
+2. **rsync 到 DGX**(`~/shanhai`):仓库含 `.git`、`assets/`(字体 16M)、`web/dist`(Mac 预构建,DGX 不装 bun),排除 `.venv/ web/node_modules/ spike/out/`;**依赖不走线**——`uv sync` 在 DGX 直接拉 pypi。**`projects/` 历史作品不迁移**(用户决定):DGX 上重新生成即可,Mac 保留原作品供公网展示。
+3. **DGX 环境**:装 uv(curl → `~/.local/bin`,免 sudo)→ `uv sync` → `uv run pytest -q`(aarch64 上应 147 全绿)。
+4. **DGX 专属 `.env`**(生产参数,不入库):
+   ```
+   SHANHAI_BASE_URL=http://127.0.0.1:11434/v1   # LLM=本机 Ollama
+   SHANHAI_API_KEY=ollama
+   SHANHAI_LLM_MODEL=qwen3.5:122b
+   SHANHAI_LLM_TIMEOUT=900
+   SHANHAI_IMAGE_BASE_URL=https://api.tu-zi.com/v1   # 图像仍云端(R2 前)
+   SHANHAI_IMAGE_API_KEY=<tu-zi key>
+   SHANHAI_IMAGE_MODEL=gpt-image-2
+   SHANHAI_IMAGE_API_MODE=images_api
+   # TTS:P2 就位前留空(S5 自动静音兜底,管线不崩)
+   SHANHAI_HOST=0.0.0.0
+   SHANHAI_PORT=8080
+   ```
+
+## P1 服务化与端到端验证
+1. **systemd user 服务** `~/.config/systemd/user/shanhai-web.service`(WorkingDirectory=~/shanhai、**`EnvironmentFile=%h/shanhai/.env`**——关键:`SHANHAI_HOST/PORT/CORS/READONLY` 走 `os.getenv` 只认进程环境,不读 .env 文件,必须由 systemd 注入、ExecStart=uv run shanhai-web、Restart=always);`loginctl enable-linger`(需 sudo 则记录、先用会话内常驻兜底)。
+2. 团队访问 `http://<DGX 内网 IP>:8080`;外部走 SSH 隧道 `-L 8080:127.0.0.1:8080`。**非只读**:团队可建作品/编辑/重绘(单 worker 队列 + MAX_PENDING=8 背压;图像烧 tu-zi 额度为已知代价)。
+3. **端到端冒烟**:web 建 1 分钟作品 → 本地 LLM(S0–S2)+ 云图像(S3–S4)+ S5 静音兜底 + S6 成片;历史作品列表可浏览可播。
+
+## P2 GPU TTS(大活,先 spike 后实施)
+1. **Spike 选型**(顺序试,取第一个能跑的):① Qwen3-TTS 官方 CUDA/transformers 版(与 Mac 同系,音色概念一致);② CosyVoice2(中文成熟、可克隆说书人音色)。关键不确定性:GB10 aarch64 的 PyTorch CUDA 轮子(NVIDIA 官方渠道有)与模型体积——spike 先证"能出一句 mp3"。
+2. **OpenAI 兼容 shim**:小 FastAPI 包 `/v1/audio/speech`(model/voice/input/speed → mp3),shanhai `TTSClient` 零改动;systemd 服务 :8000。
+3. 接线:`SHANHAI_TTS_BASE_URL=http://127.0.0.1:8000/v1` + voice;编辑实例 revoice 一页验证;`SHANHAI_TTS_VOICES` 配策展列表。
+
+## P3 Ollama 原生适配器(~2h,10× 提速)
+- decisions/0006:`/api/chat`+`think:false` 2.7s vs `/v1` 带思考 31s。新增 `providers/llm_ollama.py`(同 `chat/structured` 签名,原生 API + `think:false` + `format:"json"`)+ `config.llm_provider`(openai/ollama)+ factory 分支 + respx 测试。S0–S2 从 ~15min 降到 ~1.5min。
+
+## 风险与说明
+- **双机数据分叉**:新作品在 DGX,Mac 公网站看不到 → 接受现状;后续可加"DGX→Mac 定期 rsync 回传"或 Mac funnel 反代 DGX(另议)。
+- **linger 可能要 sudo**:开不了先用 tmux/会话内常驻,记录待管理员。
+- **共用机礼仪**:122b 占 95G;S4 图像并发走云不占 GPU;P2 TTS 模型显存与 122b 共存需按 119G 总量算账。
+- P2 选型失败兜底:反向隧道接 Mac TTS,随时可切,不阻塞 P0/P1。
+
+## 验证清单
+- P0/P1:DGX 147 pytest 绿;`curl :8080/api/meta` 正常;内网设备可打开页面;端到端 1 分钟成片(含静音兜底)可播;Mac 公网站不受影响。
+- P2:一句真人声 mp3 → 单页 revoice → 成片该页有解说。
+- P3:S0–S2 总耗时 <3min;测试全绿。
+
+## 访问入口(2026-07-11 实际值)
+- 团队内网:`http://192.168.199.107:8080`
+- **公网(cpolar)**:`http://wuzitokenplan.vip.cpolar.cn/`(cpolar.yml 里 `huntun` 隧道 → :8080;注意同名 `WuziTokenPlan` 隧道指 :8000 未监听,勿混淆)。国内可达;部分国际线路到 cn_vip HTTP 边缘不通属正常。
+- ⚠️ **已知风险(用户拍板接受)**:公网与内网同一实例、`readonly:false`——公网访客可触发生成烧 tu-zi 图像额度;缓解仅靠 URL 隐蔽 + 队列上限 8。若被滥用,改法见 git 历史讨论:按来源区分只读(内网可写/cpolar 只读)约半小时可加。
+
+## 运维速查
+- 服务:`systemctl --user {status,restart} shanhai-web`;日志 `journalctl --user -u shanhai-web -f`
+- 隧道模板:`ssh -p 14801 -L 8080:127.0.0.1:8080 huntun@21.tcp.vip.cpolar.cn`
+- 回传作品到 Mac(展示):`rsync -a huntun@…:~/shanhai/projects/ ~/Work/shanhai/projects/`
+
+## P1 实证:CosyVoice2 单发 vs 分句(2026-07-12)
+在 DGX 直连 CosyVoice2 shim(:8090)对短/中/长/超长文案做对照,判断旧「分句 + 三试取最长 + MIN_MS_PER_CHAR 截断检测」启发式是否仍必要(这套是为旧云端弱模型的确定性截断而设):
+- **不截断**:67 字长句单发 3 次时长稳定(~16s),whisper ASR 转写完整覆盖首尾(含末句「流传千年的旧事」)——无确定性截断,与旧弱模型不同。
+- **旧 floor 误判**:CosyVoice2 连读约 240–270ms/字,而旧 `MIN_MS_PER_CHAR=380` 高于真实语速 → 每句都被误判截断、空转 `TTS_TRIES=3`(即审计 PERF3)。
+- **分句更糟**:长句分句合成 19.3s vs 单发 16s,句间硬拼更长更碎;分句的唯一收益(防截断)对 CosyVoice2 已消失,只剩 N× 调用成本。
+
+**结论/改动**:`s5_audio._synthesize_full` 改为**整段单发优先**(1 次调用、自然),仅当单发疑似截断(时长 < 字数×`MIN_MS_PER_CHAR`)才**自动退化**到旧的分句路径(兼容会截断的弱模型,如 Mac Qwen3);`MIN_MS_PER_CHAR` 380→150(只兜真正的严重截断)。跨后端安全、无需新配置。
+
+## P4:端点/模型配置 Web 界面已上线(2026-07-12)
+
+**内容**:Web header 齿轮按钮 → 配置面板,可在线设置 LLM/图像/TTS 的端点/密钥/模型,支持**全局默认 + 按环节(S0–S5)覆盖**(如 S1 走云端强模型、S2 走本地 Ollama),运行时生效、无需改 `.env` 或重启。持久化于 `~/shanhai/config.json`(gitignore,叠加在 `.env` 之上;不覆盖不重跑不影响已有配置)。开发过程:brainstorm → ultracode 多 agent 落地 → 4 镜头对抗审计 → `/code-review` xhigh 复审(10 镜头,修正合并语义等正确性问题)。Mac 侧 233 pytest 全绿。
+
+**部署记录**:
+- 常规流程:Mac `main`(commit `e94142b`)→ 确认 DGX 无在途任务 → rsync(`--exclude .env --exclude projects --exclude config.json`)→ DGX `uv sync`(无新依赖)→ DGX `uv run pytest -q`(aarch64,233 passed)→ `systemctl --user restart shanhai-web`。
+- **一次性状况**:重启前检测到一个 `queued` 任务(`stepid`/雷峰塔,提交仅 3 分钟,非重启前遗留僵尸),用户明确指示终止重启;`reconcile_zombie_jobs()` 按既有机制在启动时自动把它对账为 `error: 服务重启,生成中断`,符合设计,无需额外处理。
+- **验证**:`/api/meta`、新增 `/api/config`(GET 返回 `stage_clients`/`defaults`/`global`/`stages`,密钥脱敏)均 200;内网入口 `192.168.199.107:8080` 200;cpolar 隧道进程未受影响(独立进程,重启 `shanhai-web` 不涉及);dist 清理了 rsync 遗留的旧构建 hash 文件(无功能影响,仅整洁)。
+- 团队使用:内网 `http://192.168.199.107:8080` 打开后点右上角齿轮即可配置。
+
+## LLM 模型变更(2026-07-12):gpt-oss:120b → glm-4.7-flash:latest
+
+**背景**:探查 DGX 实际生效配置时发现 `.env` 已与本文档记录脱节——图像早已从云端 tu-zi 迁移到本地 `shanhai-image.service`(ComfyUI shim,`127.0.0.1:8091`→`127.0.0.1:8188`,ComfyUI 由共用机上另一系统用户 `wuzi` 跑),LLM 模型是 `gpt-oss:120b` 而非文档写的 `qwen3.5:122b`;且 `SHANHAI_LLM_PROVIDER` 未设置(默认 `openai` 兼容层,P3 原生 Ollama 适配器已开发但未启用,按 [decisions/0006](decisions/0006-r1-local-llm-smoke.md) 原生适配器快 10×,待办)。
+
+**本次变更**:`SHANHAI_LLM_MODEL` 从 `gpt-oss:120b`(65.4G)改为 `glm-4.7-flash:latest`(19G on disk / ~40G resident)。原因:`glm-4.7-flash` 是 `ollama ps` 里当时**已常驻显存**的模型(可能被 `wuzi` 或团队其他人占用中),而 `gpt-oss:120b` 未加载,每次生成都要先触发 Ollama 换模型,拖慢首次响应且加剧共用机显存压力。
+
+**操作**:直接改 DGX `~/shanhai/.env`(不经 Mac/rsync,机器专属配置)→ 确认 `/api/projects` 无活跃任务 → `systemctl --user restart shanhai-web`(`EnvironmentFile` 只在启动时读取,必须重启生效)→ 验证 `/proc/<pid>/environ` 确认新值已加载。
+
+**已知现状(本文档当前的真实基线,供下次核对用)**:
+```
+SHANHAI_BASE_URL=http://127.0.0.1:11434/v1        # 本机 Ollama
+SHANHAI_LLM_MODEL=glm-4.7-flash:latest
+SHANHAI_IMAGE_BASE_URL=http://127.0.0.1:8091/v1    # 本地 shanhai-image.service → ComfyUI:8188
+SHANHAI_IMAGE_MODEL=comfyui-local
+SHANHAI_TTS_BASE_URL=http://127.0.0.1:8090/v1      # shanhai-tts.service,CosyVoice2
+SHANHAI_TTS_MODEL=cosyvoice2
+```
+**待办**(发现但未处理,留给下次):`SHANHAI_LLM_PROVIDER=ollama` 未启用(原生适配器提速 10×);团队共用 Ollama 显存,当前常驻模型会随其他用户使用漂移,生成前建议 `ollama ps` 确认。
+
+## P5:AI 生成 BGM 已上线(2026-07-12/13)
+
+**内容**:S5 环节新增三级降级——AI 生成(本机 ACE-Step,经新建的 `~/music-shim` 转发到 wuzi 的 ComfyUI `:8188`)→ 静态曲库(`assets/bgm/manifest.json`,现状为空,原逻辑原样保留)→ 无 BGM。纯器乐(`lyrics="[instrumental]"`),风格标签从 `project.params.tone`/`style_preset` 查表拼装(不经 LLM),目标时长按 `duration_min×60` 封顶 180s。S6/`ffmpeg.finalize_cmd` 完全不改——混音基础设施早就有,只是曲库一直是空的从未真正触发过。
+
+**`~/music-shim` 部署过程中修的两个真 bug**(记录以防重装踩坑):
+1. **ffmpeg 选错版本**:`/usr/local/bin/ffmpeg`(共享机默认 PATH)是残缺构建,**没有 `libmp3lame` 编码器**,ACE-Step 输出转 mp3 时报 `exit 8`。必须显式指定 `~/anaconda3/envs/shanhai-ffmpeg/bin/ffmpeg`(huntun 独立环境,含完整编码器集),与 `tts_shim.py` 早就踩过的同一个坑。
+2. **WebSocket 监听顺序反了**:最初实现是"先 `POST /prompt` 提交任务,再连 WebSocket 监听完成事件"——若 ComfyUI 命中节点缓存后近乎瞬间完成(两次几乎相同的请求参数很容易触发),会在连接建立前就已完成,监听方永久错过完成事件,直接卡到 `POLL_TIMEOUT_S`(300s)超时。修复为"先连 WebSocket、连上后才提交任务",与 wuzi 的参考脚本 `~/ComfyUI/generate_music_api.py`(`ws.connect()` 在 `queue_prompt()` 之前)同序。
+
+**纯器乐核验**(部署前明确标注为待实测的风险项,现已核验通过):用 `mlx-whisper`(Mac 本地,Apple Silicon)对生成样本做了两次独立转写——锁中文识别出经典的"无语音幻觉伪影"(短暂片段+胡编文本,非真实歌词);不锁语言自动检测,直接把整段转写成单词 `Music`(Whisper 训练数据对纯配乐场景的标准标注,业内公认的"无人声"信号)。DGX 本地也曾尝试用 `openai-whisper` 做同样核验,但因网络拉 torch 过慢(近一小时仅到 700M)而放弃,改用 Mac 本地 `mlx-whisper` 完成核验(轻量、Apple Silicon 原生,几分钟内出结果)。
+
+**部署记录**:
+- 常规流程:Mac 4 个 commit(provider/S5/CLI-API/测试)→ `--no-ff` 合并 main → rsync → DGX `uv sync` + 253 测试全绿(aarch64)→ `.env` 追加 `SHANHAI_MUSIC_BASE_URL=http://127.0.0.1:8092/v1`、`SHANHAI_MUSIC_MODEL=ace-step-v1.5xl` → 确认无在途任务 → `systemctl --user restart shanhai-web`。
+- **一次性状况**:重启前又出现同一个 `stepid`/雷峰塔测试项目(和 P4 部署那次一模一样的 project_id 与内容,疑似某处周期性生成的固定测试样本,非合法 uuid 格式,不可能经正常建作品流程产生),用户再次明确授权终止;`reconcile_zombie_jobs()` 照常对账为 `error: 服务重启,生成中断`。
+- **真实端到端验证**(非仅测 shim):通过生产 API 建了一个 1 分钟测试作品(`2cd9d616`),完整跑完 S0–S6:`project.bgm` 落在 AI 生成路径(`projects/2cd9d616/audio/bgm.mp3`,60.0s,精确匹配目标时长,证明走的是 AI 分支而非曲库兜底)、`final.mp4` 音视频流均正常(h264+aac,85.16s)。
+- 服务:`shanhai-music.service`(:8090 之后新增,`:8092`),systemd 部署,仿 `shanhai-tts.service`/`shanhai-image.service` 模式;`~/music-shim/main.py` 独立于 shanhai git 仓库(与 `image-shim`/`tts_shim.py` 现状一致)。
+- **待办**(已知但非阻塞):BGM 生成是 S5 里的同步网络调用,在 TTS 并发池之外顺序跑,GPU 排队(与 wuzi 的 ComfyUI、`shanhai-image.service` 共用同一张卡)可能显著拖慢单次生成;Web 配置面板(`SettingsPanel.tsx`)未补齐 music 字段的可视化,目前只能靠 `.env`/`config.json` 直改。

@@ -1,0 +1,709 @@
+import { Fragment, useState } from 'react'
+import { api } from '../api'
+import type { Meta, ProjectDetail as Detail, Character, Page } from '../types'
+import { ProgressSteps } from './ProgressSteps'
+
+const EMOTION_STYLE: Record<string, string> = {
+  温情: 'bg-[#ede1c9] text-gold',
+  惊变: 'bg-[#f0dad5] text-cinnabar',
+  悲壮: 'bg-[#f0dad5] text-cinnabar',
+  险境: 'bg-[#dee7de] text-jade',
+  烟雨: 'bg-[#dce6e9] text-azurite',
+  苍凉: 'bg-[#dce6e9] text-azurite',
+}
+function emotionCls(e: string): string {
+  return EMOTION_STYLE[e] ?? 'bg-kraft text-ink-soft'
+}
+
+const EMOTIONS = ['宁静', '温情', '惊变', '悲壮', '险境', '烟雨', '苍凉']
+
+const STEP_ACTIONS: { name: string; label: string; destructive?: boolean }[] = [
+  { name: 's2', label: '分镜', destructive: true },
+  { name: 's3', label: '角色' },
+  { name: 's4', label: '漫画页' },
+  { name: 's5', label: '配音' },
+  { name: 's6', label: '合成' },
+]
+
+function SectionTitle({ glyph, children, extra }: { glyph: string; children: React.ReactNode; extra?: React.ReactNode }) {
+  return (
+    <div className="mb-4 flex items-center gap-2.5">
+      <span className="flex h-7 w-7 items-center justify-center rounded-md bg-cinnabar font-brush text-lg text-rice">
+        {glyph}
+      </span>
+      <h2 className="font-serif text-base font-semibold tracking-wide text-ink">{children}</h2>
+      {extra && <span className="text-xs text-muted">{extra}</span>}
+      <span className="ml-1 h-px flex-1 bg-gradient-to-r from-line to-transparent" />
+    </div>
+  )
+}
+
+const card = 'rounded-2xl border border-band bg-paper p-5 shadow-paper'
+const fieldCls =
+  'w-full rounded-lg border border-line bg-white/70 px-2.5 py-1.5 text-[13px] text-ink outline-none transition focus:border-cinnabar focus:bg-white'
+const primaryBtn =
+  'rounded-lg bg-cinnabar px-3 py-1.5 text-xs font-medium tracking-wide text-rice transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50'
+const ghostBtn =
+  'rounded-lg border border-line px-3 py-1.5 text-xs text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
+const toolBtn =
+  'rounded-md border border-line bg-white/50 px-2 py-1 text-[11px] text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
+
+export function ProjectDetailView({
+  project,
+  meta,
+  onChanged,
+}: {
+  project: Detail
+  meta: Meta | null
+  onChanged: () => void
+}) {
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [insertAfter, setInsertAfter] = useState<number | null>(null)
+  const [stepBusy, setStepBusy] = useState<string | null>(null)
+
+  const generating = project.pipeline === 'queued' || project.pipeline === 'running'
+  const editable = !meta?.readonly && !generating
+  const pendingCount = project.pages.filter((p) => p.status === 'draft' || !p.audio).length
+
+  function handleDrop(targetIndex: number) {
+    const from0 = dragIndex
+    setDragIndex(null)
+    if (from0 === null || from0 === targetIndex) return
+    const order = project.pages.map((p) => p.index)
+    const from = order.indexOf(from0)
+    const to = order.indexOf(targetIndex)
+    if (from === -1 || to === -1) return
+    order.splice(from, 1)
+    order.splice(to, 0, from0)
+    api
+      .reorderCells(project.project_id, order)
+      .then(onChanged)
+      .catch((e) => alert(e instanceof Error ? e.message : String(e)))
+  }
+
+  async function handleStep(name: string, label: string, destructive?: boolean) {
+    if (destructive && !window.confirm(`确定重新执行「${label}」?这会清空之后各步骤的产物。`)) return
+    setStepBusy(name)
+    try {
+      await api.runStep(project.project_id, name)
+      onChanged()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      setStepBusy(null)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* 标题头 */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-3.5">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cinnabar to-cinnabar-deep font-brush text-2xl text-rice shadow-[0_3px_10px_rgba(138,43,34,0.28)]">
+            {project.scenic_spot.slice(0, 1)}
+          </span>
+          <div>
+            <h1 className="font-serif text-2xl font-bold tracking-[2px] text-ink">
+              {project.script_title ?? project.scenic_spot}
+            </h1>
+            <p className="mt-1 text-[13px] tracking-wide text-muted">
+              {project.scenic_spot} · {project.style_preset} · {project.params.duration_min} 分钟 ·{' '}
+              {project.params.audience} · {project.params.tone}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <ProgressSteps project={project} />
+
+      {/* 编辑操作条 */}
+      {!meta?.readonly && (
+        <div className={card}>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium tracking-wide text-muted">补全重生成</span>
+            {STEP_ACTIONS.map((s) => (
+              <button
+                key={s.name}
+                type="button"
+                onClick={() => handleStep(s.name, s.label, s.destructive)}
+                disabled={generating || stepBusy !== null}
+                className={`${toolBtn} ${s.destructive ? 'text-cinnabar hover:border-cinnabar' : ''}`}
+              >
+                {stepBusy === s.name ? '入队中…' : s.label}
+              </button>
+            ))}
+            {pendingCount > 0 && (
+              <span className="ml-auto rounded-full bg-amber2/15 px-2.5 py-1 text-xs text-gold">
+                {pendingCount} 页待重生成
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 成片 */}
+      {project.mp4 && (
+        <div className={card}>
+          <SectionTitle glyph="片">有声连环画 · 成片</SectionTitle>
+          <video
+            src={project.mp4}
+            controls
+            className="w-full rounded-xl border border-line bg-black"
+          />
+          <ExportButtons project={project} />
+        </div>
+      )}
+
+      {/* 角色三视图 */}
+      {project.characters.length > 0 && (
+        <div className={card}>
+          <SectionTitle glyph="人" extra={`${project.characters.length} 位角色`}>
+            人物设定 · 三视图
+          </SectionTitle>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            {project.characters.map((c) => (
+              <CharacterCard
+                key={c.name}
+                c={c}
+                projectId={project.project_id}
+                editable={editable}
+                onChanged={onChanged}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 漫画页 */}
+      {project.pages.length > 0 && (
+        <div className={card}>
+          <SectionTitle glyph="画" extra={`共 ${project.pages.length} 页`}>
+            连环画 · 逐页
+          </SectionTitle>
+          {editable && (
+            <button
+              type="button"
+              onClick={() => setInsertAfter(insertAfter === 0 ? null : 0)}
+              className={`${ghostBtn} mb-3`}
+            >
+              + 插入首页
+            </button>
+          )}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {insertAfter === 0 && (
+              <InsertPageForm
+                projectId={project.project_id}
+                afterIndex={0}
+                onDone={() => {
+                  setInsertAfter(null)
+                  onChanged()
+                }}
+                onCancel={() => setInsertAfter(null)}
+              />
+            )}
+            {project.pages.map((pg) => (
+              <Fragment key={pg.index}>
+                <PageCard
+                  pg={pg}
+                  projectId={project.project_id}
+                  editable={editable}
+                  onChanged={onChanged}
+                  dragIndex={dragIndex}
+                  onDragStart={() => setDragIndex(pg.index)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => handleDrop(pg.index)}
+                  onDragEnd={() => setDragIndex(null)}
+                  onInsertAfter={() => setInsertAfter(insertAfter === pg.index ? null : pg.index)}
+                />
+                {insertAfter === pg.index && (
+                  <InsertPageForm
+                    projectId={project.project_id}
+                    afterIndex={pg.index}
+                    onDone={() => {
+                      setInsertAfter(null)
+                      onChanged()
+                    }}
+                    onCancel={() => setInsertAfter(null)}
+                  />
+                )}
+              </Fragment>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 传说来源 */}
+      {project.legend && (
+        <div className={`${card} border-l-[3px] border-l-cinnabar`}>
+          <div className="mb-1 flex items-center gap-2">
+            <h2 className="font-serif text-base font-semibold tracking-wide text-ink">
+              {project.legend.title}
+            </h2>
+            <span className="rounded-full border border-line px-2 py-0.5 text-[11px] text-muted">
+              来源 · {project.legend.source_type}
+            </span>
+          </div>
+          <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ExportButtons({ project }: { project: Detail }) {
+  const [pdf, setPdf] = useState(project.pdf)
+  const [zip, setZip] = useState(project.zip)
+  const [busy, setBusy] = useState(false)
+
+  const btn =
+    'inline-flex items-center gap-1.5 rounded-lg border border-line bg-white/60 px-3.5 py-2 text-xs font-medium tracking-wide text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-50'
+
+  async function handleClick(kind: 'pdf' | 'zip') {
+    setBusy(true)
+    try {
+      const res = await api.exportProject(project.project_id)
+      setPdf(res.pdf)
+      setZip(res.zip)
+      const url = kind === 'pdf' ? res.pdf : res.zip
+      if (url) window.open(url, '_blank')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {pdf ? (
+        <a href={pdf} download className={btn}>
+          下载 PDF
+        </a>
+      ) : (
+        <button type="button" onClick={() => handleClick('pdf')} disabled={busy} className={btn}>
+          {busy ? '打包中…' : '下载 PDF'}
+        </button>
+      )}
+      {zip ? (
+        <a href={zip} download className={btn}>
+          下载图片包
+        </a>
+      ) : (
+        <button type="button" onClick={() => handleClick('zip')} disabled={busy} className={btn}>
+          {busy ? '打包中…' : '下载图片包'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function CharacterCard({
+  c,
+  projectId,
+  editable,
+  onChanged,
+}: {
+  c: Character
+  projectId: string
+  editable: boolean
+  onChanged: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+
+  async function redraw() {
+    if (!window.confirm('仅重绘设定图,已生成页面需自行重绘。确定继续?')) return
+    setBusy(true)
+    try {
+      await api.redrawCharacter(projectId, c.name)
+      onChanged()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <figure className="group relative overflow-hidden rounded-xl border border-line bg-white/60">
+      <div className="relative aspect-[3/4] bg-kraft">
+        {c.image ? (
+          <img src={c.image} alt={c.name} className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full items-center justify-center text-xs text-muted">未生成</div>
+        )}
+        <span className="absolute left-2 top-2 rounded-full bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
+          三视图
+        </span>
+        {editable && (
+          <button
+            type="button"
+            onClick={redraw}
+            disabled={busy}
+            className="absolute inset-0 flex items-center justify-center bg-ink/50 text-sm font-medium tracking-wide text-rice opacity-0 transition group-hover:opacity-100 disabled:opacity-100"
+          >
+            {busy ? '重绘中…' : '重绘设定图'}
+          </button>
+        )}
+      </div>
+      <figcaption className="px-3 py-2.5">
+        <div className="font-serif text-sm font-semibold tracking-wide text-ink">{c.name}</div>
+        <div className="text-[11px] text-muted">{c.role}</div>
+      </figcaption>
+    </figure>
+  )
+}
+
+function InsertPageForm({
+  projectId,
+  afterIndex,
+  onDone,
+  onCancel,
+}: {
+  projectId: string
+  afterIndex: number
+  onDone: () => void
+  onCancel: () => void
+}) {
+  const [caption, setCaption] = useState('')
+  const [visualDesc, setVisualDesc] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function submit() {
+    if (!caption.trim() || !visualDesc.trim()) return
+    setBusy(true)
+    setErr(null)
+    try {
+      await api.insertCell(projectId, afterIndex, {
+        caption: caption.trim(),
+        visual_desc: visualDesc.trim(),
+      })
+      onDone()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-xl border border-dashed border-cinnabar/40 bg-white/50 p-3.5 sm:col-span-2">
+      <div className="text-[10px] tracking-[2px] text-muted">
+        插入新页 · 位于第 {afterIndex} 页之后
+      </div>
+      <textarea
+        className={`${fieldCls} h-14 resize-none`}
+        placeholder="画面描述"
+        value={visualDesc}
+        onChange={(e) => setVisualDesc(e.target.value)}
+      />
+      <textarea
+        className={`${fieldCls} h-14 resize-none`}
+        placeholder="旁白"
+        maxLength={80}
+        value={caption}
+        onChange={(e) => setCaption(e.target.value)}
+      />
+      {err && <p className="text-xs text-cinnabar">{err}</p>}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={submit}
+          disabled={busy || !caption.trim() || !visualDesc.trim()}
+          className={primaryBtn}
+        >
+          {busy ? '插入中…' : '确定插入'}
+        </button>
+        <button type="button" onClick={onCancel} className={ghostBtn}>
+          取消
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function PageCard({
+  pg,
+  projectId,
+  editable,
+  onChanged,
+  dragIndex,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  onInsertAfter,
+}: {
+  pg: Page
+  projectId: string
+  editable: boolean
+  onChanged: () => void
+  dragIndex: number | null
+  onDragStart: () => void
+  onDragOver: (e: React.DragEvent) => void
+  onDrop: () => void
+  onDragEnd: () => void
+  onInsertAfter: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [caption, setCaption] = useState(pg.caption)
+  const [visualDesc, setVisualDesc] = useState(pg.visual_desc)
+  const [emotion, setEmotion] = useState(pg.emotion)
+  const [characters, setCharacters] = useState<string[]>(pg.characters)
+  const [charInput, setCharInput] = useState('')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  function startEdit() {
+    setCaption(pg.caption)
+    setVisualDesc(pg.visual_desc)
+    setEmotion(pg.emotion)
+    setCharacters(pg.characters)
+    setCharInput('')
+    setErr(null)
+    setEditing(true)
+  }
+
+  async function save() {
+    setBusy('save')
+    setErr(null)
+    try {
+      await api.updateCell(projectId, pg.index, {
+        caption: caption.trim(),
+        visual_desc: visualDesc.trim(),
+        emotion,
+        characters,
+      })
+      setEditing(false)
+      onChanged()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function act(kind: 'redraw' | 'revoice' | 'delete') {
+    if (kind === 'delete' && !window.confirm(`确定删除第 ${pg.index} 页?此操作不可撤销。`)) return
+    setBusy(kind)
+    try {
+      if (kind === 'redraw') await api.redrawCell(projectId, pg.index)
+      if (kind === 'revoice') await api.revoiceCell(projectId, pg.index)
+      if (kind === 'delete') await api.deleteCell(projectId, pg.index)
+      onChanged()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  function addChar() {
+    const v = charInput.trim()
+    if (v && !characters.includes(v)) setCharacters([...characters, v])
+    setCharInput('')
+  }
+  function removeChar(n: string) {
+    setCharacters(characters.filter((c) => c !== n))
+  }
+
+  return (
+    <div
+      draggable={editable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      className={`overflow-hidden rounded-xl border bg-white/60 transition ${
+        dragIndex === pg.index ? 'border-cinnabar opacity-60' : 'border-line'
+      }`}
+    >
+      <div className="relative aspect-[4/3] bg-kraft">
+        {pg.image ? (
+          <img src={pg.image} alt={`第 ${pg.index} 页`} className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full items-center justify-center text-sm text-muted">
+            第 {pg.index} 页 · {pg.status}
+          </div>
+        )}
+        {pg.scene_ref && (
+          <span className="absolute left-2 top-2 rounded-md bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
+            {pg.scene_ref}
+          </span>
+        )}
+        <span className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md border border-rice/60 font-brush text-lg text-rice">
+          {pg.index}
+        </span>
+        {editable && (
+          <span
+            title="拖拽排序"
+            className="absolute bottom-2 left-2 flex h-7 w-7 cursor-grab items-center justify-center rounded-md bg-ink/70 text-rice active:cursor-grabbing"
+          >
+            ⠿
+          </span>
+        )}
+        {editable && (
+          <button
+            type="button"
+            onClick={() => (editing ? setEditing(false) : startEdit())}
+            title="编辑"
+            className="absolute bottom-2 right-2 flex h-7 w-7 items-center justify-center rounded-md bg-ink/70 text-rice transition hover:bg-cinnabar"
+          >
+            ✎
+          </button>
+        )}
+      </div>
+
+      {editing ? (
+        <div className="space-y-2.5 p-3.5">
+          <div>
+            <span className="text-[10px] tracking-[2px] text-muted">画面</span>
+            <textarea
+              className={`${fieldCls} mt-0.5 h-16 resize-none`}
+              value={visualDesc}
+              onChange={(e) => setVisualDesc(e.target.value)}
+            />
+          </div>
+          <div>
+            <span className="text-[10px] tracking-[2px] text-muted">旁白</span>
+            <textarea
+              className={`${fieldCls} mt-0.5 h-16 resize-none`}
+              maxLength={80}
+              value={caption}
+              onChange={(e) => setCaption(e.target.value)}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] tracking-[2px] text-muted">情绪</span>
+            <select
+              className={`${fieldCls} w-auto py-1`}
+              value={emotion}
+              onChange={(e) => setEmotion(e.target.value)}
+            >
+              {EMOTIONS.map((em) => (
+                <option key={em} value={em}>
+                  {em}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <span className="text-[10px] tracking-[2px] text-muted">人物</span>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              {characters.map((n) => (
+                <span
+                  key={n}
+                  className="flex items-center gap-1 rounded-full border border-line bg-white/50 px-2 py-0.5 text-[10px] text-ink-soft"
+                >
+                  {n}
+                  <button
+                    type="button"
+                    onClick={() => removeChar(n)}
+                    className="text-muted hover:text-cinnabar"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              <input
+                className="w-16 rounded-full border border-dashed border-line bg-transparent px-2 py-0.5 text-[10px] text-ink outline-none focus:border-cinnabar"
+                value={charInput}
+                placeholder="+ 添加"
+                onChange={(e) => setCharInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    addChar()
+                  }
+                }}
+                onBlur={addChar}
+              />
+            </div>
+          </div>
+          {err && <p className="text-xs text-cinnabar">{err}</p>}
+          <div className="flex gap-2 pt-1">
+            <button type="button" onClick={save} disabled={busy === 'save'} className={primaryBtn}>
+              {busy === 'save' ? '保存中…' : '保存'}
+            </button>
+            <button type="button" onClick={() => setEditing(false)} className={ghostBtn}>
+              取消
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-2.5 p-3.5">
+          {pg.visual_desc && (
+            <div>
+              <span className="text-[10px] tracking-[2px] text-muted">画面</span>
+              <p className="mt-0.5 text-[13px] leading-relaxed text-ink-soft">{pg.visual_desc}</p>
+            </div>
+          )}
+          <div>
+            <span className="text-[10px] tracking-[2px] text-muted">旁白</span>
+            <p className="mt-0.5 font-serif text-sm leading-relaxed text-ink">{pg.caption}</p>
+          </div>
+          {pg.characters.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {pg.characters.map((n) => (
+                <span
+                  key={n}
+                  className="rounded-full border border-line bg-white/50 px-2 py-0.5 text-[10px] text-ink-soft"
+                >
+                  {n}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2 text-[11px]">
+            <span className={`rounded-full px-2 py-0.5 tracking-wide ${emotionCls(pg.emotion)}`}>
+              {pg.emotion}
+            </span>
+            {pg.duration_ms > 0 && (
+              <span className="text-muted">{(pg.duration_ms / 1000).toFixed(1)}s</span>
+            )}
+            {pg.silent && pg.audio && (
+              <span className="rounded-full bg-kraft px-2 py-0.5 text-muted">静音兜底</span>
+            )}
+            {pg.status === 'failed' && <span className="text-cinnabar">生成失败</span>}
+          </div>
+          {pg.audio && <audio src={pg.audio} controls className="h-9 w-full" />}
+
+          {editable && (
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-line pt-2.5">
+              <button
+                type="button"
+                onClick={() => act('redraw')}
+                disabled={busy !== null}
+                className={toolBtn}
+              >
+                {busy === 'redraw' ? '重绘中…' : '重绘'}
+              </button>
+              <button
+                type="button"
+                onClick={() => act('revoice')}
+                disabled={busy !== null}
+                className={toolBtn}
+              >
+                {busy === 'revoice' ? '配音中…' : '重配音'}
+              </button>
+              <button
+                type="button"
+                onClick={onInsertAfter}
+                disabled={busy !== null}
+                className={toolBtn}
+              >
+                + 插入下一页
+              </button>
+              <button
+                type="button"
+                onClick={() => act('delete')}
+                disabled={busy !== null}
+                className={`${toolBtn} ml-auto text-cinnabar hover:border-cinnabar`}
+              >
+                {busy === 'delete' ? '删除中…' : '删除'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
