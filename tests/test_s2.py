@@ -1,7 +1,7 @@
 import json
 import httpx, pytest, respx
 from shanhai.providers.llm import LLMClient
-from shanhai.schema import Project, Script, Panel
+from shanhai.schema import Project, Script
 from shanhai.steps import s2_storyboard
 
 BASE = "https://p.example.com/v1"
