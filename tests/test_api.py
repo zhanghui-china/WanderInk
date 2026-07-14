@@ -330,6 +330,33 @@ def test_create_project_sets_owner_to_current_user(mock_create, _save, _settings
     assert p.owner == "testuser"      # 依赖覆盖令 current_user 恒为 testuser(见 _login_override)
 
 
+@patch("shanhai.api._pipeline")
+@patch("shanhai.api.Settings")
+@patch("shanhai.api.store.save")
+@patch("shanhai.api.store.create_project")
+def test_create_project_passes_multi_panel(mock_create, _save, _settings, _pipe):
+    p = Project(project_id="mpid01", scenic_spot="花果山")
+    mock_create.return_value = p
+    r = client.post("/api/projects",
+                    json={"scenic_spot": "花果山", "minutes": 1, "multi_panel": True})
+    assert r.status_code == 200
+    api._JOBS["mpid01"].result(timeout=2)
+    assert p.params.multi_panel is True
+
+
+@patch("shanhai.api._pipeline")
+@patch("shanhai.api.Settings")
+@patch("shanhai.api.store.save")
+@patch("shanhai.api.store.create_project")
+def test_create_project_multi_panel_defaults_false(mock_create, _save, _settings, _pipe):
+    p = Project(project_id="mpid02", scenic_spot="花果山")
+    mock_create.return_value = p
+    r = client.post("/api/projects", json={"scenic_spot": "花果山", "minutes": 1})
+    assert r.status_code == 200
+    api._JOBS["mpid02"].result(timeout=2)
+    assert p.params.multi_panel is False
+
+
 def test_cancel_rejects_non_owner():
     p = Project(project_id="cancelid1", scenic_spot="雷峰塔", owner="someoneelse")
     saved = dict(api._JOBS)

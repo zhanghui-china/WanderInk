@@ -289,6 +289,7 @@ class NewProject(BaseModel):
     story: str | None = Field(default=None, max_length=20000)  # 自备故事上限,防超大体喂 LLM
     voice: str = ""
     speed: float = 1.0
+    multi_panel: bool = False
 
 
 def _validate(body: NewProject) -> None:
@@ -329,6 +330,7 @@ def create_project(body: NewProject, user: str = Depends(current_user)) -> dict:
         p.params.tone = body.tone
         p.params.voice = body.voice
         p.params.speed = body.speed
+        p.params.multi_panel = body.multi_panel
         p.style_preset = body.style
         p.status["pipeline"] = "queued"
         store.save(p)
