@@ -47,7 +47,7 @@ class StoryboardCell(BaseModel):
     ...
     panels: list[Panel] = Field(default_factory=list)  # 空 = 单图模式(现状不变)
 ```
-`panels` 为空是关闭开关时的常态,S4/typeset 走原有分支,字节级行为不变。`insert` 是特写叠加格的 shot_type,每页最多一个(S2 生成时约束,S4/paneling 侧也做兜底截断)。
+`panels` 为空是关闭开关时的常态,S4/API/前端路径走原有分支,字节级行为不变。S2 侧因 `StoryboardCell.panels` 是无条件的 Pydantic 字段,LLM JSON 模式的 schema 总是包含 Panel 定义,故 S2 发送给 LLM 的 prompt 字节数略增,但实际输出(LLM 不填 `panels`,字段默认空列表)与现状等价。`insert` 是特写叠加格的 shot_type,每页最多一个(S2 生成时约束,S4/paneling 侧也做兜底截断)。
 
 ### S2(分镜)改动
 

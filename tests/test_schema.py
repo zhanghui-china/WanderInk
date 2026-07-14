@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from shanhai.schema import GenerationParams, Legend, Panel, Project, StoryboardCell
+from shanhai.schema import Legend, Panel, Project, StoryboardCell
 
 
 def test_project_roundtrip():

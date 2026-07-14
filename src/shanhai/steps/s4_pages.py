@@ -8,7 +8,7 @@ from PIL import Image
 from shanhai import typeset
 from shanhai import paneling
 from shanhai.providers.image import ImageClient
-from shanhai.schema import Panel, Project, StoryboardCell
+from shanhai.schema import CharacterCard, Panel, Project, StoryboardCell
 from shanhai.styles import STYLE_PRESETS
 
 MAX_ATTEMPTS = 3  # 1 次 + 重试 2 次(PRD F4)
@@ -49,7 +49,7 @@ def _downscaled_ref(src: Path, cache_dir: Path) -> Path:
     return out
 
 
-def _panel_prompt(panel: Panel, style: str, cards: dict) -> tuple[str, list]:
+def _panel_prompt(panel: Panel, style: str, cards: dict) -> tuple[str, list[CharacterCard]]:
     present = [cards[n] for n in panel.characters if n in cards]
     features = ";".join(f"{c.name}({c.feature_prompt})" for c in present) or "无固定角色"
     shot = SHOT_HINTS.get(panel.shot_type, SHOT_HINTS["medium"])
@@ -60,7 +60,7 @@ def _panel_prompt(panel: Panel, style: str, cards: dict) -> tuple[str, list]:
 def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClient,
                        image_size: str, workdir: Path, pages_dir: Path, ref_cache: Path) -> None:
     imgs: list[bytes] = []
-    kept_panels = []
+    kept_panels: list[Panel] = []
     for i, panel in enumerate(cell.panels, 1):
         prompt, present = _panel_prompt(panel, style, cards)
         for attempt in range(MAX_ATTEMPTS):
@@ -74,9 +74,8 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
                 imgs.append(art)
                 kept_panels.append(panel)
                 break
-            except Exception:  # noqa: BLE001 单格失败不拖垮整页,重试后放弃该格
-                if attempt == MAX_ATTEMPTS - 1:
-                    pass
+            except Exception:  # noqa: BLE001 单格失败不拖垮整页,重试后放弃该格(不占位符硬凑)
+                continue
     if not imgs:
         cell.status = "failed"
         return
