@@ -53,3 +53,12 @@ def test_s3_single_character_failure_does_not_abort_others(tmp_path: Path, capsy
     assert p.script.characters[2].turnaround_image != ""      # 第 3 个仍正常处理
     assert p.status["s3"] == "partial"
     assert "三视图生成失败" in capsys.readouterr().out
+
+
+def test_feature_system_handles_non_human_characters():
+    """FEATURE_SYSTEM 需要求先判断人类/非人类,非人类角色需先点出物种/形体。"""
+    system = s3_characters.FEATURE_SYSTEM
+    assert "非人类" in system
+    assert "物种" in system or "形体" in system
+    # 人类分支的原有槽位不能丢,回归保护
+    assert "发型发色" in system and "服饰" in system

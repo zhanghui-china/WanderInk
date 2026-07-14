@@ -125,3 +125,9 @@ def test_s4_downscaled_ref_rebuilds_on_newer_source(tmp_path: Path):
     os.utime(src, (out_mtime + 100, out_mtime + 100))
     new = s4_pages._downscaled_ref(src, cache).read_bytes()
     assert new != old                                # 源图更新后缩略图重建
+
+
+def test_page_tmpl_uses_species_neutral_wording():
+    """PAGE_TMPL 的一致性约束不应假定角色是人类(发型/面部特征对动物角色不适用)。"""
+    assert "发型" not in s4_pages.PAGE_TMPL
+    assert "面部特征" not in s4_pages.PAGE_TMPL
