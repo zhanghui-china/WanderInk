@@ -14,6 +14,16 @@ from shanhai.schema import CharacterCard, Legend, Project, Script, StoryboardCel
 client = TestClient(api.app)
 
 
+@pytest.fixture(autouse=True)
+def _login_override():
+    """现有端点已全部要求登录(Depends(current_user)),否则本文件测试会因 401 全挂。
+    用依赖覆盖让测试在「已登录 testuser」语境下跑,不必真的走 cookie 登录流程
+    (真实 cookie 登录流程由 tests/test_auth.py 覆盖)。"""
+    api.app.dependency_overrides[api.current_user] = lambda: "testuser"
+    yield
+    api.app.dependency_overrides.clear()
+
+
 def test_meta_lists_enums():
     j = client.get("/api/meta").json()
     assert j["minutes"] == [1, 3, 5]
@@ -305,6 +315,162 @@ def test_export_rejects_when_job_pending():
         api._JOBS.update(saved)
 
 
+# ---------- 归属 / 队列 / 取消(Phase 2) ----------
+
+@patch("shanhai.api._pipeline")
+@patch("shanhai.api.Settings")
+@patch("shanhai.api.store.save")
+@patch("shanhai.api.store.create_project")
+def test_create_project_sets_owner_to_current_user(mock_create, _save, _settings, _pipe):
+    p = Project(project_id="ownid01", scenic_spot="黄鹤楼")
+    mock_create.return_value = p
+    r = client.post("/api/projects", json={"scenic_spot": "黄鹤楼", "minutes": 1})
+    assert r.status_code == 200
+    api._JOBS["ownid01"].result(timeout=2)
+    assert p.owner == "testuser"      # 依赖覆盖令 current_user 恒为 testuser(见 _login_override)
+
+
+def test_cancel_rejects_non_owner():
+    p = Project(project_id="cancelid1", scenic_spot="雷峰塔", owner="someoneelse")
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f = Future()
+    api._JOBS["cancelid1"] = f
+    try:
+        with patch("shanhai.api.store.load", return_value=p):
+            r = client.post("/api/projects/cancelid1/cancel")
+        assert r.status_code == 403
+    finally:
+        f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
+def test_cancel_succeeds_for_owner_when_queued():
+    # 未开始执行的 Future(未被线程池取走)——.cancel() 返回 True,直接取消成功。
+    p = Project(project_id="cancelid2", scenic_spot="雷峰塔", owner="testuser")
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    api._JOBS["cancelid2"] = Future()
+    try:
+        with patch("shanhai.api.store.load", return_value=p), \
+             patch("shanhai.api.store.save") as mock_save:
+            r = client.post("/api/projects/cancelid2/cancel")
+        assert r.status_code == 200
+        assert r.json() == {"cancelled": True}
+        assert p.status["pipeline"] == "cancelled"
+        mock_save.assert_called_once()
+    finally:
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
+def test_cancel_rejects_already_finished_job():
+    # 作业已跑完(Future done,尚未被下次提交清理出 _JOBS)时应 400,而不是误标 _CANCELLED——
+    # 那样标记再无人消费,会一直残留污染该项目下次重跑(对抗审计发现的取消标记泄漏根因之一)。
+    p = Project(project_id="cancelid3", scenic_spot="雷峰塔", owner="testuser")
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f = Future()
+    f.set_result(None)                                     # 已完成
+    api._JOBS["cancelid3"] = f
+    try:
+        with patch("shanhai.api.store.load", return_value=p):
+            r = client.post("/api/projects/cancelid3/cancel")
+        assert r.status_code == 400
+        assert "cancelid3" not in api._CANCELLED
+    finally:
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
+def test_cancel_marks_running_job_for_cooperative_cancel():
+    # 已被线程池取走开始执行的作业(.cancel() 返回 False):走协作式标记分支。
+    p = Project(project_id="cancelid4", scenic_spot="雷峰塔", owner="testuser")
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f = Future()
+    f.set_running_or_notify_cancel()                       # PENDING -> RUNNING,之后 cancel() 返回 False
+    api._JOBS["cancelid4"] = f
+    try:
+        with patch("shanhai.api.store.load", return_value=p):
+            r = client.post("/api/projects/cancelid4/cancel")
+        assert r.status_code == 200
+        assert r.json() == {"cancelling": True}
+        assert "cancelid4" in api._CANCELLED
+    finally:
+        api._CANCELLED.discard("cancelid4")
+        f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
+def test_check_cancelled_consumes_flag_once():
+    api._CANCELLED.add("consumeid")
+    try:
+        assert api._check_cancelled("consumeid") is True
+        assert api._check_cancelled("consumeid") is False   # 命中即移除,不重复触发
+    finally:
+        api._CANCELLED.discard("consumeid")
+
+
+def test_pipeline_clears_stale_cancel_flag_on_completion():
+    # 回归:取消发生在最后一环节执行期间时,_CANCELLED 不会被再次检查消费,曾经会一直残留,
+    # 误伤该项目下次重跑。_pipeline 收尾(finally)必须清掉本次作业的标记。
+    from unittest.mock import MagicMock
+    p = Project(project_id="leakid", scenic_spot="雷峰塔")
+    mock_settings = MagicMock()
+    settings = {k: mock_settings for k in ("s0", "s1", "s2", "s3", "s4", "s5")}
+    clients = {
+        "s0": (MagicMock(),), "s1": (MagicMock(),), "s2": (MagicMock(),),
+        "s3": (MagicMock(), MagicMock()), "s4": (MagicMock(), MagicMock()),
+        "s5": (MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+    }
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.resolve_stage_clients", return_value=(settings, clients)), \
+         patch("shanhai.api.s0_legend") as s0, \
+         patch("shanhai.api.s1_script") as s1, \
+         patch("shanhai.api.s2_storyboard") as s2, \
+         patch("shanhai.api.s3_characters") as s3, \
+         patch("shanhai.api.s4_pages") as s4, \
+         patch("shanhai.api.s5_audio") as s5, \
+         patch("shanhai.api.s6_compose") as s6:
+        s0.from_text.return_value = p
+        for m in (s1, s2, s3, s4, s5, s6):
+            m.run.return_value = p
+        api._CANCELLED.add("leakid")          # 模拟取消请求在最后环节执行期间到达
+        api._pipeline("leakid", runtime_config.AppConfig(), "自备故事")
+    assert "leakid" not in api._CANCELLED     # 收尾必须清掉,不留给下次重跑
+
+
+def test_get_queue_reflects_jobs_owner_and_spot():
+    p1 = Project(project_id="qid1", scenic_spot="雷峰塔", owner="alice")
+    p1.status["pipeline"] = "running"
+    p2 = Project(project_id="qid2", scenic_spot="黄鹤楼", owner="bob")
+    p2.status["pipeline"] = "queued"
+    projects = {"qid1": p1, "qid2": p2}
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f1, f2 = Future(), Future()
+    api._JOBS["qid1"] = f1
+    api._JOBS["qid2"] = f2
+    try:
+        with patch("shanhai.api.store.load", side_effect=lambda pid: projects[pid]):
+            r = client.get("/api/queue")
+        assert r.status_code == 200
+        items = {it["project_id"]: it for it in r.json()}
+        assert items["qid1"] == {"project_id": "qid1", "owner": "alice",
+                                 "scenic_spot": "雷峰塔", "pipeline": "running"}
+        assert items["qid2"] == {"project_id": "qid2", "owner": "bob",
+                                 "scenic_spot": "黄鹤楼", "pipeline": "queued"}
+    finally:
+        f1.set_result(None)
+        f2.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
 # ---------- 编辑端点 ----------
 
 def test_patch_cell_clears_audio_on_caption_change():
@@ -346,6 +512,36 @@ def test_patch_cell_missing_project_404():
     assert r.status_code == 404
 
 
+def test_patch_cell_rejects_non_owner():
+    # 编辑权限与取消权限同标准:仅项目所有者可编辑(_login_override 恒为 testuser)。
+    p = Project(project_id="notmineid", scenic_spot="雷峰塔", owner="someoneelse")
+    p.storyboard = [StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
+                                   caption="c1", emotion="宁静")]
+    with patch("shanhai.api.store.load", return_value=p):
+        r = client.patch("/api/projects/notmineid/cells/1", json={"caption": "x"})
+    assert r.status_code == 403
+
+
+def test_delete_cell_rejects_non_owner():
+    p = Project(project_id="notmineid2", scenic_spot="雷峰塔", owner="someoneelse")
+    p.storyboard = [StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
+                                   caption="c1", emotion="宁静")]
+    with patch("shanhai.api.store.load", return_value=p):
+        r = client.delete("/api/projects/notmineid2/cells/1")
+    assert r.status_code == 403
+
+
+def test_patch_cell_allows_legacy_project_without_owner():
+    # 历史项目 owner 为空字符串:视为无主,不做归属限制(不能因加固而锁死存量数据)。
+    p = Project(project_id="legacyid", scenic_spot="雷峰塔")
+    assert p.owner == ""
+    p.storyboard = [StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
+                                   caption="c1", emotion="宁静")]
+    with patch("shanhai.api.store.load", return_value=p), patch("shanhai.api.store.save"):
+        r = client.patch("/api/projects/legacyid/cells/1", json={"caption": "新"})
+    assert r.status_code == 200
+
+
 def test_reorder_rejects_non_permutation():
     p = Project(project_id="reorderid", scenic_spot="雷峰塔")
     p.storyboard = [
@@ -377,6 +573,13 @@ def test_run_step_rejects_when_job_pending():
         f.set_result(None)
         api._JOBS.clear()
         api._JOBS.update(saved)
+
+
+def test_run_step_rejects_non_owner():
+    p = Project(project_id="notminestep", scenic_spot="雷峰塔", owner="someoneelse")
+    with patch("shanhai.api.store.load", return_value=p):
+        r = client.post("/api/projects/notminestep/steps/s6")
+    assert r.status_code == 403
 
 
 @patch("shanhai.api._run_step")           # 不真跑单步

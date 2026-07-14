@@ -7,17 +7,21 @@
 - 若 web/dist 存在(前端已 build),挂到 / 作为单页应用;dev 时前端另起 Vite 连本服务。
 """
 import os
+import secrets
+import sys
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.sessions import SessionMiddleware
 
 from shanhai import editing, export, runtime_config, store
+from shanhai.auth import current_user, verify_login
 from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _clients,
                          resolve_stage_clients)
 from shanhai.config import Settings, load_env
@@ -47,11 +51,28 @@ app.add_middleware(
     CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"],
 )
 
-# 管线耗时数分钟且吃满上游配额:用单 worker 线程池串行化,天然限流,
-# 避免多项目并发把上游打到 503(叠加 S4 内部 ×3 并发会放大过载)。
+# 登录态用 Starlette 签名 cookie(SessionMiddleware),无需服务端 session 表。
+# secret 固定则重启后 cookie 仍有效;缺省时用进程内临时值,重启即令全员登出。
+_SESSION_SECRET = os.getenv("SHANHAI_SESSION_SECRET")
+if not _SESSION_SECRET:
+    _SESSION_SECRET = secrets.token_hex(32)
+    print("[警告] 未设置 SHANHAI_SESSION_SECRET,已生成进程内临时密钥:"
+          "每次重启会使签名 cookie 失效、所有人被登出。生产部署请在环境变量中固定该值。",
+          file=sys.stderr)
+# 默认不加 Secure(当前部署为 tailnet/内网直连 HTTP,加了 Secure 反而会让 cookie 完全发不出去);
+# 若未来接 HTTPS(反代终止 TLS 或直连 HTTPS),置 SHANHAI_SESSION_HTTPS_ONLY=true 收紧。
+_SESSION_HTTPS_ONLY = os.getenv("SHANHAI_SESSION_HTTPS_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
+app.add_middleware(SessionMiddleware, secret_key=_SESSION_SECRET, https_only=_SESSION_HTTPS_ONLY)
+
+# 云端环节可真并行,本地 Spark 端点的串行化交给 providers/_http.py 的
+# local_backend_guard 全局锁(按物理 GPU 排队,不按线程池排队)。
+# 并发数按 MAX_PENDING=8 的一半估算,避免过多项目同时抢云端配额。
 MAX_PENDING = 8  # 未完成作业(排队+运行)上限,超出则拒绝新建
-_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 _JOBS: dict[str, Future] = {}
+# 协作式取消标记:project_id 命中则在下一个环节切换点(_pipeline/_run_step)提前退出,
+# 不能打断正卡在网络调用里的当前环节。仿 _JOBS 的定义风格,同样受 _JOBS_LOCK 保护读写。
+_CANCELLED: set[str] = set()
 
 # 端点是同步 def,Starlette 在 anyio 线程池并发跑同一 handler,故共享态需锁保护。
 # 两级锁,层级单向、临界区互不重叠,不嵌套持有,故无死锁:
@@ -78,6 +99,15 @@ def _job_of(project_id: str) -> Future | None:
     """在 _JOBS_LOCK 下取该项目当前作业句柄的一致快照(避免与提交路径竞态)。"""
     with _JOBS_LOCK:
         return _JOBS.get(project_id)
+
+
+def _check_cancelled(project_id: str) -> bool:
+    """在 _JOBS_LOCK 下查询并消费该项目的取消标记(命中即移除,不重复触发)。"""
+    with _JOBS_LOCK:
+        if project_id in _CANCELLED:
+            _CANCELLED.discard(project_id)
+            return True
+        return False
 
 
 def _locked_save(p: Project) -> None:
@@ -136,6 +166,10 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
             ("s6", lambda: s6_compose.run(p, workdir)),
         ]
         for _name, fn in stages:
+            if _check_cancelled(project_id):  # 协作式取消:环节切换点检查,不打断正在跑的环节
+                p.status["pipeline"] = "cancelled"
+                _locked_save(p)
+                return
             fn()
             _locked_save(p)
         p.status["pipeline"] = _deliverable_status(p)
@@ -143,6 +177,11 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
     except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
         p.status["pipeline"] = f"error: {e}"
         _locked_save(p)
+    finally:
+        # 收尾清掉本次作业残留的取消标记:若取消发生在最后一环节执行期间(其后再无
+        # _check_cancelled 会读到它),标记会一直留在 _CANCELLED 里,误伤该项目下次重跑。
+        with _JOBS_LOCK:
+            _CANCELLED.discard(project_id)
 
 
 # ---------- 序列化:把落盘相对路径转成可访问 URL ----------
@@ -174,6 +213,7 @@ def _serialize(p: Project) -> dict:
     return {
         "project_id": p.project_id,
         "scenic_spot": p.scenic_spot,
+        "owner": p.owner,
         "style_preset": p.style_preset,
         "params": p.params.model_dump(),
         "status": p.status,
@@ -190,21 +230,54 @@ def _serialize(p: Project) -> dict:
     }
 
 
+# ---------- 登录 / 身份 ----------
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/login")
+def login(body: LoginBody, request: Request) -> dict:
+    """校验 bcrypt 口令,成功则写签名 session cookie;失败 401。此端点自身不要求登录。"""
+    if not verify_login(body.username, body.password):
+        raise HTTPException(401, "用户名或密码错误")
+    request.session["user"] = body.username
+    return {"username": body.username}
+
+
+@app.post("/api/logout")
+def logout(request: Request) -> dict:
+    """清空 session(cookie 随之失效),此端点不要求登录。"""
+    request.session.clear()
+    return {}
+
+
+@app.get("/api/me")
+def me(user: str = Depends(current_user)) -> dict:
+    """已登录返回用户名;未登录经 current_user 抛 401(前端靠状态码判断登录态)。"""
+    return {"username": user}
+
+
 # ---------- 接口 ----------
 
-def _editable(project_id: str) -> Project:
+def _editable(project_id: str, user: str) -> Project:
     """编辑端点公共校验+载入,须在持有 _project_lock(project_id) 时调用:此时 job-check 成为
     真正的屏障(锁内确认无未完成作业才改),并载入最新快照,杜绝 check→加锁 的 TOCTOU 与丢更新。
-    只读模式拒绝写入;有未完成后台作业拒绝并发编辑;项目须存在。锁序 project→jobs(此处再取 _JOBS_LOCK)。"""
+    只读模式拒绝写入;有未完成后台作业拒绝并发编辑;项目须存在;非所有者不可编辑
+    (历史项目 owner 为空,视为无主,不做归属限制)。锁序 project→jobs(此处再取 _JOBS_LOCK)。"""
     if _READONLY:
         raise HTTPException(403, "公开演示为只读,禁止编辑")
     f = _job_of(project_id)  # 调用方已持 project 锁,此处再取 _JOBS_LOCK 一致快照(project→jobs)
     if f is not None and not f.done():
         raise HTTPException(409, "该项目有未完成的生成作业,请等待完成后再编辑")
     try:
-        return store.load(project_id)
+        p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
+    if p.owner and p.owner != user:
+        raise HTTPException(403, "只能编辑自己的项目")
+    return p
 
 
 class NewProject(BaseModel):
@@ -234,7 +307,7 @@ def _validate(body: NewProject) -> None:
 
 
 @app.post("/api/projects")
-def create_project(body: NewProject) -> dict:
+def create_project(body: NewProject, user: str = Depends(current_user)) -> dict:
     """新建项目并在后台启动完整管线,立即返回 project_id 供前端轮询。"""
     if _READONLY:
         raise HTTPException(403, "公开演示为只读,生成请在本机或 tailnet 内进行")
@@ -250,6 +323,7 @@ def create_project(body: NewProject) -> dict:
         if len(_JOBS) >= MAX_PENDING:
             raise HTTPException(429, f"生成队列已满(上限 {MAX_PENDING}),请稍后再试")
         p = store.create_project(body.scenic_spot)
+        p.owner = user
         p.params.duration_min = body.minutes
         p.params.audience = body.audience
         p.params.tone = body.tone
@@ -262,8 +336,33 @@ def create_project(body: NewProject) -> dict:
     return {"project_id": p.project_id}
 
 
+@app.post("/api/projects/{project_id}/cancel")
+def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
+    """取消自己提交的生成任务:排队中未开始执行则直接取消;已在执行则只能协作式标记,
+    在下一个环节切换点生效(不能打断正卡在网络调用里的当前环节)。"""
+    try:
+        p = store.load(project_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(404, f"项目不存在: {project_id}") from e
+    if p.owner != user:
+        raise HTTPException(403, "只能取消自己的生成任务")
+    f = _job_of(project_id)
+    if f is None or f.done():  # 无作业,或作业已跑完(尚未被清理出 _JOBS):都无可取消对象,
+        # 若在此处误标记 _CANCELLED,该标记再无人消费(已完成的 _pipeline/_run_step 早已跑过
+        # 自己的清理),会一直残留污染该项目下次重跑,故一律拒绝而非静默标记。
+        raise HTTPException(400, "该项目当前没有可取消的生成任务")
+    if f.cancel():  # 还在排队没被线程池取走,直接取消成功
+        with _project_lock(project_id):
+            p.status["pipeline"] = "cancelled"
+            store.save(p)
+        return {"cancelled": True}
+    with _JOBS_LOCK:  # 已在执行:标记协作式取消,由 _pipeline/_run_step 在环节切换点消费
+        _CANCELLED.add(project_id)
+    return {"cancelling": True}
+
+
 @app.get("/api/projects")
-def list_projects() -> list[dict]:
+def list_projects(user: str = Depends(current_user)) -> list[dict]:
     out = []
     for meta in sorted(store.DEFAULT_ROOT.glob("*/project.json")):
         try:
@@ -271,15 +370,33 @@ def list_projects() -> list[dict]:
         except Exception:  # noqa: BLE001 — 跳过损坏/半写的项目,不让列表整体失败
             continue
         out.append({
-            "project_id": p.project_id, "scenic_spot": p.scenic_spot,
+            "project_id": p.project_id, "scenic_spot": p.scenic_spot, "owner": p.owner,
             "pipeline": p.status.get("pipeline", "pending"),
             "mp4": _mp4_url(p.output.get("mp4", "")),
         })
     return out
 
 
+@app.get("/api/queue")
+def get_queue(user: str = Depends(current_user)) -> list[dict]:
+    """全局生成队列:基于内存态 _JOBS(无需持久化)实时组装,各自 store.load 拿最新状态。"""
+    with _JOBS_LOCK:
+        ids = list(_JOBS.keys())
+    out = []
+    for project_id in ids:
+        try:
+            p = store.load(project_id)
+        except (FileNotFoundError, ValueError):  # 跳过已被删除/损坏的项目
+            continue
+        out.append({
+            "project_id": project_id, "owner": p.owner,
+            "scenic_spot": p.scenic_spot, "pipeline": p.status.get("pipeline", "pending"),
+        })
+    return out
+
+
 @app.get("/api/projects/{project_id}")
-def get_project(project_id: str) -> dict:
+def get_project(project_id: str, user: str = Depends(current_user)) -> dict:
     try:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
@@ -288,7 +405,7 @@ def get_project(project_id: str) -> dict:
 
 
 @app.post("/api/projects/{project_id}/export")
-def export_project(project_id: str) -> dict:
+def export_project(project_id: str, user: str = Depends(current_user)) -> dict:
     """合成 PDF/ZIP 导出物(纯本地、无上游成本,故不受只读拦截)。
     但须避让运行中的生成作业:管线正边写边跑时导出会读到半成品、且导出的 save 会与
     管线的 save 互相丢更新(甚至回滚管线进度),故有未完成作业时 409;读改写落盘全程持 per-project 锁。"""
@@ -317,11 +434,12 @@ class CellPatch(BaseModel):
 
 
 @app.patch("/api/projects/{project_id}/cells/{index}")
-def patch_cell(project_id: str, index: int, body: CellPatch) -> dict:
+def patch_cell(project_id: str, index: int, body: CellPatch,
+               user: str = Depends(current_user)) -> dict:
     if body.characters is not None and len(body.characters) > 50:   # A7:编辑路径同样挡超大 characters
         raise HTTPException(400, "characters 数量上限 50")
     with _project_lock(project_id):
-        p = _editable(project_id)
+        p = _editable(project_id, user)
         try:
             editing.update_cell(p, index, caption=body.caption, visual_desc=body.visual_desc,
                                 emotion=body.emotion, characters=body.characters)
@@ -332,9 +450,9 @@ def patch_cell(project_id: str, index: int, body: CellPatch) -> dict:
 
 
 @app.post("/api/projects/{project_id}/cells/{index}/redraw")
-def redraw_cell(project_id: str, index: int) -> dict:
+def redraw_cell(project_id: str, index: int, user: str = Depends(current_user)) -> dict:
     with _project_lock(project_id):
-        p = _editable(project_id)
+        p = _editable(project_id, user)
         try:
             editing.mark_redraw(p, index)
         except ValueError as e:
@@ -344,9 +462,9 @@ def redraw_cell(project_id: str, index: int) -> dict:
 
 
 @app.post("/api/projects/{project_id}/cells/{index}/revoice")
-def revoice_cell(project_id: str, index: int) -> dict:
+def revoice_cell(project_id: str, index: int, user: str = Depends(current_user)) -> dict:
     with _project_lock(project_id):
-        p = _editable(project_id)
+        p = _editable(project_id, user)
         try:
             editing.mark_revoice(p, index)
         except ValueError as e:
@@ -364,11 +482,11 @@ class CellInsert(BaseModel):
 
 
 @app.post("/api/projects/{project_id}/cells")
-def create_cell(project_id: str, body: CellInsert) -> dict:
+def create_cell(project_id: str, body: CellInsert, user: str = Depends(current_user)) -> dict:
     if body.characters is not None and len(body.characters) > 50:
         raise HTTPException(400, "characters 数量超限(≤ 50)")
     with _project_lock(project_id):
-        p = _editable(project_id)
+        p = _editable(project_id, user)
         workdir = store.project_dir(project_id)
         try:
             editing.insert_cell(p, workdir, body.after_index, caption=body.caption,
@@ -381,9 +499,9 @@ def create_cell(project_id: str, body: CellInsert) -> dict:
 
 
 @app.delete("/api/projects/{project_id}/cells/{index}")
-def delete_cell(project_id: str, index: int) -> dict:
+def delete_cell(project_id: str, index: int, user: str = Depends(current_user)) -> dict:
     with _project_lock(project_id):
-        p = _editable(project_id)
+        p = _editable(project_id, user)
         workdir = store.project_dir(project_id)
         try:
             editing.delete_cell(p, workdir, index)
@@ -398,9 +516,9 @@ class ReorderBody(BaseModel):
 
 
 @app.post("/api/projects/{project_id}/cells/reorder")
-def reorder_cells(project_id: str, body: ReorderBody) -> dict:
+def reorder_cells(project_id: str, body: ReorderBody, user: str = Depends(current_user)) -> dict:
     with _project_lock(project_id):
-        p = _editable(project_id)
+        p = _editable(project_id, user)
         workdir = store.project_dir(project_id)
         try:
             editing.reorder_cells(p, workdir, body.order)
@@ -411,9 +529,9 @@ def reorder_cells(project_id: str, body: ReorderBody) -> dict:
 
 
 @app.post("/api/projects/{project_id}/characters/{name}/redraw")
-def redraw_character(project_id: str, name: str) -> dict:
+def redraw_character(project_id: str, name: str, user: str = Depends(current_user)) -> dict:
     with _project_lock(project_id):
-        p = _editable(project_id)
+        p = _editable(project_id, user)
         try:
             editing.mark_character_redraw(p, name)
         except ValueError as e:
@@ -437,6 +555,10 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
     try:
         p.status["pipeline"] = "running"
         _locked_save(p)
+        if _check_cancelled(project_id):  # 协作式取消:环节开始执行前检查
+            p.status["pipeline"] = "cancelled"
+            _locked_save(p)
+            return
         if name == "s2":
             p = s2_storyboard.run(p, llm)
         elif name == "s3":
@@ -455,14 +577,18 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
     except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
         p.status["pipeline"] = f"error: {e}"
         _locked_save(p)
+    finally:
+        # 同 _pipeline:收尾清掉本次作业残留的取消标记,避免误伤该项目下次重跑。
+        with _JOBS_LOCK:
+            _CANCELLED.discard(project_id)
 
 
 @app.post("/api/projects/{project_id}/steps/{name}")
-def run_step(project_id: str, name: str) -> JSONResponse:
+def run_step(project_id: str, name: str, user: str = Depends(current_user)) -> JSONResponse:
     """单步重跑(编辑后只需局部重生成,不必整条管线重来一遍)。"""
     if name not in _STEP_NAMES:
         raise HTTPException(400, f"未知步骤: {name}")
-    _editable(project_id)  # 403/409/404 快速前置校验(返回丢弃,下面锁内重载最新快照)
+    _editable(project_id, user)  # 403/409/404 快速前置校验(返回丢弃,下面锁内重载最新快照)
     Settings()  # 急切校验 .env 必填项:坏环境立刻失败,不留孤儿 queued
     cfg = load_overrides()  # 锁外读配置快照
     # 锁序恒为 project→jobs:先占 project 锁(与编辑端点同序,queued 落盘不覆盖并发编辑),
@@ -487,7 +613,7 @@ def run_step(project_id: str, name: str) -> JSONResponse:
 
 
 @app.get("/api/meta")
-def meta() -> dict:
+def meta(user: str = Depends(current_user)) -> dict:
     """前端建项目表单用的枚举选项。"""
     return {
         "minutes": list(_MINUTES), "audiences": list(_AUDIENCES),
@@ -501,12 +627,12 @@ def meta() -> dict:
 # 合并/脱敏/视图契约集中在 runtime_config(与模型同处、CLI 亦可复用);此处仅 HTTP 薄封装。
 
 @app.get("/api/config")
-def read_config() -> dict:
+def read_config(user: str = Depends(current_user)) -> dict:
     return config_view(_READONLY)
 
 
 @app.put("/api/config")
-def write_config(body: AppConfig) -> dict:
+def write_config(body: AppConfig, user: str = Depends(current_user)) -> dict:
     """写入端点/模型覆盖。校验(Literal/extra=forbid)由 AppConfig 解析完成:非法 provider/越权字段→422;
     只读→403;未知 stage→400。读-合并-写在 update_overrides 写锁内原子完成(避免并发 PUT 丢更新),
     合并语义(部分更新/密钥哨兵/环节保留与剪枝)见 runtime_config.apply_put。"""

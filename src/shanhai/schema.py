@@ -75,6 +75,7 @@ class GenerationParams(BaseModel):
 class Project(BaseModel):
     project_id: str
     scenic_spot: str
+    owner: str = ""   # 建作品时的登录用户名;历史项目(改造前所建)留空,前端显示"未知"
     params: GenerationParams = Field(default_factory=GenerationParams)
     status: dict[str, str] = Field(default_factory=dict)
     legend_candidates: list[Legend] = Field(default_factory=list)

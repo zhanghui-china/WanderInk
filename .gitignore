@@ -16,3 +16,4 @@ spike/out/
 __pycache__/
 .venv/
 config.json
+users.json

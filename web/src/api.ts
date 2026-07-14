@@ -7,9 +7,12 @@ import type {
   NewProjectInput,
   ProjectDetail,
   ProjectSummary,
+  QueueItem,
 } from './types'
 
 // 同源部署时前端由后端托管;dev 期由 Vite 代理 /api → :8080。故 base 留空。
+// credentials 用 'same-origin':登录态是 Starlette 签名 cookie,同源(含 Vite 代理转发)
+// 请求需带上;dev 代理让浏览器仍视 /api 为同源,故不需要跨源的 'include'。
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }))
@@ -18,56 +21,81 @@ async function j<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
+const CREDS: RequestInit = { credentials: 'same-origin' }
+
 export const api = {
-  meta: () => fetch('/api/meta').then((r) => j<Meta>(r)),
+  login: (username: string, password: string) =>
+    fetch('/api/login', {
+      ...CREDS,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    }).then((r) => j<{ username: string }>(r)),
 
-  list: () => fetch('/api/projects').then((r) => j<ProjectSummary[]>(r)),
+  logout: () => fetch('/api/logout', { ...CREDS, method: 'POST' }).then((r) => j<unknown>(r)),
 
-  get: (id: string) => fetch(`/api/projects/${id}`).then((r) => j<ProjectDetail>(r)),
+  me: () => fetch('/api/me', CREDS).then((r) => j<{ username: string }>(r)),
+
+  meta: () => fetch('/api/meta', CREDS).then((r) => j<Meta>(r)),
+
+  list: () => fetch('/api/projects', CREDS).then((r) => j<ProjectSummary[]>(r)),
+
+  get: (id: string) => fetch(`/api/projects/${id}`, CREDS).then((r) => j<ProjectDetail>(r)),
 
   create: (body: NewProjectInput) =>
     fetch('/api/projects', {
+      ...CREDS,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => j<{ project_id: string }>(r)),
 
   exportProject: (id: string) =>
-    fetch(`/api/projects/${id}/export`, { method: 'POST' }).then((r) =>
+    fetch(`/api/projects/${id}/export`, { ...CREDS, method: 'POST' }).then((r) =>
       j<{ pdf: string | null; zip: string | null }>(r)
+    ),
+
+  getQueue: () => fetch('/api/queue', CREDS).then((r) => j<QueueItem[]>(r)),
+
+  cancelProject: (id: string) =>
+    fetch(`/api/projects/${id}/cancel`, { ...CREDS, method: 'POST' }).then((r) =>
+      j<{ cancelled?: boolean; cancelling?: boolean }>(r)
     ),
 
   updateCell: (id: string, index: number, patch: CellPatch) =>
     fetch(`/api/projects/${id}/cells/${index}`, {
+      ...CREDS,
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     }).then((r) => j<ProjectDetail>(r)),
 
   redrawCell: (id: string, index: number) =>
-    fetch(`/api/projects/${id}/cells/${index}/redraw`, { method: 'POST' }).then((r) =>
+    fetch(`/api/projects/${id}/cells/${index}/redraw`, { ...CREDS, method: 'POST' }).then((r) =>
       j<ProjectDetail>(r)
     ),
 
   revoiceCell: (id: string, index: number) =>
-    fetch(`/api/projects/${id}/cells/${index}/revoice`, { method: 'POST' }).then((r) =>
+    fetch(`/api/projects/${id}/cells/${index}/revoice`, { ...CREDS, method: 'POST' }).then((r) =>
       j<ProjectDetail>(r)
     ),
 
   insertCell: (id: string, afterIndex: number, fields: InsertCellFields) =>
     fetch(`/api/projects/${id}/cells`, {
+      ...CREDS,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ after_index: afterIndex, ...fields }),
     }).then((r) => j<ProjectDetail>(r)),
 
   deleteCell: (id: string, index: number) =>
-    fetch(`/api/projects/${id}/cells/${index}`, { method: 'DELETE' }).then((r) =>
+    fetch(`/api/projects/${id}/cells/${index}`, { ...CREDS, method: 'DELETE' }).then((r) =>
       j<ProjectDetail>(r)
     ),
 
   reorderCells: (id: string, order: number[]) =>
     fetch(`/api/projects/${id}/cells/reorder`, {
+      ...CREDS,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ order }),
@@ -75,18 +103,20 @@ export const api = {
 
   redrawCharacter: (id: string, name: string) =>
     fetch(`/api/projects/${id}/characters/${encodeURIComponent(name)}/redraw`, {
+      ...CREDS,
       method: 'POST',
     }).then((r) => j<ProjectDetail>(r)),
 
   runStep: (id: string, name: string) =>
-    fetch(`/api/projects/${id}/steps/${name}`, { method: 'POST' }).then((r) =>
+    fetch(`/api/projects/${id}/steps/${name}`, { ...CREDS, method: 'POST' }).then((r) =>
       j<{ queued: boolean }>(r)
     ),
 
-  getConfig: () => fetch('/api/config').then((r) => j<AppConfigView>(r)),
+  getConfig: () => fetch('/api/config', CREDS).then((r) => j<AppConfigView>(r)),
 
   saveConfig: (body: AppConfigInput) =>
     fetch('/api/config', {
+      ...CREDS,
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
