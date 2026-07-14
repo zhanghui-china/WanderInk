@@ -93,6 +93,7 @@ export interface NewProjectInput {
   story?: string | null
   voice?: string
   speed?: number
+  multi_panel?: boolean
 }
 
 // 与后端 shanhai/runtime_config.py 的 ConfigOverride / AppConfig 对应
