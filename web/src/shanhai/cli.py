@@ -3,7 +3,7 @@ from pathlib import Path
 
 import typer
 
-from shanhai import store
+from shanhai import auth, store
 from shanhai.config import Settings
 from shanhai.runtime_config import STAGE_CLIENTS, AppConfig, resolve_settings
 from shanhai.providers.image import ImageClient
@@ -176,6 +176,19 @@ def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str 
         typer.echo("⚠️ 未生成任何完整正文页(缺画面或配音),成片仅含片头片尾,判定失败")
         raise typer.Exit(1)
     typer.echo(f"成片: {p.output.get('mp4')}")
+
+
+@app.command()
+def adduser():
+    """交互式建账号:输入用户名+密码,bcrypt 哈希后落盘 users.json(仅供管理员用,不做批量导入)。"""
+    username = typer.prompt("用户名")
+    password = typer.prompt("密码", hide_input=True)
+    try:
+        auth.add_user(username, password)
+    except ValueError as e:
+        typer.echo(f"⚠️ {e}")
+        raise typer.Exit(1) from e
+    typer.echo(f"已写入 users.json: {username}")
 
 
 @app.command()

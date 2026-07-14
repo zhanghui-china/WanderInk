@@ -190,3 +190,22 @@ def test_status(store):
     store.load.return_value = proj
     result = runner.invoke(app, ["status", "ab12cd34"])
     assert result.exit_code == 0 and "s1" in result.output
+
+
+def test_adduser_writes_account(tmp_path, monkeypatch):
+    from shanhai import auth
+    monkeypatch.setattr(auth, "USERS_PATH", tmp_path / "users.json")
+    result = runner.invoke(app, ["adduser"], input="wuzi\npw1\n")
+    assert result.exit_code == 0
+    assert auth.verify_login("wuzi", "pw1") is True
+
+
+def test_adduser_long_password_exits_with_friendly_message(tmp_path, monkeypatch):
+    # bcrypt 上限 72 字节:CLI 应友好报错退出,而不是甩一个裸 ValueError 堆栈。
+    from shanhai import auth
+    users = tmp_path / "users.json"
+    monkeypatch.setattr(auth, "USERS_PATH", users)
+    result = runner.invoke(app, ["adduser"], input=f"bob\n{'b' * 200}\n")
+    assert result.exit_code == 1
+    assert "密码过长" in result.output
+    assert not users.exists()

@@ -53,6 +53,9 @@ export function ProjectList({
                 <span className="min-w-0">
                   <span className="block truncate font-serif text-sm text-ink">
                     {p.scenic_spot}
+                    <span className="ml-1.5 text-[11px] font-sans font-normal text-muted">
+                      {p.owner || '未知'}
+                    </span>
                   </span>
                   <span className="block truncate text-[11px] text-muted">{p.project_id}</span>
                 </span>

@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 from PIL import Image, ImageStat
 
-from shanhai.providers._http import request_with_retry
+from shanhai.providers._http import local_backend_guard, request_with_retry
 
 # 低于此值判定为近似纯色/异常(NaN 解码静默转黑图,见 2026-07-13 DGX 实测:ComfyUI 的
 # VAE 解码输出 NaN 时,np.clip(NaN,0,255).astype(uint8) 静默转 0,execution_success 照常上报)。
@@ -36,6 +36,7 @@ class ImageClient:
     def __init__(self, base_url: str, api_key: str, model: str, mode: str = "images_api"):
         self.model = model
         self.mode = mode
+        self._base_url = base_url
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {api_key}"},
@@ -59,17 +60,19 @@ class ImageClient:
         return self._via_generations(prompt, size, retries)
 
     def _via_generations(self, prompt: str, size: str, retries: int) -> bytes:
-        r = request_with_retry(lambda: self._client.post(
-            "/images/generations",
-            json={"model": self.model, "prompt": prompt, "size": size, "n": 1}), retries)
+        with local_backend_guard(self._base_url):
+            r = request_with_retry(lambda: self._client.post(
+                "/images/generations",
+                json={"model": self.model, "prompt": prompt, "size": size, "n": 1}), retries)
         r.raise_for_status()
         return _decode(_first(r.json()))
 
     def _via_edits(self, prompt: str, references: list[Path], size: str, retries: int) -> bytes:
         files = [("image[]", (p.name, p.read_bytes(), "image/png")) for p in references]
-        r = request_with_retry(lambda: self._client.post(
-            "/images/edits",
-            data={"model": self.model, "prompt": prompt, "size": size}, files=files), retries)
+        with local_backend_guard(self._base_url):
+            r = request_with_retry(lambda: self._client.post(
+                "/images/edits",
+                data={"model": self.model, "prompt": prompt, "size": size}, files=files), retries)
         r.raise_for_status()
         return _decode(_first(r.json()))
 
@@ -79,10 +82,11 @@ class ImageClient:
             b64 = base64.b64encode(p.read_bytes()).decode()
             content.append({"type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{b64}"}})
-        r = request_with_retry(lambda: self._client.post("/chat/completions", json={
-            "model": self.model,
-            "messages": [{"role": "user", "content": content}],
-        }), retries)
+        with local_backend_guard(self._base_url):
+            r = request_with_retry(lambda: self._client.post("/chat/completions", json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": content}],
+            }), retries)
         r.raise_for_status()
         msg = r.json()["choices"][0]["message"]
         for img in msg.get("images") or []:
