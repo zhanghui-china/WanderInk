@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
+import { LoginPage } from './components/LoginPage'
 import { NewProjectForm } from './components/NewProjectForm'
 import { ProjectDetailView } from './components/ProjectDetail'
 import { ProjectList } from './components/ProjectList'
+import { QueuePanel } from './components/QueuePanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import type { Meta, ProjectDetail, ProjectSummary } from './types'
 
@@ -15,6 +17,8 @@ export default function App() {
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [showSettings, setShowSettings] = useState(false)
+  const [user, setUser] = useState<string | null>(null)
+  const [authChecked, setAuthChecked] = useState(false)
 
   const refreshList = useCallback(async () => {
     try {
@@ -24,10 +28,40 @@ export default function App() {
     }
   }, [])
 
+  // 进门先判断登录态(GET /api/me):401 则 user 留空、只渲染登录页,不发起其它 API 请求
   useEffect(() => {
+    api
+      .me()
+      .then((m) => setUser(m.username))
+      .catch(() => setUser(null))
+      .finally(() => setAuthChecked(true))
+  }, [])
+
+  // 已登录才加载表单枚举与作品列表
+  useEffect(() => {
+    if (!user) return
     api.meta().then(setMeta).catch(() => {})
     refreshList()
-  }, [refreshList])
+  }, [user, refreshList])
+
+  const onLoggedIn = useCallback(() => {
+    api
+      .me()
+      .then((m) => setUser(m.username))
+      .catch(() => setUser(null))
+  }, [])
+
+  const onLogout = useCallback(async () => {
+    try {
+      await api.logout()
+    } catch {
+      /* ignore */
+    }
+    setUser(null)
+    setSelectedId(null)
+    setDetail(null)
+    setList([])
+  }, [])
 
   // 选中项目:拉详情;若管线在跑则轮询
   useEffect(() => {
@@ -68,6 +102,9 @@ export default function App() {
 
   const activeCount = list.filter((p) => ACTIVE.has(p.pipeline)).length
 
+  if (!authChecked) return null // 登录态未知前先不渲染,避免闪现登录页
+  if (!user) return <LoginPage onLoggedIn={onLoggedIn} />
+
   return (
     <div className="min-h-screen">
       {/* 顶栏 */}
@@ -105,6 +142,16 @@ export default function App() {
             >
               ⚙
             </button>
+            <div className="flex items-center gap-2 rounded-full border border-line bg-[rgba(251,246,234,0.7)] px-3 py-[7px]">
+              <span className="text-[13px] text-ink-soft">{user}</span>
+              <button
+                type="button"
+                onClick={onLogout}
+                className="text-[13px] text-muted transition hover:text-cinnabar"
+              >
+                退出
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -115,6 +162,7 @@ export default function App() {
         <div className="grid grid-cols-1 gap-7 lg:grid-cols-[21rem_1fr]">
           <aside className="space-y-5">
             <NewProjectForm meta={meta} onCreated={onCreated} />
+            <QueuePanel user={user} />
             <ProjectList items={list} selectedId={selectedId} onSelect={setSelectedId} />
           </aside>
 

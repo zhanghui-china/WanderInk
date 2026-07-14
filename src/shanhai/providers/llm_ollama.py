@@ -8,7 +8,7 @@ Ollama 的 `format=<JSON Schema>` 约束解码,产出天然合法 JSON。
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from shanhai.providers._http import request_with_retry
+from shanhai.providers._http import local_backend_guard, request_with_retry
 from shanhai.providers.llm import LLMError, _extract_json
 
 
@@ -17,6 +17,7 @@ class OllamaLLMClient:
         # 配置里常写 http://host:11434/v1(与 OpenAI 形态共用),原生 API 在根路径
         root = base_url.rstrip("/").removesuffix("/v1")
         self.model = model
+        self._base_url = base_url
         self._client = httpx.Client(
             base_url=root,
             headers={"Authorization": f"Bearer {api_key}"},  # ollama 忽略,保持形态一致
@@ -33,7 +34,8 @@ class OllamaLLMClient:
         }
         if fmt is not None:
             body["format"] = fmt
-        r = request_with_retry(lambda: self._client.post("/api/chat", json=body), retries)
+        with local_backend_guard(self._base_url):
+            r = request_with_retry(lambda: self._client.post("/api/chat", json=body), retries)
         r.raise_for_status()
         return r.json()["message"]["content"]
 

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import httpx
 
-from shanhai.providers._http import request_with_retry
+from shanhai.providers._http import local_backend_guard, request_with_retry
 
 
 class MusicError(Exception):
@@ -18,6 +18,7 @@ class MusicClient:
 
     def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 600):
         self.model = model
+        self._base_url = base_url
         self._client = httpx.Client(base_url=base_url.rstrip("/"),
                                     headers={"Authorization": f"Bearer {api_key}"}, timeout=timeout)
 
@@ -30,7 +31,8 @@ class MusicClient:
         body = {"model": self.model, "prompt": prompt, "lyrics": lyrics, "duration_s": duration_s}
         if bpm is not None:
             body["bpm"] = bpm
-        r = request_with_retry(lambda: self._client.post("/audio/music", json=body), retries)
+        with local_backend_guard(self._base_url):
+            r = request_with_retry(lambda: self._client.post("/audio/music", json=body), retries)
         r.raise_for_status()
         ctype = r.headers.get("content-type", "").lower()
         body_bytes = r.content

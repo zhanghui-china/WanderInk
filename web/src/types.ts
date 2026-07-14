@@ -12,8 +12,16 @@ export interface Meta {
 export interface ProjectSummary {
   project_id: string
   scenic_spot: string
+  owner: string
   pipeline: string
   mp4: string | null
+}
+
+export interface QueueItem {
+  project_id: string
+  owner: string
+  scenic_spot: string
+  pipeline: string
 }
 
 export interface Page {
@@ -46,6 +54,7 @@ export interface Character {
 export interface ProjectDetail {
   project_id: string
   scenic_spot: string
+  owner: string
   style_preset: string
   params: { duration_min: number; audience: string; tone: string }
   status: Record<string, string>
