@@ -45,6 +45,14 @@ class Script(BaseModel):
     characters: list[CharacterCard]
 
 
+class Panel(BaseModel):
+    """分格漫画的单个格子(仅 params.multi_panel=True 时使用)。"""
+    visual_desc: str
+    shot_type: Literal["wide", "medium", "closeup", "insert"] = "medium"
+    characters: list[str] = Field(default_factory=list)
+    image: str = ""  # S4 填入,该格自己的生成图相对路径
+
+
 class StoryboardCell(BaseModel):
     # validate_assignment:属性赋值也校验,堵住编辑端点绕过 caption max_length 写入
     # 永久不可加载的 project.json(pydantic ValidationError 是 ValueError 子类,端点直接转 400)。
@@ -62,6 +70,7 @@ class StoryboardCell(BaseModel):
     # silent=True 表示该页音频是静音兜底(非真人解说);用于状态诚实化与重跑重合成。
     silent: bool = False
     status: Literal["draft", "confirmed", "failed"] = "draft"
+    panels: list[Panel] = Field(default_factory=list)  # 空 = 单图模式(现状不变)
 
 
 class GenerationParams(BaseModel):
@@ -70,6 +79,7 @@ class GenerationParams(BaseModel):
     tone: Literal["温情", "奇幻", "悬疑"] = "温情"
     voice: str = ""
     speed: float = 1.0
+    multi_panel: bool = False
 
 
 class Project(BaseModel):
