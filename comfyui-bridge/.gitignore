@@ -1,0 +1,8 @@
+# 忽略运行生成的临时输入输出目录
+output_*/
+input/
+temp/
+
+# 忽略 Python 运行时缓存
+__pycache__/
+*.pyc

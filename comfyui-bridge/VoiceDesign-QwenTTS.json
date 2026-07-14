@@ -1,0 +1,78 @@
+{
+  "73": {
+    "inputs": {
+      "文本": [
+        "75",
+        0
+      ],
+      "提示词": [
+        "76",
+        0
+      ],
+      "语言": "自动",
+      "自动卸载模型": false,
+      "最大生成Token数": 2048,
+      "seed": 631666495839796,
+      "语速": 1,
+      "批量模式": false,
+      "top_p": 0.8,
+      "top_k": 50,
+      "temperature": 0.8,
+      "repetition_penalty": 1.1,
+      "启用高级采样配置": false,
+      "模型": [
+        "74",
+        0
+      ]
+    },
+    "class_type": "Qwen3TTSVoiceDesign",
+    "_meta": {
+      "title": "Qwen3 TTS 声音设计"
+    }
+  },
+  "74": {
+    "inputs": {
+      "模型名称": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+      "运行设备": "cuda",
+      "精度": "fp16"
+    },
+    "class_type": "Qwen3TTSModelLoader",
+    "_meta": {
+      "title": "Qwen3 TTS 模型加载"
+    }
+  },
+  "75": {
+    "inputs": {
+      "text": "Hello, this is a test.我们是黑客松，黑客松黑客松黑客松黑客松黑客松"
+    },
+    "class_type": "Text Multiline",
+    "_meta": {
+      "title": "Text Multiline"
+    }
+  },
+  "76": {
+    "inputs": {
+      "text": "A young female voice, energetic and bright."
+    },
+    "class_type": "Text Multiline",
+    "_meta": {
+      "title": "Text Multiline"
+    }
+  },
+  "77": {
+    "inputs": {
+      "filename_prefix": "audio/ComfyUI",
+      "format": "mp3",
+      "format.quality": "V0",
+      "audioUI": "/api/view?filename=ComfyUI_00003.mp3&type=output&subfolder=audio&rand=0.6772612193392761",
+      "audio": [
+        "73",
+        0
+      ]
+    },
+    "class_type": "SaveAudioAdvanced",
+    "_meta": {
+      "title": "Save Audio (Advanced)"
+    }
+  }
+}
