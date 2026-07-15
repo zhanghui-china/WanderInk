@@ -154,7 +154,7 @@ export function ProjectDetailView({
               </span>
             )}
           </div>
-          {project.status.s0 === 'done' && project.script_title == null && (
+          {!generating && project.status.s0 === 'done' && project.script_title == null && (
             <p className="mt-3 text-xs text-cinnabar">
               剧本生成(S1)未完成,无法补全后续步骤,请新建项目重新生成。
             </p>
