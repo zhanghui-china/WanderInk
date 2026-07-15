@@ -1,3 +1,4 @@
+import { CardHead } from './decor'
 import type { ProjectSummary } from '../types'
 
 function badge(pipeline: string): { cls: string; text: string } {
@@ -7,7 +8,7 @@ function badge(pipeline: string): { cls: string; text: string } {
       ? { cls: 'bg-amber2/15 text-gold', text: '已完成·降级' }
       : { cls: 'bg-jade/12 text-jade', text: '已完成' }
   }
-  if (pipeline.startsWith('error')) return { cls: 'bg-cinnabar/10 text-cinnabar', text: '出错' }
+  if (pipeline.startsWith('error')) return { cls: 'bg-alarm/10 text-alarm', text: '出错' }
   if (pipeline === 'running' || pipeline === 'queued')
     return { cls: 'bg-amber2/15 text-gold', text: '生成中' }
   if (pipeline.startsWith('partial')) return { cls: 'bg-kraft text-muted', text: '待合成' }
@@ -25,12 +26,7 @@ export function ProjectList({
 }) {
   return (
     <div className="rounded-2xl border border-band bg-paper p-5 shadow-paper">
-      <div className="mb-3 flex items-center gap-2.5">
-        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-ink font-brush text-lg text-rice">
-          集
-        </span>
-        <h2 className="font-serif text-base font-semibold tracking-wide text-ink">作品列表</h2>
-      </div>
+      <CardHead glyph="集" title="作品列表" />
 
       {items.length === 0 && (
         <p className="py-6 text-center text-sm text-muted">还没有作品</p>

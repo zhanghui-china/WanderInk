@@ -2,15 +2,17 @@ import { Fragment, useState } from 'react'
 import { api } from '../api'
 import { STYLE_LABEL } from '../styles'
 import type { Meta, ProjectDetail as Detail, Character, Page } from '../types'
+import { CardHead, Seal, mountFrame } from './decor'
+import { ImageLightbox } from './ImageLightbox'
 import { ProgressSteps } from './ProgressSteps'
 
 const EMOTION_STYLE: Record<string, string> = {
-  温情: 'bg-[#ede1c9] text-gold',
-  惊变: 'bg-[#f0dad5] text-cinnabar',
-  悲壮: 'bg-[#f0dad5] text-cinnabar',
-  险境: 'bg-[#dee7de] text-jade',
-  烟雨: 'bg-[#dce6e9] text-azurite',
-  苍凉: 'bg-[#dce6e9] text-azurite',
+  温情: 'bg-[#dfeadf] text-jade',
+  惊变: 'bg-[#f2ddd8] text-cinnabar',
+  悲壮: 'bg-[#f2ddd8] text-cinnabar',
+  险境: 'bg-[#dbe7dd] text-jade',
+  烟雨: 'bg-[#d6e7e8] text-azurite',
+  苍凉: 'bg-[#d6e7e8] text-azurite',
 }
 function emotionCls(e: string): string {
   return EMOTION_STYLE[e] ?? 'bg-kraft text-ink-soft'
@@ -26,17 +28,14 @@ const STEP_ACTIONS: { name: string; label: string; destructive?: boolean }[] = [
   { name: 's6', label: '合成' },
 ]
 
-function SectionTitle({ glyph, children, extra }: { glyph: string; children: React.ReactNode; extra?: React.ReactNode }) {
-  return (
-    <div className="mb-4 flex items-center gap-2.5">
-      <span className="flex h-7 w-7 items-center justify-center rounded-md bg-cinnabar font-brush text-lg text-rice">
-        {glyph}
-      </span>
-      <h2 className="font-serif text-base font-semibold tracking-wide text-ink">{children}</h2>
-      {extra && <span className="text-xs text-muted">{extra}</span>}
-      <span className="ml-1 h-px flex-1 bg-gradient-to-r from-line to-transparent" />
-    </div>
-  )
+// 各单步重跑按钮的真实前置条件,对应各 step 模块自己的守卫(s2/s3 需先完成 S1,
+// s4/s5/s6 需先有分镜)。按钮不检查这个会让用户点了必然失败的操作——
+// 后端 400 才提示"先完成 S1",体验上是死胡同(见 2026-07-14 zhanghui 花果山事件)。
+function stepReady(name: string, project: Detail): boolean {
+  const hasScript = project.script_title != null
+  const hasPages = project.pages.length > 0
+  if (name === 's2' || name === 's3') return hasScript
+  return hasPages
 }
 
 const card = 'rounded-2xl border border-band bg-paper p-5 shadow-paper'
@@ -61,6 +60,7 @@ export function ProjectDetailView({
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [insertAfter, setInsertAfter] = useState<number | null>(null)
   const [stepBusy, setStepBusy] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
 
   const generating = project.pipeline === 'queued' || project.pipeline === 'running'
   const editable = !meta?.readonly && !generating
@@ -82,6 +82,16 @@ export function ProjectDetailView({
       .catch((e) => alert(e instanceof Error ? e.message : String(e)))
   }
 
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   async function handleStep(name: string, label: string, destructive?: boolean) {
     if (destructive && !window.confirm(`确定重新执行「${label}」?这会清空之后各步骤的产物。`)) return
     setStepBusy(name)
@@ -100,10 +110,14 @@ export function ProjectDetailView({
       {/* 标题头 */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cinnabar to-cinnabar-deep font-brush text-2xl text-rice shadow-[0_3px_10px_rgba(138,43,34,0.28)]">
+          <span className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cinnabar to-cinnabar-deep font-brush text-2xl text-rice shadow-[0_3px_10px_rgba(33,90,82,0.28)]">
             {project.scenic_spot.slice(0, 1)}
+            <span className="absolute -bottom-2 -right-2">
+              <Seal char="遗" size={26} rot={-10} />
+            </span>
           </span>
           <div>
+            <div className="mb-1 text-[11px] tracking-[3px] text-gold">卷 · 山海拾遗</div>
             <h1 className="font-serif text-2xl font-bold tracking-[2px] text-ink">
               {project.script_title ?? project.scenic_spot}
             </h1>
@@ -114,6 +128,9 @@ export function ProjectDetailView({
             </p>
           </div>
         </div>
+        <button type="button" onClick={copyLink} className={ghostBtn}>
+          {copied ? '已复制' : '复制链接'}
+        </button>
       </div>
 
       <ProgressSteps project={project} />
@@ -123,30 +140,39 @@ export function ProjectDetailView({
         <div className={card}>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium tracking-wide text-muted">补全重生成</span>
-            {STEP_ACTIONS.map((s) => (
-              <button
-                key={s.name}
-                type="button"
-                onClick={() => handleStep(s.name, s.label, s.destructive)}
-                disabled={generating || stepBusy !== null}
-                className={`${toolBtn} ${s.destructive ? 'text-cinnabar hover:border-cinnabar' : ''}`}
-              >
-                {stepBusy === s.name ? '入队中…' : s.label}
-              </button>
-            ))}
+            {STEP_ACTIONS.map((s) => {
+              const ready = stepReady(s.name, project)
+              return (
+                <button
+                  key={s.name}
+                  type="button"
+                  onClick={() => handleStep(s.name, s.label, s.destructive)}
+                  disabled={generating || stepBusy !== null || !ready}
+                  title={ready ? undefined : '前置步骤尚未完成,暂不可执行'}
+                  className={`${toolBtn} ${s.destructive ? 'text-alarm hover:border-alarm' : ''}`}
+                >
+                  {stepBusy === s.name ? '入队中…' : s.label}
+                </button>
+              )
+            })}
             {pendingCount > 0 && (
               <span className="ml-auto rounded-full bg-amber2/15 px-2.5 py-1 text-xs text-gold">
                 {pendingCount} 页待重生成
               </span>
             )}
           </div>
+          {!generating && project.status.s0 === 'done' && project.script_title == null && (
+            <p className="mt-3 text-xs text-alarm">
+              剧本生成(S1)未完成,无法补全后续步骤,请新建项目重新生成。
+            </p>
+          )}
         </div>
       )}
 
       {/* 成片 */}
       {project.mp4 && (
         <div className={card}>
-          <SectionTitle glyph="片">有声连环画 · 成片</SectionTitle>
+          <CardHead glyph="片" title="有声连环画 · 成片" />
           <video
             src={project.mp4}
             controls
@@ -159,9 +185,7 @@ export function ProjectDetailView({
       {/* 角色三视图 */}
       {project.characters.length > 0 && (
         <div className={card}>
-          <SectionTitle glyph="人" extra={`${project.characters.length} 位角色`}>
-            人物设定 · 三视图
-          </SectionTitle>
+          <CardHead glyph="人" title="人物设定 · 三视图" extra={`${project.characters.length} 位角色`} />
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             {project.characters.map((c) => (
               <CharacterCard
@@ -179,9 +203,7 @@ export function ProjectDetailView({
       {/* 漫画页 */}
       {project.pages.length > 0 && (
         <div className={card}>
-          <SectionTitle glyph="画" extra={`共 ${project.pages.length} 页`}>
-            连环画 · 逐页
-          </SectionTitle>
+          <CardHead glyph="画" title="连环画 · 逐页" extra={`共 ${project.pages.length} 页`} />
           {editable && (
             <button
               type="button"
@@ -236,7 +258,10 @@ export function ProjectDetailView({
 
       {/* 传说来源 */}
       {project.legend && (
-        <div className={`${card} border-l-[3px] border-l-cinnabar`}>
+        <div className={`relative ${card} border-l-[3px] border-l-cinnabar`}>
+          <span className="absolute right-5 top-5">
+            <Seal char="源" size={38} rot={6} />
+          </span>
           <div className="mb-1 flex items-center gap-2">
             <h2 className="font-serif text-base font-semibold tracking-wide text-ink">
               {project.legend.title}
@@ -309,6 +334,7 @@ function CharacterCard({
   onChanged: () => void
 }) {
   const [busy, setBusy] = useState(false)
+  const [lightboxOpen, setLightboxOpen] = useState(false)
 
   async function redraw() {
     if (!window.confirm('仅重绘设定图,已生成页面需自行重绘。确定继续?')) return
@@ -324,31 +350,41 @@ function CharacterCard({
   }
 
   return (
-    <figure className="group relative overflow-hidden rounded-xl border border-line bg-white/60">
-      <div className="relative aspect-[3/4] bg-kraft">
+    <figure className="overflow-hidden rounded-xl border border-line bg-white/60">
+      <div className={`aspect-[3/4] bg-gradient-to-b from-kraft to-rice-deep ${mountFrame}`}>
         {c.image ? (
           <img src={c.image} alt={c.name} className="h-full w-full object-cover" />
         ) : (
-          <div className="flex h-full items-center justify-center text-xs text-muted">未生成</div>
+          <div className="flex h-full items-center justify-center text-xs text-muted">
+            <span className="font-scrawl text-2xl text-band">未生成</span>
+          </div>
         )}
         <span className="absolute left-2 top-2 rounded-full bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
           三视图
         </span>
-        {editable && (
-          <button
-            type="button"
-            onClick={redraw}
-            disabled={busy}
-            className="absolute inset-0 flex items-center justify-center bg-ink/50 text-sm font-medium tracking-wide text-rice opacity-0 transition group-hover:opacity-100 disabled:opacity-100"
-          >
-            {busy ? '重绘中…' : '重绘设定图'}
-          </button>
-        )}
+        <span className="absolute right-2 top-2 rounded bg-cinnabar/85 px-1.5 py-0.5 font-serif text-[10px] text-rice">
+          正·侧·背
+        </span>
       </div>
       <figcaption className="px-3 py-2.5">
         <div className="font-serif text-sm font-semibold tracking-wide text-ink">{c.name}</div>
         <div className="text-[11px] text-muted">{c.role}</div>
+        <div className="mt-2 flex gap-1.5">
+          {c.image && (
+            <button type="button" onClick={() => setLightboxOpen(true)} className={toolBtn}>
+              查看详情
+            </button>
+          )}
+          {editable && (
+            <button type="button" onClick={redraw} disabled={busy} className={toolBtn}>
+              {busy ? '重绘中…' : '重绘设定图'}
+            </button>
+          )}
+        </div>
       </figcaption>
+      {lightboxOpen && c.image && (
+        <ImageLightbox src={c.image} alt={c.name} onClose={() => setLightboxOpen(false)} />
+      )}
     </figure>
   )
 }
@@ -404,7 +440,7 @@ function InsertPageForm({
         value={caption}
         onChange={(e) => setCaption(e.target.value)}
       />
-      {err && <p className="text-xs text-cinnabar">{err}</p>}
+      {err && <p className="text-xs text-alarm">{err}</p>}
       <div className="flex gap-2">
         <button
           type="button"
@@ -518,12 +554,13 @@ function PageCard({
         dragIndex === pg.index ? 'border-cinnabar opacity-60' : 'border-line'
       }`}
     >
-      <div className="relative aspect-[4/3] bg-kraft">
+      <div className={`aspect-[4/3] bg-gradient-to-br from-kraft via-rice to-rice-deep ${mountFrame}`}>
         {pg.image ? (
           <img src={pg.image} alt={`第 ${pg.index} 页`} className="h-full w-full object-cover" />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted">
-            第 {pg.index} 页 · {pg.status}
+          <div className="flex h-full flex-col items-center justify-center gap-1 text-sm text-muted">
+            <span className="font-scrawl text-3xl text-band">第 {pg.index} 图</span>
+            <span className="text-[11px]">{pg.status}</span>
           </div>
         )}
         {pg.scene_ref && (
@@ -620,7 +657,7 @@ function PageCard({
               />
             </div>
           </div>
-          {err && <p className="text-xs text-cinnabar">{err}</p>}
+          {err && <p className="text-xs text-alarm">{err}</p>}
           <div className="flex gap-2 pt-1">
             <button type="button" onClick={save} disabled={busy === 'save'} className={primaryBtn}>
               {busy === 'save' ? '保存中…' : '保存'}
@@ -664,7 +701,7 @@ function PageCard({
             {pg.silent && pg.audio && (
               <span className="rounded-full bg-kraft px-2 py-0.5 text-muted">静音兜底</span>
             )}
-            {pg.status === 'failed' && <span className="text-cinnabar">生成失败</span>}
+            {pg.status === 'failed' && <span className="text-alarm">生成失败</span>}
           </div>
           {pg.audio && <audio src={pg.audio} controls className="h-9 w-full" />}
 
@@ -698,7 +735,7 @@ function PageCard({
                 type="button"
                 onClick={() => act('delete')}
                 disabled={busy !== null}
-                className={`${toolBtn} ml-auto text-cinnabar hover:border-cinnabar`}
+                className={`${toolBtn} ml-auto text-alarm hover:border-alarm`}
               >
                 {busy === 'delete' ? '删除中…' : '删除'}
               </button>

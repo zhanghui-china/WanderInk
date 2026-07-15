@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { CardHeadInline } from './decor'
 import { STAGE_LABEL } from '../stages'
 import type { AppConfigInput, AppConfigView, ConfigOverrideInput, ConfigOverrideView, Meta } from '../types'
 
@@ -279,7 +280,7 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="font-serif text-base font-semibold tracking-wide text-ink">端点与模型配置</h2>
+          <CardHeadInline glyph="配" title="端点与模型配置" />
           <button
             type="button"
             onClick={onClose}
@@ -293,7 +294,7 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
         {loading ? (
           <p className="py-8 text-center text-sm text-muted">加载中…</p>
         ) : !cfg ? (
-          <p className="py-8 text-center text-sm text-cinnabar">{err ?? '加载失败'}</p>
+          <p className="py-8 text-center text-sm text-alarm">{err ?? '加载失败'}</p>
         ) : (
           <div className="space-y-5">
             {ro && (
@@ -331,7 +332,7 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
               )}
             </div>
 
-            {err && <p className="rounded-md bg-cinnabar/8 px-3 py-2 text-sm text-cinnabar">{err}</p>}
+            {err && <p className="rounded-md bg-alarm/8 px-3 py-2 text-sm text-alarm">{err}</p>}
 
             <button
               type="button"

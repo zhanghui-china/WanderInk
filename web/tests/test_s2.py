@@ -76,3 +76,52 @@ def test_s2_system_contains_page_end_suspense_hint():
     assert "悬念" in system or "期待" in system or "页尾" in system, "Missing page-end suspense hint"
     # Ensure the hard constraint about story continuity is preserved
     assert "连起来" in system or "独立讲通" in system, "Missing hard constraint about story continuity"
+
+
+@respx.mock
+def test_s2_single_page_mode_omits_panel_rules_in_system_prompt():
+    cells = {"cells": [
+        {"index": 1, "scene_ref": "1-1", "visual_desc": "断桥", "characters": [],
+         "caption": "初遇。", "emotion": "宁静"}]}
+    route = respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(cells, ensure_ascii=False)}}]}))
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.duration_min = 1
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    s2_storyboard.run(p, LLMClient(BASE, "sk", "m"))
+    sent = json.loads(route.calls[0].request.content)
+    assert "分格" not in sent["messages"][0]["content"]
+
+
+@respx.mock
+def test_s2_multi_panel_includes_panel_rules_in_system_prompt():
+    cells = {"cells": [
+        {"index": 1, "scene_ref": "1-1", "visual_desc": "断桥", "characters": [],
+         "caption": "初遇。", "emotion": "宁静", "panels": []}]}
+    route = respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(cells, ensure_ascii=False)}}]}))
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.duration_min = 1
+    p.params.multi_panel = True
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    s2_storyboard.run(p, LLMClient(BASE, "sk", "m"))
+    sent = json.loads(route.calls[0].request.content)
+    system_msg = sent["messages"][0]["content"]
+    assert "分格" in system_msg and "insert" in system_msg
+
+
+@respx.mock
+def test_s2_multi_panel_clamps_panels_to_hard_cap():
+    cells = {"cells": [
+        {"index": 1, "scene_ref": "1-1", "visual_desc": "断桥", "characters": ["白素贞"],
+         "caption": "初遇。", "emotion": "宁静",
+         "panels": [{"visual_desc": f"格{i}", "shot_type": "medium", "characters": ["白素贞"]}
+                    for i in range(6)]}]}  # LLM 违规给了 6 格,应被裁到 4
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(cells, ensure_ascii=False)}}]}))
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.duration_min = 1
+    p.params.multi_panel = True
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    p = s2_storyboard.run(p, LLMClient(BASE, "sk", "m"))
+    assert len(p.storyboard[0].panels) == s2_storyboard.MAX_PANELS_PER_PAGE

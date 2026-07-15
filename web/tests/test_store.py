@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 import pytest
 
@@ -23,6 +24,12 @@ def test_project_dir_rejects_path_traversal(tmp_path):
 
 def test_project_dir_accepts_legal_id(tmp_path):
     assert store.project_dir("abc123_-XY", root=tmp_path) == tmp_path / "abc123_-XY"
+
+
+def test_create_project_sets_created_at(tmp_path):
+    p = store.create_project("雷峰塔", root=tmp_path)
+    assert p.created_at != ""
+    datetime.fromisoformat(p.created_at)  # 解析失败会抛异常使测试失败
 
 
 def test_create_save_load(tmp_path):

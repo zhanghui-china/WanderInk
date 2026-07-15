@@ -45,6 +45,14 @@ class Script(BaseModel):
     characters: list[CharacterCard]
 
 
+class Panel(BaseModel):
+    """漫画格子的单个构图描述(仅 params.multi_panel=True 时使用)。"""
+    visual_desc: str
+    shot_type: Literal["wide", "medium", "closeup", "insert"] = "medium"
+    characters: list[str] = Field(default_factory=list)
+    image: str = ""  # S4 填入,该格自己的生成图相对路径
+
+
 class StoryboardCell(BaseModel):
     # validate_assignment:属性赋值也校验,堵住编辑端点绕过 caption max_length 写入
     # 永久不可加载的 project.json(pydantic ValidationError 是 ValueError 子类,端点直接转 400)。
@@ -62,6 +70,7 @@ class StoryboardCell(BaseModel):
     # silent=True 表示该页音频是静音兜底(非真人解说);用于状态诚实化与重跑重合成。
     silent: bool = False
     status: Literal["draft", "confirmed", "failed"] = "draft"
+    panels: list[Panel] = Field(default_factory=list)  # 空 = 单图模式(现状不变)
 
 
 class GenerationParams(BaseModel):
@@ -70,12 +79,14 @@ class GenerationParams(BaseModel):
     tone: Literal["温情", "奇幻", "悬疑"] = "温情"
     voice: str = ""
     speed: float = 1.0
+    multi_panel: bool = False
 
 
 class Project(BaseModel):
     project_id: str
     scenic_spot: str
     owner: str = ""   # 建作品时的登录用户名;历史项目(改造前所建)留空,前端显示"未知"
+    created_at: str = ""   # ISO 8601 UTC;建作品时写入,历史项目(改造前所建)留空,列表按 project.json mtime 兜底排序
     params: GenerationParams = Field(default_factory=GenerationParams)
     status: dict[str, str] = Field(default_factory=dict)
     legend_candidates: list[Legend] = Field(default_factory=list)

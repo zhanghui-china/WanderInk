@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api'
+import { CardHead } from './decor'
 import { STYLE_LABEL } from '../styles'
 import type { Meta } from '../types'
 
@@ -18,6 +19,7 @@ export function NewProjectForm({
   const [story, setStory] = useState('')
   const [voice, setVoice] = useState('')
   const [speed, setSpeed] = useState(1.0)
+  const [multiPanel, setMultiPanel] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const ro = !!meta?.readonly   // 公开演示只读:禁用生成
@@ -36,6 +38,7 @@ export function NewProjectForm({
         story: story.trim() || null,
         voice,
         speed,
+        multi_panel: multiPanel,
       })
       setSpot('')
       setStory('')
@@ -58,12 +61,7 @@ export function NewProjectForm({
       onSubmit={submit}
       className="space-y-4 rounded-2xl border border-band bg-paper p-5 shadow-paper"
     >
-      <div className="flex items-center gap-2.5">
-        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-cinnabar font-brush text-lg text-rice">
-          新
-        </span>
-        <h2 className="font-serif text-base font-semibold tracking-wide text-ink">新建作品</h2>
-      </div>
+      <CardHead glyph="新" title="新建作品" />
 
       <div>
         <label className={label}>景区名</label>
@@ -152,6 +150,19 @@ export function NewProjectForm({
         </div>
       </div>
 
+      <div className="flex items-center gap-2">
+        <input
+          id="multi-panel"
+          type="checkbox"
+          checked={multiPanel}
+          onChange={(e) => setMultiPanel(e.target.checked)}
+          className="h-4 w-4 rounded border-line accent-cinnabar"
+        />
+        <label htmlFor="multi-panel" className="text-xs text-ink-soft">
+          启用分格排版(日式分镜)
+        </label>
+      </div>
+
       <div>
         <label className={label}>自备故事(可选,留空则自动检索传说)</label>
         <textarea
@@ -163,7 +174,7 @@ export function NewProjectForm({
       </div>
 
       {err && (
-        <p className="rounded-md bg-cinnabar/8 px-3 py-2 text-sm text-cinnabar">{err}</p>
+        <p className="rounded-md bg-alarm/8 px-3 py-2 text-sm text-alarm">{err}</p>
       )}
 
       <button
