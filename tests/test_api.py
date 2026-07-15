@@ -575,7 +575,7 @@ def test_image_concurrency_parallel_for_remote_backend():
     from shanhai.config import Settings
     s = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
                  image_base_url="https://api.tu-zi.com/v1")
-    assert api._image_concurrency(s) == api.s4_pages.CONCURRENCY
+    assert api._image_concurrency(s) == api.REMOTE_IMAGE_CONCURRENCY
 
 
 def test_get_queue_reflects_jobs_owner_and_spot():

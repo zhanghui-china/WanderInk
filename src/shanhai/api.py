@@ -123,12 +123,17 @@ def _locked_save(p: Project) -> None:
 
 # ---------- 后台管线 ----------
 
+REMOTE_IMAGE_CONCURRENCY = 2  # tu-zi 实测扛不住 s4_pages.CONCURRENCY(3)路并发:2026-07-16 复现
+# 3 路并发时 images/edits 端点约 2/3 请求以 500/RemoteProtocolError(服务端断连)失败,
+# 单独串行重放同样的请求则全部成功——是上游并发容量问题,不是 prompt/参考图/审核问题。
+
+
 def _image_concurrency(s: Settings) -> int:
     """本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发请求只会排队/互相拖慢
-    甚至冲突,强制串行;远程云端 API(如 tu-zi)才值得并发出图。"""
+    甚至冲突,强制串行;远程云端 API(如 tu-zi)可以并发出图,但要封顶(见上)。"""
     base_url, _ = s.image_endpoint
     host = urlparse(base_url).hostname or ""
-    return 1 if host in ("127.0.0.1", "localhost") else s4_pages.CONCURRENCY
+    return 1 if host in ("127.0.0.1", "localhost") else REMOTE_IMAGE_CONCURRENCY
 
 
 def _deliverable_status(p: Project) -> str:
