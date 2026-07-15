@@ -92,15 +92,37 @@ R1 已验证 DGX(GX10/GB10,119G 统一内存,Ubuntu 24.04 aarch64,团队共用)�
 - P2:一句真人声 mp3 → 单页 revoice → 成片该页有解说。
 - P3:S0–S2 总耗时 <3min;测试全绿。
 
-## 访问入口(2026-07-11 实际值)
-- 团队内网:`http://192.168.199.107:8080`
-- **公网(cpolar)**:`http://wuzitokenplan.vip.cpolar.cn/`(cpolar.yml 里 `huntun` 隧道 → :8080;注意同名 `WuziTokenPlan` 隧道指 :8000 未监听,勿混淆)。国内可达;部分国际线路到 cn_vip HTTP 边缘不通属正常。
-- ⚠️ **已知风险(用户拍板接受)**:公网与内网同一实例、`readonly:false`——公网访客可触发生成烧 tu-zi 图像额度;缓解仅靠 URL 隐蔽 + 队列上限 8。若被滥用,改法见 git 历史讨论:按来源区分只读(内网可写/cpolar 只读)约半小时可加。
+## 访问入口(2026-07-15 实际值,port 已从 8080 迁到 5000)
+- 团队内网:`http://192.168.199.107:5000`
+- **公网(cpolar)**:`http://wuzitokenplan.vip.cpolar.cn/`(cpolar.yml 里 `huntun` 隧道)——**⚠️ 这条隧道仍指向旧的 :8080,没有跟着这次端口迁移一起改**(2026-07-15 只改了内网端口,用户当时明确选择不动公网隧道)。如果还有人在用公网地址访问,现在会连不上,需要单独改 cpolar.yml 里 `huntun` 隧道的目标端口。同名 `WuziTokenPlan` 隧道指 :8000 未监听,勿混淆。
+- ⚠️ **已知风险(用户拍板接受)**:公网与内网同一实例、`readonly:false`——公网访客可触发生成烧图像生成额度;缓解仅靠 URL 隐蔽 + 队列上限 8。若被滥用,改法见 git 历史讨论:按来源区分只读(内网可写/cpolar 只读)约半小时可加。
 
-## 运维速查
-- 服务:`systemctl --user {status,restart} shanhai-web`;日志 `journalctl --user -u shanhai-web -f`
-- 隧道模板:`ssh -p 14801 -L 8080:127.0.0.1:8080 huntun@21.tcp.vip.cpolar.cn`
+## 运维速查(2026-07-15 更新:四个服务一起管)
+- **四个 systemd --user 服务**,DGX 上现在同时跑着这些,缺一个对应功能就会退化/报错:
+  | 服务 | 端口 | 作用 |
+  |---|---|---|
+  | `shanhai-web` | :5000(内网) | 主站 FastAPI + SPA |
+  | `shanhai-tts` | :8090 | CosyVoice2 语音合成 shim |
+  | `shanhai-image` | :8091→ComfyUI:8188 | 图像生成 shim |
+  | `shanhai-music` | :8092→ComfyUI:8188 | AI BGM(ACE-Step)shim |
+- 查看/重启单个:`systemctl --user {status,restart} <服务名>`;日志 `journalctl --user -u <服务名> -f`。
+- **一次性拉起全部四个**(机器重启后常用,见下方"⚠️ 无 linger"):
+  ```
+  systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music
+  ```
+- 隧道模板(SSH,连 DGX 用):`ssh -p 14801 huntun@21.tcp.vip.cpolar.cn`(免密公钥登录;这条隧道本身也可能随 cpolar 重启而变,连不上先确认隧道还在)。
 - 回传作品到 Mac(展示):`rsync -a huntun@…:~/shanhai/projects/ ~/Work/shanhai/projects/`
+
+## ⚠️ 无 linger:DGX 重启后四个服务不会自启(2026-07-15 发现)
+**现象**:2026-07-15 部署时发现 DGX 机器在约 26 分钟前重启过(`uptime` 证实),`ssh` 一度连不上(隧道跟着断了,重启后恢复)。机器恢复后 `systemctl --user status shanhai-web` 显示 `inactive (dead)`,`ps aux` 里四个 shanhai 服务的进程全部不存在——**没有自动拉起**。
+
+**根因**:这台机器没有执行 `loginctl enable-linger huntun`(部署文档"风险与说明"一节早就记过"linger 可能要 sudo,开不了先手动兜底"),`systemd --user` 实例本身只在有用户 session(SSH 登录/图形登录)时才存在,机器重启后没有 session 就没有 `--user` manager,四个 `enabled` 的服务自然也就没人拉起。
+
+**临时处理**(每次都要这么做,直到有人开了 linger):SSH 登录后手动跑:
+```
+systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music
+```
+**根治**(需要 sudo,待管理员处理):`sudo loginctl enable-linger huntun`,之后这四个 `enabled` 的服务会在开机时随 `user@1007.service` 一起自动起来,不用再手动干预。
 
 ## P1 实证:CosyVoice2 单发 vs 分句(2026-07-12)
 在 DGX 直连 CosyVoice2 shim(:8090)对短/中/长/超长文案做对照,判断旧「分句 + 三试取最长 + MIN_MS_PER_CHAR 截断检测」启发式是否仍必要(这套是为旧云端弱模型的确定性截断而设):
@@ -155,3 +177,15 @@ SHANHAI_TTS_MODEL=cosyvoice2
 - **真实端到端验证**(非仅测 shim):通过生产 API 建了一个 1 分钟测试作品(`2cd9d616`),完整跑完 S0–S6:`project.bgm` 落在 AI 生成路径(`projects/2cd9d616/audio/bgm.mp3`,60.0s,精确匹配目标时长,证明走的是 AI 分支而非曲库兜底)、`final.mp4` 音视频流均正常(h264+aac,85.16s)。
 - 服务:`shanhai-music.service`(:8090 之后新增,`:8092`),systemd 部署,仿 `shanhai-tts.service`/`shanhai-image.service` 模式;`~/music-shim/main.py` 独立于 shanhai git 仓库(与 `image-shim`/`tts_shim.py` 现状一致)。
 - **待办**(已知但非阻塞):BGM 生成是 S5 里的同步网络调用,在 TTS 并发池之外顺序跑,GPU 排队(与 wuzi 的 ComfyUI、`shanhai-image.service` 共用同一张卡)可能显著拖慢单次生成;Web 配置面板(`SettingsPanel.tsx`)未补齐 music 字段的可视化,目前只能靠 `.env`/`config.json` 直改。
+
+## 「天青烟雨·画卷」视觉改版上线 + 端口迁移(2026-07-15)
+
+**内容**:纯前端换肤,暖色宣纸朱砂主题 → 冷色天青烟雨(青瓷绿主色、雾青宣纸底),外加水墨云山题头/朱砂印章/竖排题字/回纹分隔条等装饰层(新组件 `web/src/components/decor.tsx`)。同期还做了:作品列表按创建时间排序、生成进度每步耗时+页数计数、三视图查看详情、分享链接(`?project=<id>`)、队列点击跳转/取消报错修复。均为独立提交,逐个部署验证。
+
+**图像生成一度全面故障,已修复**:2026-07-14 队友 wuzi 把 ComfyUI 工作流模板从 `~/ComfyUI/` 迁移到新建的 `~/WanderInk/comfyui-bridge/`,`~/image-shim/main.py` 里硬编码的 `COMFYUI_ROOT` 没跟着改,导致 S3/S4 所有图像生成从那天起持续 500 失败。已把 `COMFYUI_ROOT` 改指向新路径并重启 `shanhai-image.service`,验证恢复正常。
+
+**端口迁移**:`SHANHAI_PORT` 8080 → **5000**(DGX `.env` 直改,机器专属配置,不入库)。原因:用户要求把内网端口让给别的用途。公网 cpolar 隧道**未跟着改**,仍指向旧 8080(见上方"访问入口"一节)。
+
+**发现 DGX 无 linger,四个服务重启后不会自启**:部署当天赶上 DGX 机器重启过一次(约 26 分钟前,推测是意外重启,非本次操作触发),`shanhai-web`/`shanhai-tts`/`shanhai-image`/`shanhai-music` 四个 systemd --user 服务全部 `inactive (dead)`。手动 `systemctl --user start` 拉起全部四个后确认恢复,已在上方新增专门小节记录根因和处理办法(需要 sudo 开 `loginctl enable-linger` 才能根治)。
+
+**部署记录**:本次前后共 4 个独立提交先后部署(排序 `6ad58c4`、生成进度计时 `4b52a6d`、三处 UI 改进+分享链接 `ea16401`/`276f46a`、本次换肤 `f4f8ae4`),每次都走标准流程:确认无在途任务 → rsync(排除 `.env`/`projects`/`config.json`/`users.json`)→ DGX `uv sync` → `uv run pytest -q`(306 passed)→ `systemctl --user restart shanhai-web`。团队现在访问 `http://192.168.199.107:5000` 应该能看到全新配色。
