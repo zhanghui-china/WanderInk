@@ -2,6 +2,7 @@ import os
 import re
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from shanhai.schema import Project
@@ -20,7 +21,11 @@ def project_dir(project_id: str, root: Path = DEFAULT_ROOT) -> Path:
 
 
 def create_project(scenic_spot: str, root: Path = DEFAULT_ROOT) -> Project:
-    p = Project(project_id=uuid.uuid4().hex[:8], scenic_spot=scenic_spot)
+    p = Project(
+        project_id=uuid.uuid4().hex[:8],
+        scenic_spot=scenic_spot,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
     save(p, root=root)
     return p
 

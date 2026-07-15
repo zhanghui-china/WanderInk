@@ -300,6 +300,39 @@ def test_reconcile_zombie_jobs(tmp_path):
     assert store.load(done.project_id, root=tmp_path).status["pipeline"] == "done"  # 非僵尸不动
 
 
+def test_list_projects_sorted_by_created_at_desc(tmp_path, monkeypatch):
+    # 有 created_at 的项目按新到旧排序;混入无 created_at 的历史项目应排在最后。
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    old = store.create_project("旧项目", root=tmp_path)
+    old.created_at = "2026-01-01T00:00:00+00:00"
+    store.save(old, root=tmp_path)
+    new = store.create_project("新项目", root=tmp_path)
+    new.created_at = "2026-06-01T00:00:00+00:00"
+    store.save(new, root=tmp_path)
+    legacy_older = store.create_project("历史项目_更早", root=tmp_path)
+    legacy_older.created_at = ""
+    store.save(legacy_older, root=tmp_path)
+    legacy_newer = store.create_project("历史项目_更新", root=tmp_path)
+    legacy_newer.created_at = ""
+    store.save(legacy_newer, root=tmp_path)
+    # 人为拉开两个历史项目的 mtime,验证组内也是按 mtime 新到旧排序,而不只是碰巧的写入顺序
+    older_path = store.project_dir(legacy_older.project_id, tmp_path) / "project.json"
+    newer_path = store.project_dir(legacy_newer.project_id, tmp_path) / "project.json"
+    now = os.stat(newer_path).st_mtime
+    os.utime(older_path, (now - 100, now - 100))
+    os.utime(newer_path, (now, now))
+
+    r = client.get("/api/projects")
+    assert r.status_code == 200
+    ids = [item["project_id"] for item in r.json()]
+    assert (
+        ids.index(new.project_id)
+        < ids.index(old.project_id)
+        < ids.index(legacy_newer.project_id)
+        < ids.index(legacy_older.project_id)
+    )
+
+
 def test_export_rejects_when_job_pending():
     # A3:项目有未完成生成作业时导出返回 409,避免读半成品/回滚管线进度。
     saved = dict(api._JOBS)
@@ -469,6 +502,58 @@ def test_pipeline_clears_stale_cancel_flag_on_completion():
         api._CANCELLED.add("leakid")          # 模拟取消请求在最后环节执行期间到达
         api._pipeline("leakid", runtime_config.AppConfig(), "自备故事")
     assert "leakid" not in api._CANCELLED     # 收尾必须清掉,不留给下次重跑
+
+
+def test_pipeline_records_step_and_total_timing():
+    # 每步开始/结束都要落 started_at/elapsed_s,整体落 pipeline_started_at/pipeline_finished_at,
+    # 供前端时间线展示每步及总耗时。
+    from unittest.mock import MagicMock
+    p = Project(project_id="timingid", scenic_spot="雷峰塔")
+    mock_settings = MagicMock()
+    settings = {k: mock_settings for k in ("s0", "s1", "s2", "s3", "s4", "s5")}
+    clients = {
+        "s0": (MagicMock(),), "s1": (MagicMock(),), "s2": (MagicMock(),),
+        "s3": (MagicMock(), MagicMock()), "s4": (MagicMock(), MagicMock()),
+        "s5": (MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+    }
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.resolve_stage_clients", return_value=(settings, clients)), \
+         patch("shanhai.api.s0_legend") as s0, \
+         patch("shanhai.api.s1_script") as s1, \
+         patch("shanhai.api.s2_storyboard") as s2, \
+         patch("shanhai.api.s3_characters") as s3, \
+         patch("shanhai.api.s4_pages") as s4, \
+         patch("shanhai.api.s5_audio") as s5, \
+         patch("shanhai.api.s6_compose") as s6:
+        s0.from_text.return_value = p
+        for m in (s1, s2, s3, s4, s5, s6):
+            m.run.return_value = p
+        api._pipeline("timingid", runtime_config.AppConfig(), "自备故事")
+
+    assert p.status["pipeline"] != "running"   # 已跑到终态(mock 未产出可交付内容,具体终态值不是本测试重点)
+    assert p.status["pipeline_started_at"]
+    assert p.status["pipeline_finished_at"]
+    for step in ("s0", "s1", "s2", "s3", "s4", "s5", "s6"):
+        assert p.status[f"{step}_started_at"]
+        float(p.status[f"{step}_elapsed_s"])   # 能转成 float,解析失败即测试失败
+
+
+@patch("shanhai.api.Settings")
+def test_run_step_records_step_timing(_settings):
+    from unittest.mock import MagicMock
+    p = Project(project_id="stepTimingId", scenic_spot="雷峰塔")
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api._clients", return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s6_compose") as s6:
+        s6.run.return_value = p
+        api._run_step("stepTimingId", "s6", runtime_config.AppConfig())
+
+    assert p.status["s6_started_at"]
+    float(p.status["s6_elapsed_s"])
+    assert p.status["pipeline_started_at"]
+    assert p.status["pipeline_finished_at"]
 
 
 def test_get_queue_reflects_jobs_owner_and_spot():

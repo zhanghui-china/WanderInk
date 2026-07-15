@@ -86,6 +86,7 @@ class Project(BaseModel):
     project_id: str
     scenic_spot: str
     owner: str = ""   # 建作品时的登录用户名;历史项目(改造前所建)留空,前端显示"未知"
+    created_at: str = ""   # ISO 8601 UTC;建作品时写入,历史项目(改造前所建)留空,列表按 project.json mtime 兜底排序
     params: GenerationParams = Field(default_factory=GenerationParams)
     status: dict[str, str] = Field(default_factory=dict)
     legend_candidates: list[Legend] = Field(default_factory=list)

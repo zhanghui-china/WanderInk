@@ -10,7 +10,9 @@ import os
 import secrets
 import sys
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -135,6 +137,20 @@ def _deliverable_status(p: Project) -> str:
     return "done"
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _mark_step_started(p: Project, name: str) -> float:
+    """记录某环节开始的墙上时间(展示用)与单调时钟(算耗时用),返回后者供结束时算差。"""
+    p.status[f"{name}_started_at"] = _now_iso()
+    return time.monotonic()
+
+
+def _mark_step_elapsed(p: Project, name: str, t0: float) -> None:
+    p.status[f"{name}_elapsed_s"] = f"{time.monotonic() - t0:.1f}"
+
+
 def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
     """在后台线程里从 S0 一路跑到 MP4,每步落盘,pipeline 状态写入 project.status。"""
     p = store.load(project_id)
@@ -143,16 +159,21 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
     settings, clients = resolve_stage_clients(cfg)
     try:
         p.status["pipeline"] = "running"
+        p.status["pipeline_started_at"] = _now_iso()
         _locked_save(p)
+        t0 = _mark_step_started(p, "s0")
         if story is not None:
             p = s0_legend.from_text(p, clients["s0"][0], story)
         else:
             p = s0_legend.run(p, clients["s0"][0])
             if not p.legend_candidates:
+                _mark_step_elapsed(p, "s0", t0)
                 p.status["pipeline"] = "error: 未检索到可靠传说,请提供自备故事"
+                p.status["pipeline_finished_at"] = _now_iso()
                 _locked_save(p)
                 return
             p.legend = p.legend_candidates[0]
+        _mark_step_elapsed(p, "s0", t0)
         _locked_save(p)
         stages = [
             ("s1", lambda: s1_script.run(p, clients["s1"][0])),
@@ -168,14 +189,19 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         for _name, fn in stages:
             if _check_cancelled(project_id):  # 协作式取消:环节切换点检查,不打断正在跑的环节
                 p.status["pipeline"] = "cancelled"
+                p.status["pipeline_finished_at"] = _now_iso()
                 _locked_save(p)
                 return
+            step_t0 = _mark_step_started(p, _name)
             fn()
+            _mark_step_elapsed(p, _name, step_t0)
             _locked_save(p)
         p.status["pipeline"] = _deliverable_status(p)
+        p.status["pipeline_finished_at"] = _now_iso()
         _locked_save(p)
     except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
         p.status["pipeline"] = f"error: {e}"
+        p.status["pipeline_finished_at"] = _now_iso()
         _locked_save(p)
     finally:
         # 收尾清掉本次作业残留的取消标记:若取消发生在最后一环节执行期间(其后再无
@@ -365,12 +391,18 @@ def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
 
 @app.get("/api/projects")
 def list_projects(user: str = Depends(current_user)) -> list[dict]:
-    out = []
-    for meta in sorted(store.DEFAULT_ROOT.glob("*/project.json")):
+    loaded = []
+    for meta in store.DEFAULT_ROOT.glob("*/project.json"):
         try:
-            p = store.load(meta.parent.name)
+            p = store.load(meta.parent.name, root=store.DEFAULT_ROOT)
+            mtime = meta.stat().st_mtime
         except Exception:  # noqa: BLE001 — 跳过损坏/半写的项目,不让列表整体失败
             continue
+        loaded.append((p, mtime))
+    # 有 created_at 的项目整体排在前面(新到旧);历史项目(无 created_at)用 mtime 兜底,同样新到旧排在后面
+    loaded.sort(key=lambda pm: (1 if pm[0].created_at else 0, pm[0].created_at or pm[1]), reverse=True)
+    out = []
+    for p, _mtime in loaded:
         out.append({
             "project_id": p.project_id, "scenic_spot": p.scenic_spot, "owner": p.owner,
             "pipeline": p.status.get("pipeline", "pending"),
@@ -556,11 +588,14 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
     llm, image, tts, music = _clients(s)
     try:
         p.status["pipeline"] = "running"
+        p.status["pipeline_started_at"] = _now_iso()
         _locked_save(p)
         if _check_cancelled(project_id):  # 协作式取消:环节开始执行前检查
             p.status["pipeline"] = "cancelled"
+            p.status["pipeline_finished_at"] = _now_iso()
             _locked_save(p)
             return
+        step_t0 = _mark_step_started(p, name)
         if name == "s2":
             p = s2_storyboard.run(p, llm)
         elif name == "s3":
@@ -571,13 +606,16 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
             p = s5_audio.run(p, tts, s.tts_voice, workdir, music)
         elif name == "s6":
             p = s6_compose.run(p, workdir)
+        _mark_step_elapsed(p, name, step_t0)
         if name != "s6":
             p.output.clear()   # 重跑上游步骤使已合成的 mp4/zip/pdf 失效,清掉避免残留"假成片"
         _locked_save(p)
         p.status["pipeline"] = _deliverable_status(p)
+        p.status["pipeline_finished_at"] = _now_iso()
         _locked_save(p)
     except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
         p.status["pipeline"] = f"error: {e}"
+        p.status["pipeline_finished_at"] = _now_iso()
         _locked_save(p)
     finally:
         # 同 _pipeline:收尾清掉本次作业残留的取消标记,避免误伤该项目下次重跑。
