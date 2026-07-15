@@ -120,6 +120,12 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
             if (secs !== null) timeText = `进行中 · 约 ${formatElapsed(secs)}`
           }
 
+          // S4 逐页生图耗时较长,当前步是它时额外显示"已出图 N/M 页",不用干等一个笼统的"生成中"
+          const pageProgress =
+            isCurrent && s.key === 's4' && project.content_summary.total > 0
+              ? `${project.content_summary.imaged}/${project.content_summary.total} 页`
+              : null
+
           return (
             <li key={s.key} className="flex items-center gap-3">
               <span
@@ -132,6 +138,9 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
                   {s.label}
                 </span>
                 <span className={`text-[9px] tracking-[2px] ${c.sub}`}>{s.sub}</span>
+                {pageProgress && (
+                  <span className="text-xs tabular-nums text-cinnabar">{pageProgress}</span>
+                )}
               </span>
               {timeText && <span className="text-xs tabular-nums text-muted">{timeText}</span>}
             </li>

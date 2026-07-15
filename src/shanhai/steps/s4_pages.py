@@ -1,6 +1,7 @@
 import concurrent.futures as cf
 import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from PIL import Image
@@ -110,7 +111,7 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
 
 
 def run(project: Project, image: ImageClient, workdir: Path, image_size: str,
-        strict: bool = False) -> Project:
+        strict: bool = False, on_progress: Callable[[], None] | None = None) -> Project:
     if project.script is None or not project.storyboard:
         raise ValueError("先完成 S2/S3")
     if not any(c.turnaround_image for c in project.script.characters):
@@ -130,6 +131,8 @@ def run(project: Project, image: ImageClient, workdir: Path, image_size: str,
                              image_size, workdir, pages_dir, ref_cache) for cell in pending]
         for f in cf.as_completed(futures):
             f.result()   # 传播非预期错误(生成失败已在 _render_cell 内吞掉并标 failed)
+            if on_progress:
+                on_progress()
     project.status["s4"] = "done" if all(
         c.status == "confirmed" for c in project.storyboard) else "partial"
     return project
