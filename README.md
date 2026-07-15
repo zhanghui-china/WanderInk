@@ -127,8 +127,32 @@ bun install && bun run dev   # 前端 :5173
 
 ### 5. 启动Web服务
 
-```bash
 
+
+### 6.安装Hermes
+
+```
+#参考 https://zhuanlan.zhihu.com/p/2056830749530142643
+sudo apt install ripgrep
+sudo su -
+useradd hermes -b /home1 -m
+passwd hermes 
+cd /home1
+chown -R hermes hermes
+chgrp -R hermes hermes
+su - hermes
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+hermes setup
+```
+
+
+
+### 7.启动Hermes服务
+
+```bash
+#使用hermes用户登录
+source ~/.bashrc
+hermes gateway restart
 ```
 
 ## ✨项目报告
