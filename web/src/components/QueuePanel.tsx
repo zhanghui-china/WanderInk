@@ -4,7 +4,13 @@ import type { QueueItem } from '../types'
 
 // 全局生成队列:展示 GET /api/queue(基于内存态 _JOBS 实时组装),自身轮询保持新鲜。
 // 队列为空时不占版面。
-export function QueuePanel({ user }: { user: string }) {
+export function QueuePanel({
+  user,
+  onSelect,
+}: {
+  user: string
+  onSelect: (id: string) => void
+}) {
   const [items, setItems] = useState<QueueItem[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
 
@@ -27,8 +33,8 @@ export function QueuePanel({ user }: { user: string }) {
     try {
       await api.cancelProject(id)
       await refresh()
-    } catch {
-      /* ignore */
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
     } finally {
       setBusyId(null)
     }
@@ -49,7 +55,8 @@ export function QueuePanel({ user }: { user: string }) {
         {items.map((it) => (
           <li
             key={it.project_id}
-            className="flex items-center justify-between gap-2 rounded-lg border border-transparent px-3 py-2.5 transition hover:border-line hover:bg-white/50"
+            onClick={() => onSelect(it.project_id)}
+            className="flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-transparent px-3 py-2.5 transition hover:border-line hover:bg-white/50"
           >
             <span className="min-w-0">
               <span className="block truncate font-serif text-sm text-ink">{it.scenic_spot}</span>
@@ -60,7 +67,10 @@ export function QueuePanel({ user }: { user: string }) {
             {it.owner === user && (
               <button
                 type="button"
-                onClick={() => cancel(it.project_id)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  cancel(it.project_id)
+                }}
                 disabled={busyId === it.project_id}
                 className="shrink-0 rounded-lg border border-line px-3 py-1.5 text-xs text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40"
               >

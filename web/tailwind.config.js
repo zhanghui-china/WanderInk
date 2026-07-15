@@ -39,6 +39,7 @@ export default {
         'shy-spin': 'shy-spin 1s linear infinite',
         'shy-rise': 'shy-rise 0.5s ease both',
         'shy-pulse': 'shy-pulse 1s ease-in-out infinite',
+        'shy-wave': 'shy-wave 0.6s ease-in-out infinite',
       },
     },
   },

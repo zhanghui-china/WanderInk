@@ -1,3 +1,4 @@
+import { GeneratingBars } from './GeneratingBars'
 import { STAGES } from '../stages'
 import type { ProjectDetail } from '../types'
 
@@ -85,7 +86,7 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
     <div className="rounded-2xl border border-band bg-paper p-5 shadow-paper">
       <div className="mb-4 flex items-center gap-2.5">
         <span className="font-serif text-base font-semibold tracking-wide text-ink">生成进度</span>
-        {running && <span className="h-2 w-2 animate-shy-pulse rounded-full bg-cinnabar" />}
+        {running && <GeneratingBars />}
         <span className="text-xs tracking-wide text-muted">
           {running
             ? '正在生成…'

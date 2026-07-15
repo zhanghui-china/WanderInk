@@ -2,6 +2,7 @@ import { Fragment, useState } from 'react'
 import { api } from '../api'
 import { STYLE_LABEL } from '../styles'
 import type { Meta, ProjectDetail as Detail, Character, Page } from '../types'
+import { ImageLightbox } from './ImageLightbox'
 import { ProgressSteps } from './ProgressSteps'
 
 const EMOTION_STYLE: Record<string, string> = {
@@ -328,6 +329,7 @@ function CharacterCard({
   onChanged: () => void
 }) {
   const [busy, setBusy] = useState(false)
+  const [lightboxOpen, setLightboxOpen] = useState(false)
 
   async function redraw() {
     if (!window.confirm('仅重绘设定图,已生成页面需自行重绘。确定继续?')) return
@@ -343,7 +345,7 @@ function CharacterCard({
   }
 
   return (
-    <figure className="group relative overflow-hidden rounded-xl border border-line bg-white/60">
+    <figure className="overflow-hidden rounded-xl border border-line bg-white/60">
       <div className="relative aspect-[3/4] bg-kraft">
         {c.image ? (
           <img src={c.image} alt={c.name} className="h-full w-full object-cover" />
@@ -353,21 +355,26 @@ function CharacterCard({
         <span className="absolute left-2 top-2 rounded-full bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
           三视图
         </span>
-        {editable && (
-          <button
-            type="button"
-            onClick={redraw}
-            disabled={busy}
-            className="absolute inset-0 flex items-center justify-center bg-ink/50 text-sm font-medium tracking-wide text-rice opacity-0 transition group-hover:opacity-100 disabled:opacity-100"
-          >
-            {busy ? '重绘中…' : '重绘设定图'}
-          </button>
-        )}
       </div>
       <figcaption className="px-3 py-2.5">
         <div className="font-serif text-sm font-semibold tracking-wide text-ink">{c.name}</div>
         <div className="text-[11px] text-muted">{c.role}</div>
+        <div className="mt-2 flex gap-1.5">
+          {c.image && (
+            <button type="button" onClick={() => setLightboxOpen(true)} className={toolBtn}>
+              查看详情
+            </button>
+          )}
+          {editable && (
+            <button type="button" onClick={redraw} disabled={busy} className={toolBtn}>
+              {busy ? '重绘中…' : '重绘设定图'}
+            </button>
+          )}
+        </div>
       </figcaption>
+      {lightboxOpen && c.image && (
+        <ImageLightbox src={c.image} alt={c.name} onClose={() => setLightboxOpen(false)} />
+      )}
     </figure>
   )
 }
