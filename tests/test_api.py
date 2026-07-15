@@ -559,18 +559,22 @@ def test_run_step_records_step_timing(_settings):
 
 def test_image_concurrency_serial_for_local_backend():
     # 本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发只会互相拖慢/冲突。
-    # _env_file=None:隔离运行机器上真实 .env 的 SHANHAI_IMAGE_BASE_URL 等值,
-    # 否则测试结果会随部署环境(Mac/DGX)漂移,而不是只测 base_url 本身。
+    # image_endpoint 优先取 image_base_url,必须显式传它(而不是只传通用 base_url)——
+    # 否则会被运行机器 os.environ 里已加载的真实 SHANHAI_IMAGE_BASE_URL(如 DGX 的
+    # 本地 ComfyUI 地址)悄悄接管,测试结果随部署环境漂移而非只测传入值本身。
     from shanhai.config import Settings
-    s = Settings(_env_file=None, base_url="http://127.0.0.1:8091/v1", api_key="x")
+    s = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
+                 image_base_url="http://127.0.0.1:8091/v1")
     assert api._image_concurrency(s) == 1
-    s2 = Settings(_env_file=None, base_url="http://localhost:8091/v1", api_key="x")
+    s2 = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
+                  image_base_url="http://localhost:8091/v1")
     assert api._image_concurrency(s2) == 1
 
 
 def test_image_concurrency_parallel_for_remote_backend():
     from shanhai.config import Settings
-    s = Settings(_env_file=None, base_url="https://api.tu-zi.com/v1", api_key="x")
+    s = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
+                 image_base_url="https://api.tu-zi.com/v1")
     assert api._image_concurrency(s) == api.s4_pages.CONCURRENCY
 
 
