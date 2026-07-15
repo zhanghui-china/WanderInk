@@ -226,13 +226,13 @@ WanderInk/
 
 ## 📆项目团队
 
-| 成员                                          | 职责                                         |
-| --------------------------------------------- | -------------------------------------------- |
-| 张小白  （https://github.com/zhanghui-china） | 队长、项目策划、环境部署、项目测试、文档编写 |
-| Nancy （https://github.com/nancysxy000）      | 队员、文档编制                               |
-| 轻踏（https://github.com/DoubleCore）         | 队员、Skill开发、Hermes对接                  |
-| 五子（<https://github.com/Bandukids）>        | 队员、ComfyUI服务部署和开发                  |
-| 馄饨（<https://github.com/nativeas）>         | 队员、Web前后台开发                          |
+| 成员                                        | 职责                                         |
+| ------------------------------------------- | -------------------------------------------- |
+| [张小白](https://github.com/zhanghui-china) | 队长、项目策划、环境部署、项目测试、文档编写 |
+| [Nancy](https://github.com/nancysxy000)     | 队员、文档编制                               |
+| [轻踏](https://github.com/DoubleCore)       | 队员、Skill开发、Hermes对接                  |
+| [般度五子](https://github.com/Bandukids)    | 队员、ComfyUI服务部署和开发                  |
+| [馄饨](https://github.com/nativeas)         | 队员、Web前后台开发                          |
 
 ## 💖特别鸣谢
 
