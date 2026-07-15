@@ -63,16 +63,19 @@ def track_and_download_audio(ws, prompt, output_dir="./output_tts"):
 def make_voice(text_to_speak, voice_description, json_template_path="VoiceDesign-QwenTTS.json"):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     if not os.path.isabs(json_template_path):
-        resolved_path = os.path.join(script_dir, json_template_path)
-        if not os.path.exists(resolved_path):
-            parent_dir = os.path.join(os.path.dirname(script_dir), json_template_path)
-            if os.path.exists(parent_dir):
-                resolved_path = parent_dir
-            else:
-                cwd_dir = os.path.abspath(json_template_path)
-                if os.path.exists(cwd_dir):
-                    resolved_path = cwd_dir
-        json_template_path = resolved_path
+        bridge_dir = os.path.dirname(script_dir)
+        candidates = [
+            os.path.join(script_dir, json_template_path),
+            os.path.join(bridge_dir, "workflows", os.path.basename(json_template_path)),
+            os.path.join(bridge_dir, json_template_path),
+            os.path.abspath(json_template_path),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                json_template_path = path
+                break
+        else:
+            json_template_path = candidates[1]
 
     if not os.path.exists(json_template_path):
         raise FileNotFoundError(f"Template not found: {json_template_path}")

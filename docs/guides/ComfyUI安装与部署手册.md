@@ -69,7 +69,7 @@ git clone https://github.com/ltdrdata/ComfyUI-Manager.git
 | **VAE 编解码器 (VAE)** | `ae.safetensors` | `models/vae/` |
 | **TTS 语音声学模型** | Qwen 语音模型权重文件 | `models/audio/` 或对应自定义节点专属路径 |
 
-*注意：具体模型版本请参考 [comfyui-bridge/](file:///home1/wuzi/WanderInk/comfyui-bridge/) 下对应 JSON 工作流配置文件中的节点定义。*
+*注意：具体模型版本请参考 `comfyui-bridge/workflows/` 下对应 JSON 工作流配置文件中的节点定义。*
 
 ---
 

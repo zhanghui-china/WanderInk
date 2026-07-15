@@ -36,8 +36,10 @@ SERVER_ADDRESS = os.environ.get("COMFYUI_SERVER", "127.0.0.1:8188")
 # ComfyUI 的 input 文件夹路径
 COMFYUI_INPUT_DIR = os.environ.get("COMFYUI_INPUT_DIR", "./ComfyUI/input")
 
-# workflow JSON 模板路径
-JSON_TEMPLATE_PATH = os.environ.get("WORKFLOW_PATH", "image_edit_workflow.json")
+# workflow JSON 模板路径（默认取本目录 workflows/）
+_BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_WORKFLOW = os.path.join(_BRIDGE_DIR, "workflows", "image_edit_workflow.json")
+JSON_TEMPLATE_PATH = os.environ.get("WORKFLOW_PATH", _DEFAULT_WORKFLOW)
 
 # 生成超时时间（秒）
 GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "300"))

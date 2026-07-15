@@ -38,25 +38,42 @@ GENERATION_TIMEOUT = int(os.environ.get("GENERATION_TIMEOUT", "300"))
 HOST = os.environ.get("SERVICE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SERVICE_PORT", "5000"))
 
+_BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+_WORKFLOWS_DIR = os.path.join(_BRIDGE_DIR, "workflows")
+
+
+def _workflow_path(name: str) -> str:
+    """Resolve a workflow JSON under workflows/ (cwd fallback for overrides)."""
+    candidates = [
+        os.path.join(_WORKFLOWS_DIR, name),
+        os.path.join(_BRIDGE_DIR, name),
+        name,
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
 WORKFLOW_CONFIG = {
     "edit": {
-        "template": "image_edit_workflow.json",
+        "template": _workflow_path("image_edit_workflow.json"),
         "output_dir": "./output_edit"
     },
     "blend": {
-        "template": "image_blend_workflow.json",
+        "template": _workflow_path("image_blend_workflow.json"),
         "output_dir": "./output_blend"
     },
     "triple_blend": {
-        "template": "image_triple_blend_workflow.json",
+        "template": _workflow_path("image_triple_blend_workflow.json"),
         "output_dir": "./output_triple_blend"
     },
     "tts": {
-        "template": "VoiceDesign-QwenTTS.json",
+        "template": _workflow_path("VoiceDesign-QwenTTS.json"),
         "output_dir": "./output_tts"
     },
     "music": {
-        "template": "MusicCreation-ACESTEP1.5XL_api.json",
+        "template": _workflow_path("MusicCreation-ACESTEP1.5XL_api.json"),
         "output_dir": "./output_music"
     }
 }
