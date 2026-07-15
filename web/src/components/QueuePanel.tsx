@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
+import { CardHead } from './decor'
+import { GeneratingBars } from './GeneratingBars'
 import type { QueueItem } from '../types'
 
 // 全局生成队列:展示 GET /api/queue(基于内存态 _JOBS 实时组装),自身轮询保持新鲜。
@@ -44,12 +46,7 @@ export function QueuePanel({
 
   return (
     <div className="rounded-2xl border border-band bg-paper p-5 shadow-paper">
-      <div className="mb-3 flex items-center gap-2.5">
-        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-ink font-brush text-lg text-rice">
-          队
-        </span>
-        <h2 className="font-serif text-base font-semibold tracking-wide text-ink">生成队列</h2>
-      </div>
+      <CardHead glyph="队" title="生成队列" />
 
       <ul className="space-y-1.5">
         {items.map((it) => (
@@ -58,10 +55,13 @@ export function QueuePanel({
             onClick={() => onSelect(it.project_id)}
             className="flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-transparent px-3 py-2.5 transition hover:border-line hover:bg-white/50"
           >
-            <span className="min-w-0">
-              <span className="block truncate font-serif text-sm text-ink">{it.scenic_spot}</span>
-              <span className="block truncate text-[11px] text-muted">
-                {it.project_id.slice(0, 8)} · {it.owner || '未知'} · {it.pipeline}
+            <span className="flex min-w-0 items-center gap-2.5">
+              <GeneratingBars />
+              <span className="min-w-0">
+                <span className="block truncate font-serif text-sm text-ink">{it.scenic_spot}</span>
+                <span className="block truncate text-[11px] text-muted">
+                  {it.project_id.slice(0, 8)} · {it.owner || '未知'} · {it.pipeline}
+                </span>
               </span>
             </span>
             {it.owner === user && (

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api'
+import { InkScape, Seal, VLabel } from './decor'
 
 // 整个 SPA 进门先登录:未登录时 App 顶层只渲染本页,不发起其它 API 请求。
 export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
@@ -28,14 +29,38 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
   const label = 'mb-1.5 block text-xs font-medium tracking-wide text-muted'
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-6">
+    <div
+      className="relative flex min-h-screen items-center justify-center overflow-hidden px-6"
+      style={{
+        background: 'radial-gradient(120% 90% at 50% 0%, #26362e 0%, #16211d 60%, #0f1814 100%)',
+      }}
+    >
+      {/* 水墨云山 + 月 */}
+      <div
+        className="absolute right-[14%] top-[16%] h-40 w-40 rounded-full opacity-90"
+        style={{
+          background: 'radial-gradient(circle at 38% 38%, #eef5ef, #bcd8cc 70%, rgba(188,216,204,0) 72%)',
+          boxShadow: '0 0 90px 20px rgba(188,216,204,.22)',
+        }}
+      />
+      <InkScape className="absolute inset-x-0 bottom-0 h-[46vh] w-full animate-drift" tone="dark" />
+
+      {/* 竖排诗题 */}
+      <div className="pointer-events-none absolute left-[9%] top-1/2 hidden -translate-y-1/2 lg:block">
+        <VLabel className="text-4xl leading-tight text-gold-pale/70">山川入卷</VLabel>
+        <VLabel className="ml-3 mt-8 text-2xl leading-tight text-gold-pale/40">传说成画</VLabel>
+      </div>
+
       <form
         onSubmit={submit}
-        className="w-full max-w-sm space-y-4 rounded-2xl border border-band bg-paper p-6 shadow-paper"
+        className="relative w-full max-w-sm space-y-4 rounded-2xl border border-band bg-paper p-6 shadow-paper-lg"
       >
         <div className="flex items-center gap-2.5">
-          <span className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-gradient-to-br from-cinnabar to-cinnabar-deep font-brush text-2xl leading-none text-rice">
-            W
+          <span className="relative flex h-9 w-9 items-center justify-center rounded-[10px] bg-gradient-to-br from-cinnabar to-cinnabar-deep font-brush text-2xl leading-none text-rice">
+            墨
+            <span className="absolute -bottom-1.5 -right-1.5">
+              <Seal char="遗" size={18} rot={-10} />
+            </span>
           </span>
           <div className="flex flex-col gap-0.5">
             <h2 className="font-serif text-base font-semibold tracking-wide text-ink">
@@ -69,7 +94,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
           />
         </div>
 
-        {err && <p className="rounded-md bg-cinnabar/8 px-3 py-2 text-sm text-cinnabar">{err}</p>}
+        {err && <p className="rounded-md bg-alarm/8 px-3 py-2 text-sm text-alarm">{err}</p>}
 
         <button
           type="submit"

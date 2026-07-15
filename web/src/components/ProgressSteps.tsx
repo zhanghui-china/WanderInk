@@ -1,3 +1,4 @@
+import { CardHeadInline } from './decor'
 import { GeneratingBars } from './GeneratingBars'
 import { STAGES } from '../stages'
 import type { ProjectDetail } from '../types'
@@ -21,9 +22,9 @@ function cell(status: string | undefined, running: boolean): Cell {
     }
   if (status === 'failed')
     return {
-      dot: 'bg-cinnabar/20 text-cinnabar border border-cinnabar',
-      label: 'text-cinnabar',
-      sub: 'text-cinnabar/60',
+      dot: 'bg-alarm/20 text-alarm border border-alarm',
+      label: 'text-alarm',
+      sub: 'text-alarm/60',
       tag: '!',
     }
   // pending / running current
@@ -81,11 +82,12 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
   const currentIdx = STAGES.findIndex((s) => project.status[s.key] !== 'done')
 
   const totalElapsed = totalElapsedSeconds(project.status)
+  const doneCount = STAGES.filter((s) => project.status[s.key] === 'done').length
 
   return (
     <div className="rounded-2xl border border-band bg-paper p-5 shadow-paper">
       <div className="mb-4 flex items-center gap-2.5">
-        <span className="font-serif text-base font-semibold tracking-wide text-ink">生成进度</span>
+        <CardHeadInline glyph="程" title="生成进度" />
         {running && <GeneratingBars />}
         <span className="text-xs tracking-wide text-muted">
           {running
@@ -96,11 +98,12 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
                 ? '完成(部分页静音兜底)'
                 : project.pipeline}
         </span>
-        {totalElapsed !== null && (
-          <span className="ml-auto text-xs tracking-wide text-muted">
-            总耗时 {formatElapsed(totalElapsed)}
+        <span className="ml-auto flex items-center gap-3 text-xs tracking-wide text-muted">
+          <span className="tabular-nums">
+            {doneCount}/{STAGES.length} 环节
           </span>
-        )}
+          {totalElapsed !== null && <span className="tabular-nums">总耗时 {formatElapsed(totalElapsed)}</span>}
+        </span>
       </div>
 
       <ol className="flex flex-col gap-3">

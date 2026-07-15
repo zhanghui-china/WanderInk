@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api'
+import { CardHead } from './decor'
 import { STYLE_LABEL } from '../styles'
 import type { Meta } from '../types'
 
@@ -60,12 +61,7 @@ export function NewProjectForm({
       onSubmit={submit}
       className="space-y-4 rounded-2xl border border-band bg-paper p-5 shadow-paper"
     >
-      <div className="flex items-center gap-2.5">
-        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-cinnabar font-brush text-lg text-rice">
-          新
-        </span>
-        <h2 className="font-serif text-base font-semibold tracking-wide text-ink">新建作品</h2>
-      </div>
+      <CardHead glyph="新" title="新建作品" />
 
       <div>
         <label className={label}>景区名</label>
@@ -178,7 +174,7 @@ export function NewProjectForm({
       </div>
 
       {err && (
-        <p className="rounded-md bg-cinnabar/8 px-3 py-2 text-sm text-cinnabar">{err}</p>
+        <p className="rounded-md bg-alarm/8 px-3 py-2 text-sm text-alarm">{err}</p>
       )}
 
       <button
