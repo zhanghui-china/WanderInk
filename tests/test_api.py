@@ -510,6 +510,7 @@ def test_pipeline_records_step_and_total_timing():
     from unittest.mock import MagicMock
     p = Project(project_id="timingid", scenic_spot="雷峰塔")
     mock_settings = MagicMock()
+    mock_settings.image_endpoint = ("https://example.com/v1", "key")  # _image_concurrency 需要能解包
     settings = {k: mock_settings for k in ("s0", "s1", "s2", "s3", "s4", "s5")}
     clients = {
         "s0": (MagicMock(),), "s1": (MagicMock(),), "s2": (MagicMock(),),
@@ -554,6 +555,21 @@ def test_run_step_records_step_timing(_settings):
     float(p.status["s6_elapsed_s"])
     assert p.status["pipeline_started_at"]
     assert p.status["pipeline_finished_at"]
+
+
+def test_image_concurrency_serial_for_local_backend():
+    # 本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发只会互相拖慢/冲突
+    from shanhai.config import Settings
+    s = Settings(base_url="http://127.0.0.1:8091/v1", api_key="x")
+    assert api._image_concurrency(s) == 1
+    s2 = Settings(base_url="http://localhost:8091/v1", api_key="x")
+    assert api._image_concurrency(s2) == 1
+
+
+def test_image_concurrency_parallel_for_remote_backend():
+    from shanhai.config import Settings
+    s = Settings(base_url="https://api.tu-zi.com/v1", api_key="x")
+    assert api._image_concurrency(s) == api.s4_pages.CONCURRENCY
 
 
 def test_get_queue_reflects_jobs_owner_and_spot():

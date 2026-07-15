@@ -14,6 +14,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -122,6 +123,14 @@ def _locked_save(p: Project) -> None:
 
 # ---------- 后台管线 ----------
 
+def _image_concurrency(s: Settings) -> int:
+    """本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发请求只会排队/互相拖慢
+    甚至冲突,强制串行;远程云端 API(如 tu-zi)才值得并发出图。"""
+    base_url, _ = s.image_endpoint
+    host = urlparse(base_url).hostname or ""
+    return 1 if host in ("127.0.0.1", "localhost") else s4_pages.CONCURRENCY
+
+
 def _deliverable_status(p: Project) -> str:
     """诚实闸门:据当前状态判定「整体是否已交付一部成片」。
     无 output['mp4'](未合成/编辑后已失效)→ partial:尚未合成,而非 done(单步重跑 s2–s5 会走到这)。
@@ -182,7 +191,8 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
                                              settings["s3"].image_size)),
             ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
                                         strict=settings["s4"].strict_consistency,
-                                        on_progress=lambda: _locked_save(p))),
+                                        on_progress=lambda: _locked_save(p),
+                                        concurrency=_image_concurrency(settings["s4"]))),
             ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir,
                                         clients["s5"][3])),
             ("s6", lambda: s6_compose.run(p, workdir)),
@@ -603,7 +613,8 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
             p = s3_characters.run(p, llm, image, workdir, s.image_size)
         elif name == "s4":
             p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
-                              on_progress=lambda: _locked_save(p))
+                              on_progress=lambda: _locked_save(p),
+                              concurrency=_image_concurrency(s))
         elif name == "s5":
             p = s5_audio.run(p, tts, s.tts_voice, workdir, music)
         elif name == "s6":
