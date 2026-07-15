@@ -72,6 +72,7 @@ export function ProjectDetailView({
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [insertAfter, setInsertAfter] = useState<number | null>(null)
   const [stepBusy, setStepBusy] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
 
   const generating = project.pipeline === 'queued' || project.pipeline === 'running'
   const editable = !meta?.readonly && !generating
@@ -91,6 +92,16 @@ export function ProjectDetailView({
       .reorderCells(project.project_id, order)
       .then(onChanged)
       .catch((e) => alert(e instanceof Error ? e.message : String(e)))
+  }
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+    }
   }
 
   async function handleStep(name: string, label: string, destructive?: boolean) {
@@ -125,6 +136,9 @@ export function ProjectDetailView({
             </p>
           </div>
         </div>
+        <button type="button" onClick={copyLink} className={ghostBtn}>
+          {copied ? '已复制' : '复制链接'}
+        </button>
       </div>
 
       <ProgressSteps project={project} />

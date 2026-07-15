@@ -13,7 +13,9 @@ const ACTIVE = new Set(['queued', 'running'])
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null)
   const [list, setList] = useState<ProjectSummary[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get('project'),
+  )
   const [detail, setDetail] = useState<ProjectDetail | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [showSettings, setShowSettings] = useState(false)
@@ -64,8 +66,11 @@ export default function App() {
   }, [])
 
   // 选中项目:拉详情;若管线在跑则轮询
+  // 依赖里的 user 是必要的:分享链接(?project=<id>)可能在登录完成前就已经把
+  // selectedId 从 URL 读出来了,未登录时这里会先吃一次 401(被 catch 悄悄吞掉),
+  // 若不把 user 放进依赖数组,登录成功后不会重新拉取,详情页会一直空白。
   useEffect(() => {
-    if (!selectedId) return
+    if (!selectedId || !user) return
     let alive = true
     let timer: number | undefined
 
@@ -88,7 +93,16 @@ export default function App() {
       alive = false
       if (timer) window.clearTimeout(timer)
     }
-  }, [selectedId, refreshList, refreshKey])
+  }, [selectedId, user, refreshList, refreshKey])
+
+  // 把选中状态同步回地址栏(?project=<id>),这样复制当前 URL 就能分享给团队成员;
+  // 用 replaceState 不产生历史记录,避免"后退"变成在项目之间来回跳
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    if (selectedId) url.searchParams.set('project', selectedId)
+    else url.searchParams.delete('project')
+    window.history.replaceState(null, '', url)
+  }, [selectedId])
 
   // 编辑操作(改字面/重绘/重配音/增删/重排/单步重跑)后调用:强制重拉一次详情,
   // 若管线因此进入 queued/running 则上面的 effect 会继续自行轮询
