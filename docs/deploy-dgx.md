@@ -213,3 +213,29 @@ update_overrides(lambda existing: apply_put(existing, incoming))
 效果和团队成员登录后在配置面板里手动填三个字段、点保存完全一样,写的是同一个 `config.json`。
 
 **现状(供下次核对)**:S3/S4 生效的图像端点是 tu-zi/`gpt-image-2`,S4 并发=3(自动判定,远程端点);本地 `shanhai-image.service`(ComfyUI shim,`127.0.0.1:8091`)仍在运行、未停,只是配置层面暂时没人指向它——想切回本地,在配置面板里把"图像生成"的 Base URL 改回 `http://127.0.0.1:8091/v1`、模型改回 `comfyui-local` 即可,S4 并发会自动跟着变回串行。
+
+## S0/S1 接入"编剧大师"(hermes-agent)(2026-07-15)
+
+**内容**:DGX 上团队自跑的 `hermes-agent`(`http://127.0.0.1:8642/v1`,OpenAI 兼容,加载了"编剧大师" skill)接入 S0(传说检索)/S1(剧本生成)两个环节,S2(分镜)/S3(角色特征提取)不动,继续用原来的 LLM 后端——纯配置改动(`config.json` 的 `stages.s0`/`stages.s1` 覆盖),`src/shanhai/providers/llm.py` 的 `LLMClient` 一行代码没改,因为 hermes-agent 对结构化请求(JSON Schema + "只输出 JSON"指令)会老实执行,不会触发它自己的"编剧大师"反问式对话流程(那个只在收到开放式请求时才触发)。
+
+**关键发现(避免下次重新踩坑)**:
+- **`prompt_tokens` 每次请求都在 16000+**(哪怕只发"hi"),推测服务端每次都隐式拼进一大段"编剧大师" skill 说明书,这个开销不可控。
+- **是重推理型后端**:`completion_tokens` 远大于最终 `content` 长度(实测 S1 一次 10546 vs 2157 字),差额是内部推理消耗,不影响最终 JSON 正确性,但计入耗时/用量。
+- **延迟明显更高**:真实端到端验证(直接跑 `s0_legend.run`/`s1_script.run`,和 `api.py._pipeline` 同一套代码路径)——S0 耗时 135.4s,S1 耗时 122.9s,合计约 4.3 分钟,比本地 Ollama 慢不少。把这两个环节的 `llm_timeout` 顺带调到了 600s(默认 300s 打底应该也够,但留了余量)。
+- 本地 `127.0.0.1` 端点已被 `providers/_http.py` 的 `local_backend_guard` 自动纳入 GPU 共享互斥锁,不用额外处理并发。
+
+**操作方式**(和切 tu-zi 图像同一手法,直接调用 `runtime_config` 函数、不经 Web UI):
+```python
+from shanhai.runtime_config import update_overrides, apply_put, AppConfig, ConfigOverride
+incoming = AppConfig(stages={
+    's0': ConfigOverride(llm_base_url='http://127.0.0.1:8642/v1', llm_api_key='<key>',
+                          llm_model='hermes-agent', llm_timeout=600),
+    's1': ConfigOverride(llm_base_url='http://127.0.0.1:8642/v1', llm_api_key='<key>',
+                          llm_model='hermes-agent', llm_timeout=600),
+})
+update_overrides(lambda existing: apply_put(existing, incoming))
+```
+
+**验证踩坑记录**:第一次端到端验证脚本写成 `resolve_stage_clients(AppConfig())`,传了个空的 `AppConfig()` 而不是 `None`——`runtime_config.resolve_settings` 内部是 `cfg = cfg or load_overrides()`,空的 `AppConfig()` 实例本身是 truthy,导致完全不读磁盘上的 `config.json`,悄悄退回到 `.env` 基线设置。改成传 `None` 才对上。教训:凡是要验证"配置覆盖是否生效"的脚本,必须显式传 `None` 或直接调用 `load_overrides()`,不能用默认构造的空 `AppConfig()` 占位。
+
+**现状(供下次核对)**:S0/S1 生效 LLM 是 hermes-agent(`127.0.0.1:8642`);S2/S3 未受影响,沿用此前就已存在的 `config.json` 全局覆盖(`llm_base_url=https://api.stepfun.com/v1`,`llm_model=step-3.7-flash`——这个全局覆盖是本次任务之前就有的,不是这次改的,顺带发现部署文档此前记录的"glm-4.7-flash:latest"已过期,供下次核对时留意)。
