@@ -10,13 +10,32 @@ import type {
   QueueItem,
 } from './types'
 
+// 携带 HTTP 状态码的错误,供调用方区分永久错误(404/401)与瞬时错误(退避重试)。
+export class ApiError extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 // 同源部署时前端由后端托管;dev 期由 Vite 代理 /api → :8080。故 base 留空。
 // credentials 用 'same-origin':登录态是 Starlette 签名 cookie,同源(含 Vite 代理转发)
 // 请求需带上;dev 代理让浏览器仍视 /api 为同源,故不需要跨源的 'include'。
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    const detail = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(detail.detail ?? `HTTP ${res.status}`)
+    // HTTP/2 下 statusText 恒为空串(非 nullish,?? 兜底不触发);FastAPI 422 的 detail 是
+    // 校验错误对象数组(直接塞进 Error 会变 "[object Object]")。故显式判空串、非字符串序列化。
+    const body = await res.json().catch(() => null)
+    const detail = body?.detail
+    const msg =
+      typeof detail === 'string' && detail !== ''
+        ? detail
+        : detail != null
+          ? JSON.stringify(detail)
+          : `HTTP ${res.status}`
+    throw new ApiError(msg, res.status)
   }
   return res.json() as Promise<T>
 }

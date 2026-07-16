@@ -120,6 +120,9 @@ export interface ConfigOverrideView {
   tts_model: string | null
   tts_voice: string | null
   tts_voices: string | null
+  music_base_url: string | null
+  music_api_key: string | null
+  music_model: string | null
 }
 
 // .env 基线视图:非密钥字段=实际值,密钥字段=是否已配置(bool)
@@ -141,6 +144,9 @@ export interface ConfigDefaults {
   tts_model: string
   tts_voice: string
   tts_voices: string
+  music_base_url: string | null
+  music_api_key: boolean
+  music_model: string
 }
 
 export interface AppConfigView {

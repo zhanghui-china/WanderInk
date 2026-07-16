@@ -203,8 +203,9 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         # 逐环节解析生效 Settings 与 client(同一 cfg 快照,作业内配置一致;不同环节可用不同端点/模型)。
         settings, clients = resolve_stage_clients(cfg)
         if not p.params.use_hermes_agent:
-            # 开关关闭:S0/S1 跳过按环节覆盖(如 hermes-agent),回退到全局默认 LLM——
-            # 保留"原始通过 LLM 生成剧本/分镜"的路径,不依赖任何特定 skill。
+            # 开关关闭的真实语义:S0/S1 跳过按环节覆盖(用 resolve_settings(None) 只叠全局层),
+            # 回退到全局默认 LLM——保留"原始通过 LLM 生成剧本/分镜"的路径,不依赖任何特定 skill。
+            # 注意与字段名 use_hermes_agent 的字面义解耦:仅当 hermes 恰配成 s0/s1 stage 覆盖时两者等价。
             for st in ("s0", "s1"):
                 settings[st] = resolve_settings(None, cfg)
                 clients[st] = _clients(settings[st])
@@ -383,6 +384,8 @@ class NewProject(BaseModel):
     voice: str = ""
     speed: float = 1.0
     multi_panel: bool = False
+    # 命名沿用历史,真实机制见 _pipeline:关闭时 S0/S1 跳过按环节覆盖、回退全局默认 LLM,
+    # 而非字面的"是否用编剧大师"——仅当 hermes 恰配成 s0/s1 stage 覆盖时两者才等价。
     use_hermes_agent: bool = True
 
 
@@ -749,7 +752,9 @@ def meta(user: str = Depends(current_user)) -> dict:
     return {
         "minutes": list(_MINUTES), "audiences": list(_AUDIENCES),
         "tones": list(_TONES), "styles": list(STYLE_PRESETS),
-        "voices": resolve_settings().tts_voices_list,
+        # 音色列表须跟随 S5 实际生效的 TTS 后端:S5 用 resolve_settings("s5") 的端点合成,
+        # 若这里只解析全局层,用户把 s5 覆盖成本地 CosyVoice 后表单仍列全局音色、选中即令 S5 请求全失败降级静音。
+        "voices": resolve_settings("s5").tts_voices_list,
         "readonly": _READONLY,
     }
 
@@ -780,12 +785,12 @@ class _ArtifactStatic(StaticFiles):
     """产物静态托管,但禁下载任何 project.json(含用户 story、legend sources、角色 feature_prompt
     等内部态)与运行时配置文件(含明文密钥)。在 StaticFiles 已把 URL 规范化(折叠 ../ 双斜杠尾斜杠)成
     path 之后按 basename 拦截,故尾随斜杠/双斜杠/x/../project.json/大小写/HEAD 等在具体路由层可绕过的
-    变体在此统一 404。受保护的配置文件名取运行时实际值 runtime_config.CONFIG_PATH(随 SHANHAI_CONFIG_PATH
-    变化、可被测试 monkeypatch),而非 import 期冻结的常量。config.json 默认在 cwd 根、本不在挂载目录内,
-    此拦截是运维误把它指进 projects/ 时的防御纵深(真正的护栏仍是把 CONFIG_PATH 留在被托管目录之外)。"""
+    变体在此统一 404。受保护的配置文件名取运行时实际值 runtime_config._config_path()(每次读 SHANHAI_CONFIG_PATH、
+    随之变化、可被测试改环境变量),而非 import 期冻结的常量。config.json 默认在 cwd 根、本不在挂载目录内,
+    此拦截是运维误把它指进 projects/ 时的防御纵深(真正的护栏仍是把 config.json 留在被托管目录之外)。"""
 
     async def get_response(self, path: str, scope):  # noqa: ANN001 — 与父类签名一致
-        protected = {"project.json", runtime_config.CONFIG_PATH.name.lower()}
+        protected = {"project.json", runtime_config._config_path().name.lower()}
         if Path(path).name.lower() in protected:
             raise HTTPException(404)
         return await super().get_response(path, scope)

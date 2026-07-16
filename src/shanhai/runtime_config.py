@@ -37,7 +37,10 @@ MASK = "••••••"
 SENTINEL = "__UNCHANGED__"
 
 # 覆盖存储路径:放 cwd 根(不在 projects/ 下,不被 /files 挂载暴露)。
-CONFIG_PATH = Path(os.getenv("SHANHAI_CONFIG_PATH", "config.json"))
+# 延迟求值(每次读 os.getenv)而非 import 期冻结:api.py 的 load_env() 晚于本模块 import,
+# 只写在 .env 里的 SHANHAI_CONFIG_PATH 若在 import 期读取会被静默忽略(进程环境变量则生效,行为不一致)。
+def _config_path() -> Path:
+    return Path(os.getenv("SHANHAI_CONFIG_PATH", "config.json"))
 
 # 原子写发布锁:与 store.save 同构(唯一临时名 + os.replace)。
 _WRITE_LOCK = threading.Lock()
@@ -80,26 +83,27 @@ class AppConfig(BaseModel):
 
 
 def load_overrides() -> AppConfig:
-    """读 CONFIG_PATH 反序列化为 AppConfig。文件缺失 → 空 AppConfig();
+    """读 config.json 反序列化为 AppConfig。文件缺失 → 空 AppConfig();
     其它读取失败(非 UTF-8/权限/是目录等)或不合 schema → 打印告警并返回空(不 brick 生成)。"""
+    path = _config_path()
     try:
-        text = CONFIG_PATH.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return AppConfig()
     except (OSError, UnicodeDecodeError) as e:  # 权限/是目录/非 UTF-8 等:回退空,避免 brick 全部入口
-        print(f"[runtime_config] 读取 {CONFIG_PATH} 失败,回退空配置:{e}")
+        print(f"[runtime_config] 读取 {path} 失败,回退空配置:{e}")
         return AppConfig()
     try:
         return AppConfig.model_validate_json(text)
     except Exception as e:  # 损坏或不合 schema:告警后回退空配置,生成流程不受影响
-        print(f"[runtime_config] 解析 {CONFIG_PATH} 失败,回退空配置:{e}")
+        print(f"[runtime_config] 解析 {path} 失败,回退空配置:{e}")
         return AppConfig()
 
 
 def save_overrides(cfg: AppConfig) -> None:
     """原子写发布 config.json(整份替换)。by_alias=True 确保 global_ 序列化回别名 global。"""
     with _WRITE_LOCK:
-        store.atomic_write_text(CONFIG_PATH, cfg.model_dump_json(indent=2, by_alias=True))
+        store.atomic_write_text(_config_path(), cfg.model_dump_json(indent=2, by_alias=True))
 
 
 def update_overrides(mutate: Callable[[AppConfig], AppConfig]) -> AppConfig:
@@ -107,7 +111,7 @@ def update_overrides(mutate: Callable[[AppConfig], AppConfig]) -> AppConfig:
     否则两个并发 PUT 会互相覆盖,甚至把刚设置的密钥静默回退成旧值。返回落盘后的新配置。"""
     with _WRITE_LOCK:
         new = mutate(load_overrides())
-        store.atomic_write_text(CONFIG_PATH, new.model_dump_json(indent=2, by_alias=True))
+        store.atomic_write_text(_config_path(), new.model_dump_json(indent=2, by_alias=True))
         return new
 
 

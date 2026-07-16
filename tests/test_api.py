@@ -36,6 +36,16 @@ def test_meta_includes_voices():
     assert isinstance(j["voices"], list) and j["voices"]   # 至少回退 [tts_voice]
 
 
+def test_meta_voices_follow_s5_override(_isolated_config_path):
+    """meta 音色列表须跟随 S5 实际生效的 TTS 后端(resolve_settings("s5")),而非仅全局层——
+    否则用户把 s5 覆盖成别的 TTS 端点后,表单仍列全局音色、选中即令 S5 请求全失败降级静音。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        stages={"s5": runtime_config.ConfigOverride(tts_voices="cosy-a, cosy-b")},
+    ))
+    j = client.get("/api/meta").json()
+    assert j["voices"] == ["cosy-a", "cosy-b"]              # s5 覆盖的音色,而非全局默认
+
+
 def test_create_blocked_in_readonly(monkeypatch):
     monkeypatch.setattr(api, "_READONLY", True)
     r = client.post("/api/projects", json={"scenic_spot": "雷峰塔"})
@@ -1063,8 +1073,9 @@ def test_patch_cell_rejects_oversized_fields():
 
 @pytest.fixture
 def _isolated_config_path(tmp_path, monkeypatch):
-    """把 runtime_config.CONFIG_PATH 指到 tmp_path,隔离测试对真实 config.json 的读写。"""
-    monkeypatch.setattr(runtime_config, "CONFIG_PATH", tmp_path / "config.json")
+    """把配置路径指到 tmp_path,隔离测试对真实 config.json 的读写。
+    _config_path() 延迟读 SHANHAI_CONFIG_PATH,故设环境变量即可。"""
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "config.json"))
 
 
 def test_get_config_never_leaks_plaintext_api_key(_isolated_config_path):
@@ -1193,8 +1204,8 @@ def test_put_mask_echo_keeps_existing_secret(_isolated_config_path):
 
 
 def test_files_blocks_runtime_config_basename(monkeypatch):
-    """/files 静态托管按运行时 CONFIG_PATH.name 动态拦截配置文件:文件存在但仍 404 且不泄露内容。"""
-    monkeypatch.setattr(runtime_config, "CONFIG_PATH", store.DEFAULT_ROOT / "secrets.json")
+    """/files 静态托管按运行时 _config_path().name 动态拦截配置文件:文件存在但仍 404 且不泄露内容。"""
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(store.DEFAULT_ROOT / "secrets.json"))
     served = store.DEFAULT_ROOT / "secrets.json"
     served.parent.mkdir(exist_ok=True)
     served.write_text("PLAINTEXT_KEY", encoding="utf-8")
