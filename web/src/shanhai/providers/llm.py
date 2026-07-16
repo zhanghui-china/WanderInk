@@ -4,7 +4,7 @@ import re
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from shanhai.providers._http import local_backend_guard, request_with_retry
+from shanhai.providers._http import request_with_retry
 
 
 class LLMError(Exception):
@@ -22,13 +22,12 @@ class LLMClient:
         )
 
     def chat(self, system: str, user: str, temperature: float = 0.7, retries: int = 2) -> str:
-        with local_backend_guard(self._base_url):
-            r = request_with_retry(lambda: self._client.post("/chat/completions", json={
-                "model": self.model,
-                "temperature": temperature,
-                "messages": [{"role": "system", "content": system},
-                             {"role": "user", "content": user}],
-            }), retries)
+        r = request_with_retry(lambda: self._client.post("/chat/completions", json={
+            "model": self.model,
+            "temperature": temperature,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+        }), retries, base_url=self._base_url)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 

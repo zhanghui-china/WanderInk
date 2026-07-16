@@ -7,7 +7,7 @@ import type { AppConfigInput, AppConfigView, ConfigOverrideInput, ConfigOverride
 // PUT 密钥语义:未改送此哨兵(后端保持已存值不变);与 runtime_config.py 的 _SENTINEL 对应
 const SENTINEL = '__UNCHANGED__'
 
-type Group = 'llm' | 'image' | 'tts'
+type Group = 'llm' | 'image' | 'tts' | 'music'
 type FieldKey = keyof ConfigOverrideView
 
 interface FieldDef {
@@ -37,9 +37,24 @@ const TTS_FIELDS: FieldDef[] = [
   { key: 'tts_voice', label: '默认音色', kind: 'text' },
   { key: 'tts_voices', label: '可选音色(逗号分隔)', kind: 'text' },
 ]
-const GROUP_FIELDS: Record<Group, FieldDef[]> = { llm: LLM_FIELDS, image: IMAGE_FIELDS, tts: TTS_FIELDS }
-const GROUP_LABEL: Record<Group, string> = { llm: 'LLM(文本生成)', image: '图像生成', tts: '语音合成' }
-const ALL_FIELDS: FieldDef[] = [...LLM_FIELDS, ...IMAGE_FIELDS, ...TTS_FIELDS]
+const MUSIC_FIELDS: FieldDef[] = [
+  { key: 'music_base_url', label: '端点 Base URL', kind: 'text' },
+  { key: 'music_api_key', label: 'API Key', kind: 'secret' },
+  { key: 'music_model', label: '模型', kind: 'text' },
+]
+const GROUP_FIELDS: Record<Group, FieldDef[]> = {
+  llm: LLM_FIELDS,
+  image: IMAGE_FIELDS,
+  tts: TTS_FIELDS,
+  music: MUSIC_FIELDS,
+}
+const GROUP_LABEL: Record<Group, string> = {
+  llm: 'LLM(文本生成)',
+  image: '图像生成',
+  tts: '语音合成',
+  music: '背景音乐',
+}
+const ALL_FIELDS: FieldDef[] = [...LLM_FIELDS, ...IMAGE_FIELDS, ...TTS_FIELDS, ...MUSIC_FIELDS]
 
 const EMPTY_OVERRIDE_VIEW: ConfigOverrideView = {
   base_url: null,
@@ -59,10 +74,13 @@ const EMPTY_OVERRIDE_VIEW: ConfigOverrideView = {
   tts_model: null,
   tts_voice: null,
   tts_voices: null,
+  music_base_url: null,
+  music_api_key: null,
+  music_model: null,
 }
 
 function isGroup(g: string): g is Group {
-  return g === 'llm' || g === 'image' || g === 'tts'
+  return g === 'llm' || g === 'image' || g === 'tts' || g === 'music'
 }
 
 function initValues(view: ConfigOverrideView | undefined): Record<string, string> {
@@ -157,12 +175,18 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
     return (cfg?.stage_clients[scope] ?? []).filter(isGroup).flatMap((g) => GROUP_FIELDS[g])
   }
 
+  // 只提交用户实际改过的字段(比照密钥字段的 touched 机制),未触碰的 key 一律不写入 payload,
+  // 交由后端 exclude_unset 保留既有值——否则整表覆盖会静默抹掉并发/陈旧会话刚存的其它覆盖。
+  // "清除→继承"仍可用:主动清空某字段会 markTouched,故空串会作为显式 null 发出。
   function buildOverride(scope: string): ConfigOverrideInput {
     const out: Record<string, string | number | null> = {}
     for (const field of fieldsForScope(scope)) {
+      const isTouched = touched.has(`${scope}::${field.key}`)
       const raw = getValue(scope, field.key)
       if (field.kind === 'secret') {
-        out[field.key] = touched.has(`${scope}::${field.key}`) ? raw : SENTINEL
+        out[field.key] = isTouched ? raw : SENTINEL
+      } else if (!isTouched) {
+        continue
       } else if (field.kind === 'number') {
         out[field.key] = raw === '' ? null : Number(raw)
       } else {
@@ -216,7 +240,10 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
             className={fieldCls}
             value={value}
             disabled={ro}
-            onChange={(e) => setFieldValue(scope, field.key, e.target.value)}
+            onChange={(e) => {
+              setFieldValue(scope, field.key, e.target.value)
+              markTouched(scope, field.key)
+            }}
           >
             <option value="">继承{eff ? `(${eff})` : ''}</option>
             <option value="openai">openai</option>
@@ -241,7 +268,7 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
           disabled={ro}
           onChange={(e) => {
             setFieldValue(scope, field.key, e.target.value)
-            if (isSecret) markTouched(scope, field.key)
+            markTouched(scope, field.key)
           }}
         />
         {configured && !clearing && !ro && (
@@ -308,6 +335,7 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
               {renderGroup('global', 'llm')}
               {renderGroup('global', 'image')}
               {renderGroup('global', 'tts')}
+              {renderGroup('global', 'music')}
             </div>
 
             <div className="border-t border-line pt-4">

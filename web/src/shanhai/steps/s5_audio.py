@@ -73,7 +73,9 @@ def _split_clauses(caption: str) -> list[str]:
 def _synthesize_clause(tts: TTSClient, text: str, voice: str, dest: Path,
                        speed: float = 1.0) -> int:
     """合成一句并检测截断:时长明显偏短则重合成,始终保留最长的一次。返回时长 ms。"""
-    floor = len(text) * MIN_MS_PER_CHAR
+    # floor 随 speed 缩放:MIN_MS_PER_CHAR 按 speed=1.0 校准,语速越快每字应有的最短时长越短,
+    # 否则高语速正常语音会被误判截断而空转 TTS_TRIES。speed=1.0 时与原值一致(无回归)。
+    floor = round(len(text) * MIN_MS_PER_CHAR / speed)
     tmp = dest.with_suffix(".try.mp3")
     best_ms = 0
     for _ in range(TTS_TRIES):
@@ -100,7 +102,8 @@ def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path,
     if not caption.strip():
         raise ValueError("空文案,无法合成")
     ms = _synthesize_single(tts, caption, voice, out, speed=speed)
-    floor = len(caption) * MIN_MS_PER_CHAR
+    # floor 随 speed 缩放(同 _synthesize_clause):高语速下正常语音更短,不应误判为截断而退化逐句。
+    floor = round(len(caption) * MIN_MS_PER_CHAR / speed)
     if ms >= floor:
         return ms
     print(f"⚠️ 整段合成疑似截断({ms}ms<{floor}ms),退化逐句合成")
@@ -216,15 +219,11 @@ def _generate_ai_bgm(project: Project, music: MusicClient, workdir: Path) -> str
     return str(out)
 
 
-def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
-        music: MusicClient | None = None, manifest_path: Path = DEFAULT_MANIFEST) -> Project:
-    effective_voice = project.params.voice or voice
-    speed = project.params.speed
-    audio_dir = workdir / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    # H4:BGM 选曲前置并「整体」兜底——manifest 缺失/损坏/字段不全(如 track 缺 file)都不该
-    # 毁掉后面已完成的合成,故置于 TTS 之前且整段捕获:BGM 是非关键增强,任何失败都降级为无配乐。
-    # 三级降级:AI 生成 → 静态曲库 → 无 BGM。任一级失败都不拖垮配音这个更关键的环节。
+def _resolve_bgm(project: Project, music: MusicClient | None, workdir: Path,
+                 manifest_path: Path) -> str:
+    """三级降级选 BGM:AI 生成 → 静态曲库 → 无 BGM,返回路径(无则空串)。
+    H4:任何失败(AI shim 未部署/超时、manifest 缺失/损坏/字段不全)都整段捕获降级,绝不向上抛——
+    BGM 是非关键增强,不该拖垮更关键的配音;在独立线程里跑亦不会炸掉 TTS 线程池或整个 S5。"""
     bgm_path: str | None = None
     if music is not None:
         try:
@@ -236,15 +235,27 @@ def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
             bgm_path = _select_manifest_bgm(project, manifest_path)
         except Exception as e:  # noqa: BLE001 BGM 非关键,任何失败都跳过配乐而非拖垮 S5
             print(f"⚠️ BGM 选曲失败({manifest_path}),跳过配乐:{e}")
-    project.bgm = bgm_path or ""
-    # PERF1:逐页配音并行(仿 S4)。线程安全:每页写各自 page_NN.mp3 与各自 cell,
-    # _synthesize_full 的临时文件均由 out 派生(page_NN.*),各页互不相干;单页异常已在
-    # _process_cell 内吞掉并兜底,as_completed 收集不让一页炸掉线程池。
-    with cf.ThreadPoolExecutor(max_workers=S5_CONCURRENCY) as ex:
+    return bgm_path or ""
+
+
+def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
+        music: MusicClient | None = None, manifest_path: Path = DEFAULT_MANIFEST) -> Project:
+    effective_voice = project.params.voice or voice
+    speed = project.params.speed
+    audio_dir = workdir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    # PERF:BGM 生成(AI 最长 180s)与逐页 TTS 并行——BGM 结果仅 s6 finalize 用到,与逐页 TTS 无
+    # 数据依赖,不必串行等它跑完才配音。BGM 独占一个 worker(+1),TTS 仍有 S5_CONCURRENCY 路并发。
+    # 逐页 TTS 线程安全:每页写各自 page_NN.mp3 与各自 cell,_synthesize_full 的临时文件均由 out
+    # 派生(page_NN.*),各页互不相干;单页异常已在 _process_cell 内吞掉并兜底,不炸线程池。
+    # BGM 在独立线程里三级降级、异常自兜底(_resolve_bgm 内整段捕获),故 bgm_future.result() 不抛。
+    with cf.ThreadPoolExecutor(max_workers=S5_CONCURRENCY + 1) as ex:
+        bgm_future = ex.submit(_resolve_bgm, project, music, workdir, manifest_path)
         futures = [ex.submit(_process_cell, cell, tts, effective_voice, speed,
                              audio_dir, workdir) for cell in project.storyboard]
         for f in cf.as_completed(futures):
             f.result()
+        project.bgm = bgm_future.result()
     # 诚实状态:仅当每页都有真人解说(有音频且非静音兜底)才算 done;否则 partial
     narrated = bool(project.storyboard) and all(
         c.audio and not c.silent for c in project.storyboard)

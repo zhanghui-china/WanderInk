@@ -25,6 +25,7 @@ def test_page_clip_cmd_duration_and_kenburns():
     assert "fade=t=" not in cmd       # 不再淡入淡出到黑(改由 xfade 溶接)
     assert "s=1920x1080" in cmd and "yuv420p" in cmd
     assert "-ar 44100" in cmd and "-ac 2" in cmd  # 与静音分支采样率/声道对齐
+    assert "-preset ultrafast" in cmd  # 中间 clip 后续会被 xfade 整片重编码,此处快编码省时省一代画质损失
 
 
 def test_page_clip_cmd_zoom_direction_alternates():
@@ -71,6 +72,7 @@ def test_still_clip_cmd_no_zoompan_no_overlay():
     assert "-t 2.5" in cmd            # 静帧无缓冲
     assert "s=1920x1080" not in cmd and "scale=1920:1080" in cmd
     assert "yuv420p" in cmd and "-ar 44100" in cmd and "-ac 2" in cmd
+    assert "-preset ultrafast" in cmd  # 中间 clip 快编码(同 page_clip_cmd)
 
 
 def test_clip_duration_s_buffer_only_with_audio():
@@ -98,6 +100,7 @@ def test_xfade_concat_cmd_chain():
     assert "offset=3.500" in cmd                     # 2.5+2.0 − 2·0.5
     assert "[vout]" in cmd and "[aout]" in cmd
     assert "-i t.mp4" in cmd and "-i c.mp4" in cmd   # 片头/片尾纳入同一溶解链
+    assert "ultrafast" not in cmd                    # 最终成片编码保持默认 preset,画质不降
 
 
 def test_xfade_concat_cmd_opens_and_closes_on_black():

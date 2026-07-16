@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 from PIL import Image, ImageStat
 
-from shanhai.providers._http import local_backend_guard, request_with_retry
+from shanhai.providers._http import request_with_retry
 
 # 低于此值判定为近似纯色/异常(NaN 解码静默转黑图,见 2026-07-13 DGX 实测:ComfyUI 的
 # VAE 解码输出 NaN 时,np.clip(NaN,0,255).astype(uint8) 静默转 0,execution_success 照常上报)。
@@ -33,20 +33,22 @@ def _reject_if_blank(data: bytes) -> bytes:
 class ImageClient:
     """OpenAI 兼容图像客户端,双上游形态。未来本地 ComfyUI 实现同签名 generate() 即可整体替换。"""
 
-    def __init__(self, base_url: str, api_key: str, model: str, mode: str = "images_api"):
+    def __init__(self, base_url: str, api_key: str, model: str, mode: str = "images_api",
+                 timeout: float = 600):
         self.model = model
         self.mode = mode
         self._base_url = base_url
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {api_key}"},
-            timeout=300,
+            timeout=timeout,  # 本地 ComfyUI 扩散生成 + 队列可达数分钟(SHANHAI_IMAGE_TIMEOUT)
         )
 
     def generate(self, prompt: str, size: str = "1536x1024",
                  references: list[Path] | None = None, retries: int = 2) -> bytes:
-        # 网络调用统一走 request_with_retry(TransportError/瞬时状态码重试);
-        # 非瞬时 HTTPStatusError(如内容审核 400)在各 _via_* 里 raise_for_status() 后直接抛出。
+        # 网络调用统一走 request_with_retry(idempotent=False:生成非幂等,连接层断连可能已被
+        # 上游受理并计费,不盲重试,仅瞬时状态码 429/5xx 重试);非瞬时 HTTPStatusError(如内容
+        # 审核 400)在各 _via_* 里 raise_for_status() 后直接抛出。
         # _reject_if_blank 做最后一道内容合理性检查:异常抛 ImageGenError,交给调用方
         # (S3/S4 现有的 except Exception 重试/降级逻辑)接管,不在此重试。
         return _reject_if_blank(self._dispatch(prompt, size, references, retries))
@@ -60,19 +62,19 @@ class ImageClient:
         return self._via_generations(prompt, size, retries)
 
     def _via_generations(self, prompt: str, size: str, retries: int) -> bytes:
-        with local_backend_guard(self._base_url):
-            r = request_with_retry(lambda: self._client.post(
-                "/images/generations",
-                json={"model": self.model, "prompt": prompt, "size": size, "n": 1}), retries)
+        r = request_with_retry(lambda: self._client.post(
+            "/images/generations",
+            json={"model": self.model, "prompt": prompt, "size": size, "n": 1}),
+            retries, idempotent=False, base_url=self._base_url)
         r.raise_for_status()
         return _decode(_first(r.json()))
 
     def _via_edits(self, prompt: str, references: list[Path], size: str, retries: int) -> bytes:
         files = [("image[]", (p.name, p.read_bytes(), "image/png")) for p in references]
-        with local_backend_guard(self._base_url):
-            r = request_with_retry(lambda: self._client.post(
-                "/images/edits",
-                data={"model": self.model, "prompt": prompt, "size": size}, files=files), retries)
+        r = request_with_retry(lambda: self._client.post(
+            "/images/edits",
+            data={"model": self.model, "prompt": prompt, "size": size}, files=files),
+            retries, idempotent=False, base_url=self._base_url)
         r.raise_for_status()
         return _decode(_first(r.json()))
 
@@ -82,11 +84,10 @@ class ImageClient:
             b64 = base64.b64encode(p.read_bytes()).decode()
             content.append({"type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{b64}"}})
-        with local_backend_guard(self._base_url):
-            r = request_with_retry(lambda: self._client.post("/chat/completions", json={
-                "model": self.model,
-                "messages": [{"role": "user", "content": content}],
-            }), retries)
+        r = request_with_retry(lambda: self._client.post("/chat/completions", json={
+            "model": self.model,
+            "messages": [{"role": "user", "content": content}],
+        }), retries, idempotent=False, base_url=self._base_url)
         r.raise_for_status()
         msg = r.json()["choices"][0]["message"]
         for img in msg.get("images") or []:

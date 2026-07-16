@@ -12,6 +12,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,7 +38,10 @@ MASK = "••••••"
 SENTINEL = "__UNCHANGED__"
 
 # 覆盖存储路径:放 cwd 根(不在 projects/ 下,不被 /files 挂载暴露)。
-CONFIG_PATH = Path(os.getenv("SHANHAI_CONFIG_PATH", "config.json"))
+# 延迟求值(每次读 os.getenv)而非 import 期冻结:api.py 的 load_env() 晚于本模块 import,
+# 只写在 .env 里的 SHANHAI_CONFIG_PATH 若在 import 期读取会被静默忽略(进程环境变量则生效,行为不一致)。
+def _config_path() -> Path:
+    return Path(os.getenv("SHANHAI_CONFIG_PATH", "config.json"))
 
 # 原子写发布锁:与 store.save 同构(唯一临时名 + os.replace)。
 _WRITE_LOCK = threading.Lock()
@@ -80,26 +84,27 @@ class AppConfig(BaseModel):
 
 
 def load_overrides() -> AppConfig:
-    """读 CONFIG_PATH 反序列化为 AppConfig。文件缺失 → 空 AppConfig();
+    """读 config.json 反序列化为 AppConfig。文件缺失 → 空 AppConfig();
     其它读取失败(非 UTF-8/权限/是目录等)或不合 schema → 打印告警并返回空(不 brick 生成)。"""
+    path = _config_path()
     try:
-        text = CONFIG_PATH.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return AppConfig()
     except (OSError, UnicodeDecodeError) as e:  # 权限/是目录/非 UTF-8 等:回退空,避免 brick 全部入口
-        print(f"[runtime_config] 读取 {CONFIG_PATH} 失败,回退空配置:{e}")
+        print(f"[runtime_config] 读取 {path} 失败,回退空配置:{e}")
         return AppConfig()
     try:
         return AppConfig.model_validate_json(text)
     except Exception as e:  # 损坏或不合 schema:告警后回退空配置,生成流程不受影响
-        print(f"[runtime_config] 解析 {CONFIG_PATH} 失败,回退空配置:{e}")
+        print(f"[runtime_config] 解析 {path} 失败,回退空配置:{e}")
         return AppConfig()
 
 
 def save_overrides(cfg: AppConfig) -> None:
     """原子写发布 config.json(整份替换)。by_alias=True 确保 global_ 序列化回别名 global。"""
     with _WRITE_LOCK:
-        store.atomic_write_text(CONFIG_PATH, cfg.model_dump_json(indent=2, by_alias=True))
+        store.atomic_write_text(_config_path(), cfg.model_dump_json(indent=2, by_alias=True))
 
 
 def update_overrides(mutate: Callable[[AppConfig], AppConfig]) -> AppConfig:
@@ -107,7 +112,7 @@ def update_overrides(mutate: Callable[[AppConfig], AppConfig]) -> AppConfig:
     否则两个并发 PUT 会互相覆盖,甚至把刚设置的密钥静默回退成旧值。返回落盘后的新配置。"""
     with _WRITE_LOCK:
         new = mutate(load_overrides())
-        store.atomic_write_text(CONFIG_PATH, new.model_dump_json(indent=2, by_alias=True))
+        store.atomic_write_text(_config_path(), new.model_dump_json(indent=2, by_alias=True))
         return new
 
 
@@ -125,6 +130,20 @@ def resolve_settings(
     if stage is not None and stage in cfg.stages:
         updates.update(cfg.stages[stage].model_dump(exclude_none=True))
     return base.model_copy(update=updates) if updates else base
+
+
+REMOTE_IMAGE_CONCURRENCY = 2  # tu-zi 实测扛不住 s4_pages.CONCURRENCY(3)路并发:2026-07-16 复现
+# 3 路并发时 images/edits 端点约 2/3 请求以 500/RemoteProtocolError(服务端断连)失败,
+# 单独串行重放同样的请求则全部成功——是上游并发容量问题,不是 prompt/参考图/审核问题。
+
+
+def image_concurrency(s: Settings) -> int:
+    """本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发请求只会排队/互相拖慢
+    甚至冲突,强制串行;远程云端 API(如 tu-zi)可以并发出图,但要封顶(见上)。
+    api._pipeline/_run_step 与 cli.step/run 共用,保证 s3/s4 并发数一致跟随后端(本地串行、远程并发)。"""
+    base_url, _ = s.image_endpoint
+    host = urlparse(base_url).hostname or ""
+    return 1 if host in ("127.0.0.1", "localhost") else REMOTE_IMAGE_CONCURRENCY
 
 
 # ---------- PUT 合并 + GET 脱敏视图(HTTP 层与 CLI 共用同一契约) ----------

@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     image_model: str = "gemini-2.5-flash-image"
     image_api_mode: str = "chat_api"
     image_size: str = "1536x1024"
+    image_timeout: float = 600  # 秒;本地 ComfyUI 扩散生成 + 队列可达数分钟,与 llm_timeout 解耦
     tts_model: str = "gpt-4o-mini-tts"
     tts_voice: str = "alloy"
     tts_voices: str = ""  # 逗号分隔的可选音色列表;空则回退 [tts_voice]

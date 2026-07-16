@@ -64,7 +64,9 @@ export function ProjectDetailView({
 
   const generating = project.pipeline === 'queued' || project.pipeline === 'running'
   const editable = !meta?.readonly && !generating
-  const pendingCount = project.pages.filter((p) => p.status === 'draft' || !p.audio).length
+  const pendingCount = project.pages.filter(
+    (p) => p.status === 'draft' || p.status === 'failed' || !p.audio,
+  ).length
 
   function handleDrop(targetIndex: number) {
     const from0 = dragIndex
@@ -293,6 +295,8 @@ function ExportButtons({ project }: { project: Detail }) {
       setZip(res.zip)
       const url = kind === 'pdf' ? res.pdf : res.zip
       if (url) window.open(url, '_blank')
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
@@ -531,7 +535,17 @@ function PageCard({
     try {
       if (kind === 'redraw') {
         await api.redrawCell(projectId, pg.index)
-        await api.runStep(projectId, 's4')   // 标记后立即触发 S4 重跑,只会重画本页等待中的页
+        try {
+          await api.runStep(projectId, 's4') // 标记后立即触发 S4 重跑,只会重画本页等待中的页
+        } catch (e) {
+          // redrawCell 已清掉本页 image/output,若触发生成失败要刷新让用户看到已被清的状态,
+          // 否则 UI 停在陈旧画面、以为还在;并给出可自行重试的明确指引。
+          onChanged()
+          alert(
+            `已标记重绘,但触发生成失败:${e instanceof Error ? e.message : String(e)},可点漫画页步骤重试`,
+          )
+          return
+        }
       }
       if (kind === 'revoice') await api.revoiceCell(projectId, pg.index)
       if (kind === 'delete') await api.deleteCell(projectId, pg.index)
@@ -606,6 +620,8 @@ function PageCard({
             <span className="text-[10px] tracking-[2px] text-muted">画面</span>
             <textarea
               className={`${fieldCls} mt-0.5 h-16 resize-none`}
+              draggable={false}
+              onMouseDown={(e) => e.stopPropagation()}
               value={visualDesc}
               onChange={(e) => setVisualDesc(e.target.value)}
             />
@@ -615,6 +631,8 @@ function PageCard({
             <textarea
               className={`${fieldCls} mt-0.5 h-16 resize-none`}
               maxLength={80}
+              draggable={false}
+              onMouseDown={(e) => e.stopPropagation()}
               value={caption}
               onChange={(e) => setCaption(e.target.value)}
             />

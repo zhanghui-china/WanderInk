@@ -3,7 +3,7 @@ from pathlib import Path
 
 import httpx
 
-from shanhai.providers._http import local_backend_guard, request_with_retry
+from shanhai.providers._http import request_with_retry
 
 
 class MusicError(Exception):
@@ -31,8 +31,10 @@ class MusicClient:
         body = {"model": self.model, "prompt": prompt, "lyrics": lyrics, "duration_s": duration_s}
         if bpm is not None:
             body["bpm"] = bpm
-        with local_backend_guard(self._base_url):
-            r = request_with_retry(lambda: self._client.post("/audio/music", json=body), retries)
+        # idempotent=False:音乐合成非幂等,连接层断连可能已被上游受理并计费,不盲重试;
+        # 仅明确的瞬时状态码(429/5xx)重试。
+        r = request_with_retry(lambda: self._client.post("/audio/music", json=body), retries,
+                               idempotent=False, base_url=self._base_url)
         r.raise_for_status()
         ctype = r.headers.get("content-type", "").lower()
         body_bytes = r.content

@@ -26,14 +26,14 @@ def test_generate_retries_transient_then_succeeds(_sleep, tmp_path):
 
 @respx.mock
 @patch("shanhai.providers._http.time.sleep")
-def test_generate_retries_on_transport_error(_sleep, tmp_path):
+def test_generate_does_not_retry_transport_error(_sleep, tmp_path):
+    # 音乐合成非幂等(idempotent=False):连接层断连可能已被上游受理并计费,不盲重试
     route = respx.post(f"{BASE}/audio/music")
     route.side_effect = [
         httpx.RemoteProtocolError("Server disconnected without sending a response"), _mp3()]
-    out = tmp_path / "e.mp3"
-    MusicClient(BASE, "sk", "m").generate("Style: Cinematic", 60.0, out)
-    assert route.call_count == 2
-    assert out.read_bytes().startswith(b"\xff\xf3")
+    with pytest.raises(httpx.RemoteProtocolError):
+        MusicClient(BASE, "sk", "m").generate("Style: Cinematic", 60.0, tmp_path / "e.mp3")
+    assert route.call_count == 1                        # 连接层错误不重试
 
 
 @respx.mock

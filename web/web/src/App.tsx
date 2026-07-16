@@ -85,8 +85,12 @@ export default function App() {
         } else {
           refreshList()
         }
-      } catch {
-        /* ignore */
+      } catch (e) {
+        // 永久错误(项目被删 404 / 会话过期 401)重试无意义,停止轮询避免无谓空转。
+        // 仅对疑似瞬时错误(网络抖动/5xx)用比正常 2000 更长的退避重排,既能自愈又不高频空转;
+        // 组件卸载时下方 clearTimeout 照常清理。
+        const status = (e as { status?: number }).status
+        if (alive && status !== 404 && status !== 401) timer = window.setTimeout(tick, 4000)
       }
     }
     tick()
@@ -191,7 +195,12 @@ export default function App() {
 
           <main>
             {detail ? (
-              <ProjectDetailView project={detail} meta={meta} onChanged={onDetailChanged} />
+              <ProjectDetailView
+                key={detail.project_id}
+                project={detail}
+                meta={meta}
+                onChanged={onDetailChanged}
+              />
             ) : (
               <EmptyState />
             )}

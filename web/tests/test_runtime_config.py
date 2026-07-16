@@ -24,12 +24,32 @@ def _clean_shanhai_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _tmp_config_path(tmp_path, monkeypatch):
-    """把 CONFIG_PATH 指到 tmp_path,隔离测试对真实 config.json 的读写。"""
-    monkeypatch.setattr(runtime_config, "CONFIG_PATH", tmp_path / "config.json")
+    """把配置路径指到 tmp_path,隔离测试对真实 config.json 的读写。
+    _config_path() 延迟读 SHANHAI_CONFIG_PATH,故设环境变量即可(需在上面 _clean_shanhai_env 之后生效)。"""
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "config.json"))
 
 
 def _base() -> Settings:
     return Settings(_env_file=None, base_url="https://p.example.com/v1", api_key="sk-1")
+
+
+# ---------- _config_path 延迟求值 ----------
+
+def test_config_path_lazy_reflects_env(tmp_path, monkeypatch):
+    """_config_path() 每次读 SHANHAI_CONFIG_PATH:import 后才设的环境变量(如 load_env 注入 .env)也生效,
+    不再被 import 期冻结的常量静默忽略。"""
+    target = tmp_path / "custom" / "cfg.json"
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(target))
+    assert runtime_config._config_path() == target
+
+
+def test_load_overrides_uses_lazy_config_path(tmp_path, monkeypatch):
+    """load_overrides 读的是运行时 _config_path() 指向的文件,写在该路径的覆盖能被读回。"""
+    target = tmp_path / "cfg.json"
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(target))
+    save_overrides(AppConfig(global_=ConfigOverride(llm_model="m-lazy")))
+    assert target.exists()                               # 写到了 env 指定路径
+    assert load_overrides().global_.llm_model == "m-lazy"
 
 
 # ---------- resolve_settings 合并优先级 ----------

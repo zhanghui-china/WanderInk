@@ -180,6 +180,38 @@ def test_s5_uses_project_params_voice_and_speed(mock_probe, mock_sh, tmp_path: P
     assert tts.synthesize.call_args.kwargs["speed"] == 1.5
 
 
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_ai_bgm_parallel_with_tts(mock_probe, mock_sh, tmp_path: Path):
+    # PERF:AI BGM 生成与逐页 TTS 并行。music.generate 成功 → project.bgm 取 AI 产物 bgm.mp3
+    #(而非曲库),同时 TTS 照常完成、status done——并行不改 BGM 赋值与降级语义。
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
+    music = MagicMock()  # generate 成功(默认不抛),写出 bgm.mp3 由 _generate_ai_bgm 内部路径决定
+    p = s5_audio.run(_project(), _writing_tts(), "alloy", tmp_path,
+                     music=music, manifest_path=manifest)
+    music.generate.assert_called_once()
+    assert p.bgm.endswith("bgm.mp3")                 # AI 路径产物,而非曲库 calm.mp3
+    assert p.storyboard[0].audio.endswith("page_01.mp3")   # TTS 仍完成
+    assert p.status["s5"] == "done"
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_ai_bgm_failure_degrades_to_manifest(mock_probe, mock_sh, tmp_path: Path):
+    # 并行下 AI BGM 在独立线程里失败仍走三级降级(AI→静态曲库),不炸 TTS 或整个 S5。
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"], "license": "CC0"}]}), encoding="utf-8")
+    music = MagicMock(); music.generate.side_effect = RuntimeError("shim 未部署")
+    p = s5_audio.run(_project(), _writing_tts(), "alloy", tmp_path,
+                     music=music, manifest_path=manifest)
+    assert p.bgm.endswith("calm.mp3")                # 降级到静态曲库
+    assert p.storyboard[0].audio.endswith("page_01.mp3")   # 配音不受 BGM 失败影响
+    assert p.status["s5"] == "done"
+
+
 def test_s5_split_clauses_unit():
     assert s5_audio._split_clauses("黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。") == \
         ["黄昏的西湖边，", "雷峰塔映入水中，", "像藏着一封千年未拆的旧信。"]  # 分隔符留在句末
@@ -210,6 +242,44 @@ def test_s5_falls_back_to_chunked_when_truncated(mock_probe, mock_sh, tmp_path: 
     cmds = [" ".join(c.args[0]) for c in mock_sh.call_args_list]
     assert any("-f concat" in c for c in cmds)       # 退化路径拼接
     assert p.storyboard[0].duration_ms == 8000
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=3000)
+def test_s5_high_speed_not_judged_truncated(mock_probe, mock_sh, tmp_path: Path):
+    # 批7a:floor 随 speed 缩放。28字、probe=3000ms。speed=2.0 → floor=round(28×150/2)=2100,
+    # 3000≥2100 → 采用整段单发,不退化逐句(高语速正常语音不再被误判截断)。
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    cap = "黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。"
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
+                                   caption=cap, emotion="宁静")]
+    p.params.speed = 2.0
+    tts = _writing_tts()
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    tts.synthesize.assert_called_once()                     # 仅整段一次,未退化逐句
+    cmds = [" ".join(c.args[0]) for c in mock_sh.call_args_list]
+    assert not any("-f concat" in c for c in cmds)          # 无拼接
+    assert p.storyboard[0].duration_ms == 3000              # 正常语音,不误判
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=3000)
+def test_s5_speed_one_still_chunks_same_audio(mock_probe, mock_sh, tmp_path: Path):
+    # 对照(回归保护):同样 28字/probe=3000,speed=1.0 时 floor=4200,3000<4200 → 仍退化逐句。
+    # 证明区别纯由 speed 缩放带来,speed=1.0 行为与改动前完全一致。
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    cap = "黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。"
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
+                                   caption=cap, emotion="宁静")]  # speed 默认 1.0
+    tts = _writing_tts()
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    assert tts.synthesize.call_count == 4                   # 整段1 + 逐句3(退化路径)
+    cmds = [" ".join(c.args[0]) for c in mock_sh.call_args_list]
+    assert any("-f concat" in c for c in cmds)              # 退化拼接
 
 
 @patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)

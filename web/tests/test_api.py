@@ -36,6 +36,16 @@ def test_meta_includes_voices():
     assert isinstance(j["voices"], list) and j["voices"]   # 至少回退 [tts_voice]
 
 
+def test_meta_voices_follow_s5_override(_isolated_config_path):
+    """meta 音色列表须跟随 S5 实际生效的 TTS 后端(resolve_settings("s5")),而非仅全局层——
+    否则用户把 s5 覆盖成别的 TTS 端点后,表单仍列全局音色、选中即令 S5 请求全失败降级静音。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        stages={"s5": runtime_config.ConfigOverride(tts_voices="cosy-a, cosy-b")},
+    ))
+    j = client.get("/api/meta").json()
+    assert j["voices"] == ["cosy-a", "cosy-b"]              # s5 覆盖的音色,而非全局默认
+
+
 def test_create_blocked_in_readonly(monkeypatch):
     monkeypatch.setattr(api, "_READONLY", True)
     r = client.post("/api/projects", json={"scenic_spot": "雷峰塔"})
@@ -125,6 +135,35 @@ def test_serialize_builds_urls():
     assert d["content_summary"] == {"total": 1, "imaged": 1, "narrated": 1, "silent": 0}
 
 
+def test_serialize_appends_version_to_existing_files(tmp_path, monkeypatch):
+    # /files 静态挂载不发 Cache-Control:存在的产物文件须带 ?v=<mtime> 做 cache-busting,
+    # 否则重绘/重排后同名文件被浏览器缓存挡住不回源。
+    proj = tmp_path / "abcd"
+    (proj / "pages").mkdir(parents=True)
+    (proj / "audio").mkdir()
+    (proj / "characters").mkdir()
+    (proj / "pages" / "page_01.png").write_bytes(b"img")
+    (proj / "audio" / "page_01.mp3").write_bytes(b"aud")
+    (proj / "characters" / "白娘子.png").write_bytes(b"chr")
+    monkeypatch.setattr(store, "project_dir", lambda pid, *a, **k: tmp_path / pid)
+    p = Project(project_id="abcd", scenic_spot="雷峰塔")
+    p.script = Script(title="白蛇传", theme="t", acts=[], characters=[
+        CharacterCard(name="白娘子", role="蛇仙", personality="p", appearance="a",
+                      turnaround_image="characters/白娘子.png")])
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="断桥",
+                                   characters=["白娘子"], caption="初遇", emotion="宁静",
+                                   image="pages/page_01.png", audio="audio/page_01.mp3",
+                                   duration_ms=3200, status="confirmed")]
+    d = api._serialize(p)
+    assert d["pages"][0]["image"].startswith("/files/abcd/pages/page_01.png?v=")
+    assert d["pages"][0]["audio"].startswith("/files/abcd/audio/page_01.mp3?v=")
+    assert d["characters"][0]["image"].startswith("/files/abcd/characters/白娘子.png?v=")
+    # 不存在的文件不加版本参数,退回原始 URL
+    p.storyboard[0].image = "pages/missing.png"
+    d2 = api._serialize(p)
+    assert d2["pages"][0]["image"] == "/files/abcd/pages/missing.png"
+
+
 def _imaged_page(**kw) -> StoryboardCell:
     base = dict(index=1, scene_ref="1-1", visual_desc="v", characters=[], caption="c",
                 emotion="宁静", image="pages/page_01.png", audio="audio/page_01.mp3",
@@ -169,6 +208,21 @@ def test_pipeline_status_degraded_when_pages_missing():
     st = api._deliverable_status(p)
     assert st.startswith("done(降级")
     assert "1/2 页出图" in st
+
+
+def test_pipeline_status_degraded_when_imaged_but_audio_cleared():
+    # 关键回归:s5 双重失败(cell.audio="" 且 silent=False)的确认页——有图但无音轨,会被 s6 跳过。
+    # content_summary['imaged'] 只看 image、把它算作已出图,若只判 imaged<total 会逃过降级;
+    # 单算 composed(confirmed 且图/音齐备)才能诚实标注,绝不返回纯 done。
+    p = Project(project_id="dlv6", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page(index=1),
+                    _imaged_page(index=2, audio="", silent=False)]   # 有图但音轨被清
+    p.output["mp4"] = "projects/dlv6/output/final.mp4"
+    st = api._deliverable_status(p)
+    assert st != "done"
+    assert st.startswith("done(降级")
+    assert "1/2 页入选成片" in st
+    assert "1/2 页出图" not in st                          # imaged=2==total,出图降级不该误报
 
 
 def test_pipeline_status_partial_when_not_composed():
@@ -347,6 +401,51 @@ def test_list_projects_sorted_by_created_at_desc(tmp_path, monkeypatch):
     )
 
 
+def test_list_projects_fields_and_skips_corrupt(tmp_path, monkeypatch):
+    # 轻量化后输出结构/字段与改前等价:project_id/scenic_spot/owner/pipeline/mp4(经 _mp4_url 转换);
+    # 损坏/非法 JSON 的 project.json 仍被跳过,不让整表失败。
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = "someone"
+    p.status["pipeline"] = "done"
+    p.output["mp4"] = f"projects/{p.project_id}/output/final.mp4"
+    store.save(p, root=tmp_path)
+    bad_dir = tmp_path / "brokenpid"          # 非法 JSON 的损坏项目
+    bad_dir.mkdir()
+    (bad_dir / "project.json").write_text("{not valid json", encoding="utf-8")
+
+    r = client.get("/api/projects")
+    assert r.status_code == 200
+    items = r.json()
+    assert len(items) == 1                    # 损坏项目被跳过
+    item = items[0]
+    assert set(item) == {"project_id", "scenic_spot", "owner", "pipeline", "mp4"}
+    assert item["project_id"] == p.project_id
+    assert item["scenic_spot"] == "雷峰塔"
+    assert item["owner"] == "someone"
+    assert item["pipeline"] == "done"
+    # 文件不存在故无 ?v= 后缀,与 _mp4_url 对不存在文件的处理一致
+    assert item["mp4"] == f"/files/{p.project_id}/output/final.mp4"
+
+
+def test_list_projects_skips_non_object_json(tmp_path, monkeypatch):
+    # 合法 JSON 但非对象(null/[]/42/字符串):json.loads 成功但 d.get(...) 会抛 AttributeError,
+    # 一个坏文件不得拖垮整表——须被 isinstance 守卫跳过,端点仍 200 且只返回正常项目。
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    good = store.create_project("雷峰塔", root=tmp_path)
+    store.save(good, root=tmp_path)
+    for name, content in (("nullpid", "null"), ("listpid", "[]"),
+                          ("numpid", "42"), ("strpid", '"hi"')):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "project.json").write_text(content, encoding="utf-8")
+
+    r = client.get("/api/projects")
+    assert r.status_code == 200
+    items = r.json()
+    assert [it["project_id"] for it in items] == [good.project_id]  # 非对象项目全被跳过
+
+
 def test_export_rejects_when_job_pending():
     # A3:项目有未完成生成作业时导出返回 409,避免读半成品/回滚管线进度。
     saved = dict(api._JOBS)
@@ -515,6 +614,52 @@ def test_check_cancelled_consumes_flag_once():
         api._CANCELLED.discard("consumeid")
 
 
+def test_cancel_queued_persists_fresh_reload_not_stale_snapshot():
+    # 批次4 finding-2 回归:直接取消(排队未开始)写 cancelled 必须在 _project_lock 内重新
+    # store.load 最新快照,而非复用锁外拿到的陈旧 p —— 否则会覆盖窗口期内并发编辑端点的改动(丢更新)。
+    stale = Project(project_id="cxfreshid", scenic_spot="旧", owner="testuser")  # 锁外(owner 校验)拿到的陈旧快照
+    fresh = Project(project_id="cxfreshid", scenic_spot="新", owner="testuser")  # 锁内重载应拿到的最新快照
+    loads = [stale, fresh]                                    # 第 1 次 owner 校验、第 2 次锁内重载
+    saved = {}
+    saved_jobs = dict(api._JOBS)
+    api._JOBS.clear()
+    api._JOBS["cxfreshid"] = Future()                         # PENDING → f.cancel() 返回 True 直接取消
+    try:
+        with patch("shanhai.api.store.load", side_effect=lambda *a, **k: loads.pop(0)), \
+             patch("shanhai.api.store.save", side_effect=lambda p, **k: saved.update(obj=p)):
+            r = client.post("/api/projects/cxfreshid/cancel")
+        assert r.status_code == 200
+        assert r.json() == {"cancelled": True}
+        assert saved["obj"] is fresh                          # 落盘的是锁内重载的 fresh,不是陈旧的 stale
+        assert fresh.status["pipeline"] == "cancelled"
+        assert stale.status.get("pipeline") != "cancelled"    # 陈旧快照没被当作落盘对象
+    finally:
+        api._JOBS.clear()
+        api._JOBS.update(saved_jobs)
+
+
+def test_get_queue_excludes_finished_jobs():
+    # 批次4 finding-4 回归:已完成(f.done())的作业不再滞留队列,get_queue 读路径顺带清理。
+    p = Project(project_id="qdoneid", scenic_spot="雷峰塔", owner="testuser")
+    saved_jobs = dict(api._JOBS)
+    api._JOBS.clear()
+    done = Future()
+    done.set_result(None)                                     # 已完成
+    api._JOBS["qdoneid"] = done
+    api._JOBS["qrunid"] = Future()                            # 仍在队列(未完成)
+    try:
+        with patch("shanhai.api.store.load",
+                   side_effect=lambda pid, *a, **k: Project(project_id=pid, scenic_spot="雷峰塔")):
+            r = client.get("/api/queue")
+        ids = [row["project_id"] for row in r.json()]
+        assert "qdoneid" not in ids                           # 已完成的不返回
+        assert "qrunid" in ids                                # 未完成的仍在
+        assert "qdoneid" not in api._JOBS                     # 且已被顺带清理出 _JOBS
+    finally:
+        api._JOBS.clear()
+        api._JOBS.update(saved_jobs)
+
+
 def test_pipeline_clears_stale_cancel_flag_on_completion():
     # 回归:取消发生在最后一环节执行期间时,_CANCELLED 不会被再次检查消费,曾经会一直残留,
     # 误伤该项目下次重跑。_pipeline 收尾(finally)必须清掉本次作业的标记。
@@ -545,13 +690,38 @@ def test_pipeline_clears_stale_cancel_flag_on_completion():
     assert "leakid" not in api._CANCELLED     # 收尾必须清掉,不留给下次重跑
 
 
+def test_pipeline_prelude_exception_falls_to_error_not_stuck_queued():
+    # 批次4 finding-1 回归:序言(store.load/resolve_stage_clients/_clients)抛异常时,项目必须
+    # 落 error(走 _save_error),而非被 Future 静默吞掉、永久卡 queued(前端无限轮询)。
+    p = Project(project_id="preludeid", scenic_spot="雷峰塔")
+    p.status["pipeline"] = "queued"
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.resolve_stage_clients", side_effect=RuntimeError("畸形 base_url")):
+        api._pipeline("preludeid", runtime_config.AppConfig(), "自备故事")
+    assert p.status["pipeline"].startswith("error")   # 不再卡 queued
+    assert "preludeid" not in api._CANCELLED           # finally 仍执行,不残留标记
+
+
+def test_run_step_prelude_exception_falls_to_error_not_stuck_queued():
+    # 批次4 finding-1 回归(单步版):_run_step 序言 resolve_settings 抛错也须落 error 而非卡 queued。
+    p = Project(project_id="steppreludeid", scenic_spot="雷峰塔")
+    p.status["pipeline"] = "queued"
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.resolve_settings", side_effect=RuntimeError("畸形 base_url")):
+        api._run_step("steppreludeid", "s6", runtime_config.AppConfig())
+    assert p.status["pipeline"].startswith("error")
+    assert "steppreludeid" not in api._CANCELLED
+
+
 def test_pipeline_records_step_and_total_timing():
     # 每步开始/结束都要落 started_at/elapsed_s,整体落 pipeline_started_at/pipeline_finished_at,
     # 供前端时间线展示每步及总耗时。
     from unittest.mock import MagicMock
     p = Project(project_id="timingid", scenic_spot="雷峰塔")
     mock_settings = MagicMock()
-    mock_settings.image_endpoint = ("https://example.com/v1", "key")  # _image_concurrency 需要能解包
+    mock_settings.image_endpoint = ("https://example.com/v1", "key")  # image_concurrency 需要能解包
     settings = {k: mock_settings for k in ("s0", "s1", "s2", "s3", "s4", "s5")}
     clients = {
         "s0": (MagicMock(),), "s1": (MagicMock(),), "s2": (MagicMock(),),
@@ -639,6 +809,58 @@ def test_run_step_records_step_timing(_settings):
     assert p.status["pipeline_finished_at"]
 
 
+def test_run_step_cascades_clears_downstream_status():
+    # 联动诚实化:重跑上游 s4 使其下游 s5/s6 产物过期,须级联清掉下游 status 键(含计时键),
+    # 避免残留"假完成"标记;本环节 s4 自身与其上游不被级联清除,output 因上游重跑清空。
+    from unittest.mock import MagicMock
+
+    from shanhai.config import Settings
+    p = Project(project_id="cascadeId", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    p.status = {"s4": "done", "s5": "done", "s5_elapsed_s": "2.0", "s6": "done"}
+    fake = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s4_pages") as s4:
+        s4.run.return_value = p
+        api._run_step("cascadeId", "s4", runtime_config.AppConfig())
+    assert "s5" not in p.status and "s6" not in p.status   # 下游被级联清除
+    assert "s5_elapsed_s" not in p.status                  # 下游计时键一并清除
+    assert p.status["s4"] == "done"                        # 本环节自身不被级联清除
+    assert p.output == {}                                  # 上游重跑,旧成片失效
+
+
+def test_run_step_error_preserves_disk_storyboard(tmp_path, monkeypatch):
+    # 步骤半途抛错(如 s2 先赋值 storyboard 再校验失败)时,异常兜底不能把半损坏的内存态落盘,
+    # 否则会把磁盘上完整的 storyboard 清空、20 页产物引用永久丢失。须重载磁盘干净快照写 error。
+    from unittest.mock import MagicMock
+
+    from shanhai.config import Settings
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = Project(project_id="s2fail", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page(index=i) for i in range(1, 21)]   # 20 页完整
+    p.status = {"pipeline": "partial"}
+    store.save(p)                                          # 落盘干净快照
+
+    def _corrupt_then_raise(proj, _llm):
+        proj.storyboard = []                              # 模拟 s2 校验抛错前已清空内存 storyboard
+        raise ValueError("分镜为空,S2 未产出任何页")
+
+    fake = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api._clients", return_value=(MagicMock(),) * 4), \
+         patch("shanhai.api.s2_storyboard") as s2:
+        s2.run.side_effect = _corrupt_then_raise
+        api._run_step("s2fail", "s2", runtime_config.AppConfig())
+
+    reloaded = store.load("s2fail")
+    assert len(reloaded.storyboard) == 20                 # 磁盘 storyboard 未被半损坏内存态清空
+    assert reloaded.status["pipeline"].startswith("error:")
+
+
 def test_image_concurrency_serial_for_local_backend():
     # 本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发只会互相拖慢/冲突。
     # image_endpoint 优先取 image_base_url,必须显式传它(而不是只传通用 base_url)——
@@ -647,17 +869,18 @@ def test_image_concurrency_serial_for_local_backend():
     from shanhai.config import Settings
     s = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
                  image_base_url="http://127.0.0.1:8091/v1")
-    assert api._image_concurrency(s) == 1
+    assert api.image_concurrency(s) == 1
     s2 = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
                   image_base_url="http://localhost:8091/v1")
-    assert api._image_concurrency(s2) == 1
+    assert api.image_concurrency(s2) == 1
 
 
 def test_image_concurrency_parallel_for_remote_backend():
     from shanhai.config import Settings
+    from shanhai.runtime_config import REMOTE_IMAGE_CONCURRENCY
     s = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
                  image_base_url="https://api.tu-zi.com/v1")
-    assert api._image_concurrency(s) == api.REMOTE_IMAGE_CONCURRENCY
+    assert api.image_concurrency(s) == REMOTE_IMAGE_CONCURRENCY
 
 
 def test_get_queue_reflects_jobs_owner_and_spot():
@@ -896,8 +1119,9 @@ def test_patch_cell_rejects_oversized_fields():
 
 @pytest.fixture
 def _isolated_config_path(tmp_path, monkeypatch):
-    """把 runtime_config.CONFIG_PATH 指到 tmp_path,隔离测试对真实 config.json 的读写。"""
-    monkeypatch.setattr(runtime_config, "CONFIG_PATH", tmp_path / "config.json")
+    """把配置路径指到 tmp_path,隔离测试对真实 config.json 的读写。
+    _config_path() 延迟读 SHANHAI_CONFIG_PATH,故设环境变量即可。"""
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "config.json"))
 
 
 def test_get_config_never_leaks_plaintext_api_key(_isolated_config_path):
@@ -1026,8 +1250,8 @@ def test_put_mask_echo_keeps_existing_secret(_isolated_config_path):
 
 
 def test_files_blocks_runtime_config_basename(monkeypatch):
-    """/files 静态托管按运行时 CONFIG_PATH.name 动态拦截配置文件:文件存在但仍 404 且不泄露内容。"""
-    monkeypatch.setattr(runtime_config, "CONFIG_PATH", store.DEFAULT_ROOT / "secrets.json")
+    """/files 静态托管按运行时 _config_path().name 动态拦截配置文件:文件存在但仍 404 且不泄露内容。"""
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(store.DEFAULT_ROOT / "secrets.json"))
     served = store.DEFAULT_ROOT / "secrets.json"
     served.parent.mkdir(exist_ok=True)
     served.write_text("PLAINTEXT_KEY", encoding="utf-8")

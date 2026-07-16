@@ -8,7 +8,7 @@ Ollama 的 `format=<JSON Schema>` 约束解码,产出天然合法 JSON。
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from shanhai.providers._http import local_backend_guard, request_with_retry
+from shanhai.providers._http import request_with_retry
 from shanhai.providers.llm import LLMError, _extract_json
 
 
@@ -34,8 +34,8 @@ class OllamaLLMClient:
         }
         if fmt is not None:
             body["format"] = fmt
-        with local_backend_guard(self._base_url):
-            r = request_with_retry(lambda: self._client.post("/api/chat", json=body), retries)
+        r = request_with_retry(lambda: self._client.post("/api/chat", json=body), retries,
+                               base_url=self._base_url)
         r.raise_for_status()
         return r.json()["message"]["content"]
 

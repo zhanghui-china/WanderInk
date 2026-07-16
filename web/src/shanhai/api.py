@@ -6,6 +6,7 @@
 - 产物(图/音/mp4)由 StaticFiles 挂 projects/ 目录托管为 /files/<id>/...。
 - 若 web/dist 存在(前端已 build),挂到 / 作为单页应用;dev 时前端另起 Vite 连本服务。
 """
+import json
 import os
 import secrets
 import sys
@@ -14,7 +15,6 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,8 +29,9 @@ from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _clients,
                          resolve_stage_clients)
 from shanhai.config import Settings, load_env
 from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig, apply_put,
-                                     config_view, load_overrides,
-                                     resolve_settings, update_overrides)
+                                     config_view, image_concurrency,
+                                     load_overrides, resolve_settings,
+                                     update_overrides)
 from shanhai.schema import Project
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s6_compose)
@@ -121,37 +122,45 @@ def _locked_save(p: Project) -> None:
         store.save(p)
 
 
+def _save_error(project_id: str, e: Exception) -> None:
+    """步骤异常兜底:不落半损坏的内存态(步骤函数可能在校验抛错前已改坏一半 project,
+    如 s2 先赋值 storyboard 再校验),改从磁盘重载重跑前的干净快照,只把 error 状态写回
+    再落盘,保住磁盘上完整的 storyboard/产物引用。重载失败(项目文件本身损坏)则静默放弃,
+    避免在异常处理里再抛异常导致状态完全不写。"""
+    try:
+        p = store.load(project_id)
+    except Exception:  # noqa: BLE001 — 兜底不可再抛;重载失败就放弃写状态,保留磁盘原样
+        return
+    p.status["pipeline"] = f"error: {e}"
+    p.status["pipeline_finished_at"] = _now_iso()
+    _locked_save(p)
+
+
 # ---------- 后台管线 ----------
-
-REMOTE_IMAGE_CONCURRENCY = 2  # tu-zi 实测扛不住 s4_pages.CONCURRENCY(3)路并发:2026-07-16 复现
-# 3 路并发时 images/edits 端点约 2/3 请求以 500/RemoteProtocolError(服务端断连)失败,
-# 单独串行重放同样的请求则全部成功——是上游并发容量问题,不是 prompt/参考图/审核问题。
-
-
-def _image_concurrency(s: Settings) -> int:
-    """本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发请求只会排队/互相拖慢
-    甚至冲突,强制串行;远程云端 API(如 tu-zi)可以并发出图,但要封顶(见上)。"""
-    base_url, _ = s.image_endpoint
-    host = urlparse(base_url).hostname or ""
-    return 1 if host in ("127.0.0.1", "localhost") else REMOTE_IMAGE_CONCURRENCY
-
 
 def _deliverable_status(p: Project) -> str:
     """诚实闸门:据当前状态判定「整体是否已交付一部成片」。
     无 output['mp4'](未合成/编辑后已失效)→ partial:尚未合成,而非 done(单步重跑 s2–s5 会走到这)。
     有 mp4 但无成图页面 → error(理论不该发生,防御);
-    有 mp4 但出图页数 < 总页数(S4 有页生成失败被 s6 跳过)和/或含静音兜底页 → 降级 done;
-    两者都没有(全程出图 + 全程真人解说)才是纯 done。"""
+    有 mp4 但入选成片页数 < 总页数(S4 缺图 / S5 缺音的页被 s6 跳过)和/或含静音兜底页 → 降级 done;
+    全部都没有(全程出图 + 全程有音 + 全程真人解说)才是纯 done。"""
     if not p.output.get("mp4"):
         return "partial: 尚未合成成片"
     if not p.is_deliverable():
         return "error: 生成未产出可交付内容(无成图页面)"
     s = p.content_summary()
+    total = s["total"]
+    # composed 与 s6_compose._content_cells 的入选契约一致(confirmed 且图/音齐备)。
+    # content_summary['imaged'] 只看 confirmed+image、不含 audio,故"有图但音轨被清(audio='')"的页
+    # 会逃过 imaged<total 判定却入不了成片——单算 composed 才能诚实反映真正入选的页数。
+    composed = sum(1 for c in p.storyboard if c.status == "confirmed" and c.image and c.audio)
     notes = []
-    if s["imaged"] < s["total"]:
-        notes.append(f"{s['imaged']}/{s['total']} 页出图(其余生成失败已跳过)")
+    if s["imaged"] < total:
+        notes.append(f"{s['imaged']}/{total} 页出图(其余生成失败已跳过)")
+    if composed < total:
+        notes.append(f"{composed}/{total} 页入选成片(其余缺图/缺音被跳过)")
     if s["silent"] > 0:
-        notes.append(f"{s['narrated']}/{s['total']} 页真人解说,{s['silent']} 页静音兜底")
+        notes.append(f"{s['narrated']}/{total} 页真人解说,{s['silent']} 页静音兜底")
     if notes:
         return f"done(降级:{'; '.join(notes)})"
     return "done"
@@ -173,17 +182,21 @@ def _mark_step_elapsed(p: Project, name: str, t0: float) -> None:
 
 def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
     """在后台线程里从 S0 一路跑到 MP4,每步落盘,pipeline 状态写入 project.status。"""
-    p = store.load(project_id)
-    workdir = store.project_dir(project_id)
-    # 逐环节解析生效 Settings 与 client(同一 cfg 快照,作业内配置一致;不同环节可用不同端点/模型)。
-    settings, clients = resolve_stage_clients(cfg)
-    if not p.params.use_hermes_agent:
-        # 开关关闭:S0/S1 跳过按环节覆盖(如 hermes-agent),回退到全局默认 LLM——
-        # 保留"原始通过 LLM 生成剧本/分镜"的路径,不依赖任何特定 skill。
-        for st in ("s0", "s1"):
-            settings[st] = resolve_settings(None, cfg)
-            clients[st] = _clients(settings[st])
     try:
+        # 序言也纳入 try:store.load/resolve_stage_clients/_clients 抛异常(project.json 损坏、
+        # 畸形 base_url 触发 httpx.InvalidURL、ImportError 等)会被 Future 静默吞掉(无人调 .result()),
+        # 项目永久卡 queued、前端无限轮询;走 _save_error 落 error 状态才诚实。
+        p = store.load(project_id)
+        workdir = store.project_dir(project_id)
+        # 逐环节解析生效 Settings 与 client(同一 cfg 快照,作业内配置一致;不同环节可用不同端点/模型)。
+        settings, clients = resolve_stage_clients(cfg)
+        if not p.params.use_hermes_agent:
+            # 开关关闭的真实语义:S0/S1 跳过按环节覆盖(用 resolve_settings(None) 只叠全局层),
+            # 回退到全局默认 LLM——保留"原始通过 LLM 生成剧本/分镜"的路径,不依赖任何特定 skill。
+            # 注意与字段名 use_hermes_agent 的字面义解耦:仅当 hermes 恰配成 s0/s1 stage 覆盖时两者等价。
+            for st in ("s0", "s1"):
+                settings[st] = resolve_settings(None, cfg)
+                clients[st] = _clients(settings[st])
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
         _locked_save(p)
@@ -205,11 +218,12 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
             ("s1", lambda: s1_script.run(p, clients["s1"][0])),
             ("s2", lambda: s2_storyboard.run(p, clients["s2"][0])),
             ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
-                                             settings["s3"].image_size)),
+                                             settings["s3"].image_size,
+                                             concurrency=image_concurrency(settings["s3"]))),
             ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
                                         strict=settings["s4"].strict_consistency,
                                         on_progress=lambda: _locked_save(p),
-                                        concurrency=_image_concurrency(settings["s4"]))),
+                                        concurrency=image_concurrency(settings["s4"]))),
             ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir,
                                         clients["s5"][3])),
             ("s6", lambda: s6_compose.run(p, workdir)),
@@ -228,9 +242,7 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         p.status["pipeline_finished_at"] = _now_iso()
         _locked_save(p)
     except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
-        p.status["pipeline"] = f"error: {e}"
-        p.status["pipeline_finished_at"] = _now_iso()
-        _locked_save(p)
+        _save_error(project_id, e)   # 重载干净快照写 error,不落半损坏的内存 p
     finally:
         # 收尾清掉本次作业残留的取消标记:若取消发生在最后一环节执行期间(其后再无
         # _check_cancelled 会读到它),标记会一直留在 _CANCELLED 里,误伤该项目下次重跑。
@@ -240,29 +252,46 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
 
 # ---------- 序列化:把落盘相对路径转成可访问 URL ----------
 
-def _file_url(project_id: str, rel: str) -> str | None:
-    """cell.image/audio、character.turnaround_image 都是相对项目目录的路径。"""
-    return f"/files/{project_id}/{rel}" if rel else None
+def _version_suffix(path: Path) -> str:
+    """给存在的文件追加 ?v=<mtime> 做 cache-busting;文件不存在则不加(返回空串)。
+    /files 静态挂载不发 Cache-Control,重绘/重排后同名文件会被浏览器缓存挡住不回源。"""
+    try:
+        return f"?v={int(path.stat().st_mtime)}"
+    except OSError:
+        return ""
+
+
+def _file_url(project_id: str, rel: str, workdir: Path | None = None) -> str | None:
+    """cell.image/audio、character.turnaround_image 都是相对项目目录的路径。
+    传入 workdir 时对存在的文件追加 ?v=<mtime>,避免重绘/重排后旧图被缓存挡住。"""
+    if not rel:
+        return None
+    url = f"/files/{project_id}/{rel}"
+    if workdir is not None:
+        url += _version_suffix(workdir / rel)
+    return url
 
 
 def _mp4_url(mp4: str) -> str | None:
-    """output['mp4'] 形如 'projects/<id>/output/final.mp4',去掉 projects/ 前缀挂到 /files。"""
+    """output['mp4'] 形如 'projects/<id>/output/final.mp4',去掉 projects/ 前缀挂到 /files。
+    成片重合成后同名,顺带追加 ?v=<mtime> 做 cache-busting。"""
     if not mp4:
         return None
-    return "/files/" + mp4.split("projects/", 1)[-1]
+    return "/files/" + mp4.split("projects/", 1)[-1] + _version_suffix(Path(mp4))
 
 
 def _serialize(p: Project) -> dict:
+    workdir = store.project_dir(p.project_id)
     pages = [{
         "index": c.index, "caption": c.caption, "emotion": c.emotion,
         "status": c.status, "duration_ms": c.duration_ms, "silent": c.silent,
         "scene_ref": c.scene_ref, "visual_desc": c.visual_desc, "characters": c.characters,
-        "image": _file_url(p.project_id, c.image),
-        "audio": _file_url(p.project_id, c.audio),
+        "image": _file_url(p.project_id, c.image, workdir),
+        "audio": _file_url(p.project_id, c.audio, workdir),
     } for c in p.storyboard]
     characters = [{
         "name": c.name, "role": c.role,
-        "image": _file_url(p.project_id, c.turnaround_image),
+        "image": _file_url(p.project_id, c.turnaround_image, workdir),
     } for c in (p.script.characters if p.script else [])]
     return {
         "project_id": p.project_id,
@@ -344,6 +373,8 @@ class NewProject(BaseModel):
     voice: str = ""
     speed: float = 1.0
     multi_panel: bool = False
+    # 命名沿用历史,真实机制见 _pipeline:关闭时 S0/S1 跳过按环节覆盖、回退全局默认 LLM,
+    # 而非字面的"是否用编剧大师"——仅当 hermes 恰配成 s0/s1 stage 覆盖时两者才等价。
     use_hermes_agent: bool = True
 
 
@@ -390,6 +421,7 @@ def create_project(body: NewProject, user: str = Depends(current_user)) -> dict:
         p.style_preset = body.style
         p.status["pipeline"] = "queued"
         store.save(p)
+        _CANCELLED.discard(p.project_id)  # 兜底:清掉上一轮作业可能残留的陈旧取消标记,不污染本次
         _JOBS[p.project_id] = _EXECUTOR.submit(_pipeline, p.project_id, cfg, body.story)
     return {"project_id": p.project_id}
 
@@ -404,47 +436,62 @@ def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
     if p.owner != user:
         raise HTTPException(403, "只能取消自己的生成任务")
-    f = _job_of(project_id)
-    if f is None or f.done():  # 无作业,或作业已跑完(尚未被清理出 _JOBS):都无可取消对象,
-        # 若在此处误标记 _CANCELLED,该标记再无人消费(已完成的 _pipeline/_run_step 早已跑过
-        # 自己的清理),会一直残留污染该项目下次重跑,故一律拒绝而非静默标记。
-        raise HTTPException(400, "该项目当前没有可取消的生成任务")
-    if f.cancel():  # 还在排队没被线程池取走,直接取消成功
-        with _project_lock(project_id):
+    # 「取 f→判定 done/cancel→标记 _CANCELLED」整段收进 _JOBS_LOCK,与 _pipeline/_run_step finally
+    # 里同锁的 _CANCELLED.discard 互斥:否则作业恰在此窗口跑完时,discard 先执行、随后此处 add 让
+    # 标记永久残留,污染该项目下次重跑。锁内只决定「直接取消 or 协作式标记」,不做磁盘 IO(锁序
+    # 恒为 project→jobs 且 _JOBS_LOCK 内不落盘);直接取消的写盘出锁后在 _project_lock 内做。
+    with _JOBS_LOCK:
+        f = _JOBS.get(project_id)
+        if f is None or f.done():  # 无作业,或作业已跑完(尚未被清理出 _JOBS):都无可取消对象,
+            # 若在此处误标记 _CANCELLED,该标记再无人消费(已完成的 _pipeline/_run_step 早已跑过
+            # 自己的清理),会一直残留污染该项目下次重跑,故一律拒绝而非静默标记。
+            raise HTTPException(400, "该项目当前没有可取消的生成任务")
+        cancelled = f.cancel()  # 还在排队没被线程池取走→True 直接取消;已在执行→False 走协作式标记
+        if not cancelled:  # 已在执行:标记协作式取消,由 _pipeline/_run_step 在环节切换点消费
+            _CANCELLED.add(project_id)
+    if cancelled:  # 排队未开始已直接取消:锁外在 _project_lock 内重载最新快照写 cancelled,
+        with _project_lock(project_id):  # 不用锁外读的陈旧 p,避免覆盖窗口期内并发编辑端点的改动
+            p = store.load(project_id)
             p.status["pipeline"] = "cancelled"
+            p.status["pipeline_finished_at"] = _now_iso()
             store.save(p)
         return {"cancelled": True}
-    with _JOBS_LOCK:  # 已在执行:标记协作式取消,由 _pipeline/_run_step 在环节切换点消费
-        _CANCELLED.add(project_id)
     return {"cancelling": True}
 
 
 @app.get("/api/projects")
 def list_projects(user: str = Depends(current_user)) -> list[dict]:
+    # PERF:列表端点每次登录/管线跑完都触发,项目多时逐个 store.load(Pydantic 全量校验)会成最慢端点。
+    # 这里只输出 5 个字段,故直接读 project.json、json.loads 取所需,跳过全量反序列化;损坏/半写的 json 仍跳过。
     loaded = []
     for meta in store.DEFAULT_ROOT.glob("*/project.json"):
         try:
-            p = store.load(meta.parent.name, root=store.DEFAULT_ROOT)
+            d = json.loads(meta.read_text(encoding="utf-8"))
             mtime = meta.stat().st_mtime
         except Exception:  # noqa: BLE001 — 跳过损坏/半写的项目,不让列表整体失败
             continue
-        loaded.append((p, mtime))
+        if not isinstance(d, dict):  # 合法 JSON 但非对象(null/[]/42/字符串):下面 d.get 会抛,同样跳过
+            continue
+        item = {
+            "project_id": d.get("project_id") or meta.parent.name,
+            "scenic_spot": d.get("scenic_spot", ""), "owner": d.get("owner", ""),
+            "pipeline": (d.get("status") or {}).get("pipeline", "pending"),
+            "mp4": _mp4_url((d.get("output") or {}).get("mp4", "")),
+        }
+        loaded.append((item, d.get("created_at", ""), mtime))
     # 有 created_at 的项目整体排在前面(新到旧);历史项目(无 created_at)用 mtime 兜底,同样新到旧排在后面
-    loaded.sort(key=lambda pm: (1 if pm[0].created_at else 0, pm[0].created_at or pm[1]), reverse=True)
-    out = []
-    for p, _mtime in loaded:
-        out.append({
-            "project_id": p.project_id, "scenic_spot": p.scenic_spot, "owner": p.owner,
-            "pipeline": p.status.get("pipeline", "pending"),
-            "mp4": _mp4_url(p.output.get("mp4", "")),
-        })
-    return out
+    loaded.sort(key=lambda t: (1 if t[1] else 0, t[1] or t[2]), reverse=True)
+    return [item for item, _created, _mtime in loaded]
 
 
 @app.get("/api/queue")
 def get_queue(user: str = Depends(current_user)) -> list[dict]:
-    """全局生成队列:基于内存态 _JOBS(无需持久化)实时组装,各自 store.load 拿最新状态。"""
+    """全局生成队列:基于内存态 _JOBS(无需持久化)实时组装,各自 store.load 拿最新状态。
+    顺带清掉已完成(f.done())的作业:否则完成条目会滞留队列(前端带动画、每 3s 轮询读盘),
+    直到下次 create/run_step 提交才惰性清理。清理用 items() 快照后再 del,避免并发迭代改写。"""
     with _JOBS_LOCK:
+        for done in [k for k, f in list(_JOBS.items()) if f.done()]:
+            del _JOBS[done]
         ids = list(_JOBS.keys())
     out = []
     for project_id in ids:
@@ -612,11 +659,13 @@ _STEP_NAMES = ("s2", "s3", "s4", "s5", "s6")
 def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
     """后台线程跑单步,复用 _pipeline 的状态写入 + 异常兜底语义(不复用其整段管线循环,
     因为这里只跑调用方指定的一步)。"""
-    p = store.load(project_id)
-    workdir = store.project_dir(project_id)
-    s = resolve_settings(name, cfg)  # 该环节生效 Settings + client
-    llm, image, tts, music = _clients(s)
     try:
+        # 序言纳入 try(同 _pipeline):store.load/resolve_settings/_clients 抛异常(project.json
+        # 损坏、畸形 base_url、ImportError 等)否则会被 Future 静默吞掉,项目永久卡 queued。
+        p = store.load(project_id)
+        workdir = store.project_dir(project_id)
+        s = resolve_settings(name, cfg)  # 该环节生效 Settings + client
+        llm, image, tts, music = _clients(s)
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
         _locked_save(p)
@@ -629,11 +678,12 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
         if name == "s2":
             p = s2_storyboard.run(p, llm)
         elif name == "s3":
-            p = s3_characters.run(p, llm, image, workdir, s.image_size)
+            p = s3_characters.run(p, llm, image, workdir, s.image_size,
+                                  concurrency=image_concurrency(s))
         elif name == "s4":
             p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
                               on_progress=lambda: _locked_save(p),
-                              concurrency=_image_concurrency(s))
+                              concurrency=image_concurrency(s))
         elif name == "s5":
             p = s5_audio.run(p, tts, s.tts_voice, workdir, music)
         elif name == "s6":
@@ -641,14 +691,18 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
         _mark_step_elapsed(p, name, step_t0)
         if name != "s6":
             p.output.clear()   # 重跑上游步骤使已合成的 mp4/zip/pdf 失效,清掉避免残留"假成片"
+            # 级联:重跑上游环节使其下游环节产物过期,清掉下游 status 键避免残留"假完成"标记。
+            # name 恒在 _STEP_NAMES 内(run_step 已校验),故按 _STEP_NAMES 顺序取其后即为下游。
+            idx = _STEP_NAMES.index(name)
+            for step in _STEP_NAMES[idx + 1:]:
+                for key in (step, f"{step}_started_at", f"{step}_elapsed_s"):
+                    p.status.pop(key, None)
         _locked_save(p)
         p.status["pipeline"] = _deliverable_status(p)
         p.status["pipeline_finished_at"] = _now_iso()
         _locked_save(p)
     except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
-        p.status["pipeline"] = f"error: {e}"
-        p.status["pipeline_finished_at"] = _now_iso()
-        _locked_save(p)
+        _save_error(project_id, e)   # 重载干净快照写 error,不落半损坏的内存 p
     finally:
         # 同 _pipeline:收尾清掉本次作业残留的取消标记,避免误伤该项目下次重跑。
         with _JOBS_LOCK:
@@ -680,6 +734,7 @@ def run_step(project_id: str, name: str, user: str = Depends(current_user)) -> J
             p = store.load(project_id)
             p.status["pipeline"] = "queued"
             store.save(p)
+            _CANCELLED.discard(project_id)  # 兜底:清掉上一轮作业可能残留的陈旧取消标记,不污染本次
             _JOBS[project_id] = _EXECUTOR.submit(_run_step, project_id, name, cfg)
     return JSONResponse({"queued": True}, status_code=202)
 
@@ -690,7 +745,9 @@ def meta(user: str = Depends(current_user)) -> dict:
     return {
         "minutes": list(_MINUTES), "audiences": list(_AUDIENCES),
         "tones": list(_TONES), "styles": list(STYLE_PRESETS),
-        "voices": resolve_settings().tts_voices_list,
+        # 音色列表须跟随 S5 实际生效的 TTS 后端:S5 用 resolve_settings("s5") 的端点合成,
+        # 若这里只解析全局层,用户把 s5 覆盖成本地 CosyVoice 后表单仍列全局音色、选中即令 S5 请求全失败降级静音。
+        "voices": resolve_settings("s5").tts_voices_list,
         "readonly": _READONLY,
     }
 
@@ -721,12 +778,12 @@ class _ArtifactStatic(StaticFiles):
     """产物静态托管,但禁下载任何 project.json(含用户 story、legend sources、角色 feature_prompt
     等内部态)与运行时配置文件(含明文密钥)。在 StaticFiles 已把 URL 规范化(折叠 ../ 双斜杠尾斜杠)成
     path 之后按 basename 拦截,故尾随斜杠/双斜杠/x/../project.json/大小写/HEAD 等在具体路由层可绕过的
-    变体在此统一 404。受保护的配置文件名取运行时实际值 runtime_config.CONFIG_PATH(随 SHANHAI_CONFIG_PATH
-    变化、可被测试 monkeypatch),而非 import 期冻结的常量。config.json 默认在 cwd 根、本不在挂载目录内,
-    此拦截是运维误把它指进 projects/ 时的防御纵深(真正的护栏仍是把 CONFIG_PATH 留在被托管目录之外)。"""
+    变体在此统一 404。受保护的配置文件名取运行时实际值 runtime_config._config_path()(每次读 SHANHAI_CONFIG_PATH、
+    随之变化、可被测试改环境变量),而非 import 期冻结的常量。config.json 默认在 cwd 根、本不在挂载目录内,
+    此拦截是运维误把它指进 projects/ 时的防御纵深(真正的护栏仍是把 config.json 留在被托管目录之外)。"""
 
     async def get_response(self, path: str, scope):  # noqa: ANN001 — 与父类签名一致
-        protected = {"project.json", runtime_config.CONFIG_PATH.name.lower()}
+        protected = {"project.json", runtime_config._config_path().name.lower()}
         if Path(path).name.lower() in protected:
             raise HTTPException(404)
         return await super().get_response(path, scope)
