@@ -101,7 +101,9 @@ def run(project: Project, workdir: Path) -> Project:
     bgm = Path(project.bgm) if project.bgm else None
     ffmpeg.sh(ffmpeg.finalize_cmd(merged, bgm, final))
     project.output["mp4"] = str(final)
-    project.status["s6"] = "done"
+    # 诚实状态:content_cells 只挑 confirmed 且图/音齐备的页,少于总页数说明有页因上游
+    # (通常是 S4)失败被跳过——不能无条件标 done,否则这一格看着"完成"会盖过 S4 的 partial。
+    project.status["s6"] = "done" if len(content_cells) == len(project.storyboard) else "partial"
     try:
         export.build_exports(project, workdir)
     except Exception as e:  # noqa: BLE001 导出失败不拖垮 s6,mp4 已产出即算成功
