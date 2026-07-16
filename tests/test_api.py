@@ -390,6 +390,33 @@ def test_create_project_multi_panel_defaults_false(mock_create, _save, _settings
     assert p.params.multi_panel is False
 
 
+@patch("shanhai.api._pipeline")
+@patch("shanhai.api.Settings")
+@patch("shanhai.api.store.save")
+@patch("shanhai.api.store.create_project")
+def test_create_project_use_hermes_agent_defaults_true(mock_create, _save, _settings, _pipe):
+    p = Project(project_id="haid01", scenic_spot="花果山")
+    mock_create.return_value = p
+    r = client.post("/api/projects", json={"scenic_spot": "花果山", "minutes": 1})
+    assert r.status_code == 200
+    api._JOBS["haid01"].result(timeout=2)
+    assert p.params.use_hermes_agent is True
+
+
+@patch("shanhai.api._pipeline")
+@patch("shanhai.api.Settings")
+@patch("shanhai.api.store.save")
+@patch("shanhai.api.store.create_project")
+def test_create_project_passes_use_hermes_agent_false(mock_create, _save, _settings, _pipe):
+    p = Project(project_id="haid02", scenic_spot="花果山")
+    mock_create.return_value = p
+    r = client.post("/api/projects",
+                    json={"scenic_spot": "花果山", "minutes": 1, "use_hermes_agent": False})
+    assert r.status_code == 200
+    api._JOBS["haid02"].result(timeout=2)
+    assert p.params.use_hermes_agent is False
+
+
 def test_cancel_rejects_non_owner():
     p = Project(project_id="cancelid1", scenic_spot="雷峰塔", owner="someoneelse")
     saved = dict(api._JOBS)
@@ -538,6 +565,47 @@ def test_pipeline_records_step_and_total_timing():
     for step in ("s0", "s1", "s2", "s3", "s4", "s5", "s6"):
         assert p.status[f"{step}_started_at"]
         float(p.status[f"{step}_elapsed_s"])   # 能转成 float,解析失败即测试失败
+
+
+def test_pipeline_use_hermes_agent_false_falls_back_to_global_llm():
+    # use_hermes_agent=False:S0/S1 应跳过按环节覆盖(如 hermes-agent),改用仅叠加全局默认
+    # 的 Settings/client——即调 resolve_settings(None, cfg),而非 resolve_stage_clients 给的
+    # 那份按环节覆盖后的 s0/s1 client。S2 及之后的环节不受影响,仍用 resolve_stage_clients 原样结果。
+    from unittest.mock import MagicMock
+    p = Project(project_id="hafid", scenic_spot="雷峰塔")
+    p.params.use_hermes_agent = False
+    mock_settings = MagicMock()
+    mock_settings.image_endpoint = ("https://example.com/v1", "key")
+    stage_settings = {k: mock_settings for k in ("s0", "s1", "s2", "s3", "s4", "s5")}
+    hermes_llm = MagicMock(name="hermes_llm")
+    stage_clients = {
+        "s0": (hermes_llm,), "s1": (hermes_llm,), "s2": (MagicMock(),),
+        "s3": (MagicMock(), MagicMock()), "s4": (MagicMock(), MagicMock()),
+        "s5": (MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+    }
+    fallback_llm = MagicMock(name="fallback_llm")
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.resolve_stage_clients", return_value=(stage_settings, stage_clients)), \
+         patch("shanhai.api.resolve_settings", return_value=mock_settings) as resolve_settings, \
+         patch("shanhai.api._clients", return_value=(fallback_llm, MagicMock(), MagicMock(),
+                                                      MagicMock())), \
+         patch("shanhai.api.s0_legend") as s0, \
+         patch("shanhai.api.s1_script") as s1, \
+         patch("shanhai.api.s2_storyboard") as s2, \
+         patch("shanhai.api.s3_characters") as s3, \
+         patch("shanhai.api.s4_pages") as s4, \
+         patch("shanhai.api.s5_audio") as s5, \
+         patch("shanhai.api.s6_compose") as s6:
+        s0.from_text.return_value = p
+        for m in (s1, s2, s3, s4, s5, s6):
+            m.run.return_value = p
+        api._pipeline("hafid", runtime_config.AppConfig(), "自备故事")
+
+    resolve_settings.assert_any_call(None, runtime_config.AppConfig())
+    assert s0.from_text.call_args[0][1] is fallback_llm    # S0 用了回退 client,不是 hermes
+    assert s1.run.call_args[0][1] is fallback_llm          # S1 同上
+    assert s2.run.call_args[0][1] is stage_clients["s2"][0]  # S2 不受影响,原样用 resolve_stage_clients 的结果
 
 
 @patch("shanhai.api.Settings")

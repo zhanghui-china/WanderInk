@@ -171,6 +171,12 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
     workdir = store.project_dir(project_id)
     # 逐环节解析生效 Settings 与 client(同一 cfg 快照,作业内配置一致;不同环节可用不同端点/模型)。
     settings, clients = resolve_stage_clients(cfg)
+    if not p.params.use_hermes_agent:
+        # 开关关闭:S0/S1 跳过按环节覆盖(如 hermes-agent),回退到全局默认 LLM——
+        # 保留"原始通过 LLM 生成剧本/分镜"的路径,不依赖任何特定 skill。
+        for st in ("s0", "s1"):
+            settings[st] = resolve_settings(None, cfg)
+            clients[st] = _clients(settings[st])
     try:
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
@@ -332,6 +338,7 @@ class NewProject(BaseModel):
     voice: str = ""
     speed: float = 1.0
     multi_panel: bool = False
+    use_hermes_agent: bool = True
 
 
 def _validate(body: NewProject) -> None:
@@ -373,6 +380,7 @@ def create_project(body: NewProject, user: str = Depends(current_user)) -> dict:
         p.params.voice = body.voice
         p.params.speed = body.speed
         p.params.multi_panel = body.multi_panel
+        p.params.use_hermes_agent = body.use_hermes_agent
         p.style_preset = body.style
         p.status["pipeline"] = "queued"
         store.save(p)
