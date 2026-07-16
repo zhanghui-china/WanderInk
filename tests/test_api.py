@@ -559,6 +559,52 @@ def test_check_cancelled_consumes_flag_once():
         api._CANCELLED.discard("consumeid")
 
 
+def test_cancel_queued_persists_fresh_reload_not_stale_snapshot():
+    # 批次4 finding-2 回归:直接取消(排队未开始)写 cancelled 必须在 _project_lock 内重新
+    # store.load 最新快照,而非复用锁外拿到的陈旧 p —— 否则会覆盖窗口期内并发编辑端点的改动(丢更新)。
+    stale = Project(project_id="cxfreshid", scenic_spot="旧", owner="testuser")  # 锁外(owner 校验)拿到的陈旧快照
+    fresh = Project(project_id="cxfreshid", scenic_spot="新", owner="testuser")  # 锁内重载应拿到的最新快照
+    loads = [stale, fresh]                                    # 第 1 次 owner 校验、第 2 次锁内重载
+    saved = {}
+    saved_jobs = dict(api._JOBS)
+    api._JOBS.clear()
+    api._JOBS["cxfreshid"] = Future()                         # PENDING → f.cancel() 返回 True 直接取消
+    try:
+        with patch("shanhai.api.store.load", side_effect=lambda *a, **k: loads.pop(0)), \
+             patch("shanhai.api.store.save", side_effect=lambda p, **k: saved.update(obj=p)):
+            r = client.post("/api/projects/cxfreshid/cancel")
+        assert r.status_code == 200
+        assert r.json() == {"cancelled": True}
+        assert saved["obj"] is fresh                          # 落盘的是锁内重载的 fresh,不是陈旧的 stale
+        assert fresh.status["pipeline"] == "cancelled"
+        assert stale.status.get("pipeline") != "cancelled"    # 陈旧快照没被当作落盘对象
+    finally:
+        api._JOBS.clear()
+        api._JOBS.update(saved_jobs)
+
+
+def test_get_queue_excludes_finished_jobs():
+    # 批次4 finding-4 回归:已完成(f.done())的作业不再滞留队列,get_queue 读路径顺带清理。
+    p = Project(project_id="qdoneid", scenic_spot="雷峰塔", owner="testuser")
+    saved_jobs = dict(api._JOBS)
+    api._JOBS.clear()
+    done = Future()
+    done.set_result(None)                                     # 已完成
+    api._JOBS["qdoneid"] = done
+    api._JOBS["qrunid"] = Future()                            # 仍在队列(未完成)
+    try:
+        with patch("shanhai.api.store.load",
+                   side_effect=lambda pid, *a, **k: Project(project_id=pid, scenic_spot="雷峰塔")):
+            r = client.get("/api/queue")
+        ids = [row["project_id"] for row in r.json()]
+        assert "qdoneid" not in ids                           # 已完成的不返回
+        assert "qrunid" in ids                                # 未完成的仍在
+        assert "qdoneid" not in api._JOBS                     # 且已被顺带清理出 _JOBS
+    finally:
+        api._JOBS.clear()
+        api._JOBS.update(saved_jobs)
+
+
 def test_pipeline_clears_stale_cancel_flag_on_completion():
     # 回归:取消发生在最后一环节执行期间时,_CANCELLED 不会被再次检查消费,曾经会一直残留,
     # 误伤该项目下次重跑。_pipeline 收尾(finally)必须清掉本次作业的标记。
@@ -587,6 +633,31 @@ def test_pipeline_clears_stale_cancel_flag_on_completion():
         api._CANCELLED.add("leakid")          # 模拟取消请求在最后环节执行期间到达
         api._pipeline("leakid", runtime_config.AppConfig(), "自备故事")
     assert "leakid" not in api._CANCELLED     # 收尾必须清掉,不留给下次重跑
+
+
+def test_pipeline_prelude_exception_falls_to_error_not_stuck_queued():
+    # 批次4 finding-1 回归:序言(store.load/resolve_stage_clients/_clients)抛异常时,项目必须
+    # 落 error(走 _save_error),而非被 Future 静默吞掉、永久卡 queued(前端无限轮询)。
+    p = Project(project_id="preludeid", scenic_spot="雷峰塔")
+    p.status["pipeline"] = "queued"
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.resolve_stage_clients", side_effect=RuntimeError("畸形 base_url")):
+        api._pipeline("preludeid", runtime_config.AppConfig(), "自备故事")
+    assert p.status["pipeline"].startswith("error")   # 不再卡 queued
+    assert "preludeid" not in api._CANCELLED           # finally 仍执行,不残留标记
+
+
+def test_run_step_prelude_exception_falls_to_error_not_stuck_queued():
+    # 批次4 finding-1 回归(单步版):_run_step 序言 resolve_settings 抛错也须落 error 而非卡 queued。
+    p = Project(project_id="steppreludeid", scenic_spot="雷峰塔")
+    p.status["pipeline"] = "queued"
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.resolve_settings", side_effect=RuntimeError("畸形 base_url")):
+        api._run_step("steppreludeid", "s6", runtime_config.AppConfig())
+    assert p.status["pipeline"].startswith("error")
+    assert "steppreludeid" not in api._CANCELLED
 
 
 def test_pipeline_records_step_and_total_timing():

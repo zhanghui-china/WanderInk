@@ -194,17 +194,20 @@ def _mark_step_elapsed(p: Project, name: str, t0: float) -> None:
 
 def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
     """在后台线程里从 S0 一路跑到 MP4,每步落盘,pipeline 状态写入 project.status。"""
-    p = store.load(project_id)
-    workdir = store.project_dir(project_id)
-    # 逐环节解析生效 Settings 与 client(同一 cfg 快照,作业内配置一致;不同环节可用不同端点/模型)。
-    settings, clients = resolve_stage_clients(cfg)
-    if not p.params.use_hermes_agent:
-        # 开关关闭:S0/S1 跳过按环节覆盖(如 hermes-agent),回退到全局默认 LLM——
-        # 保留"原始通过 LLM 生成剧本/分镜"的路径,不依赖任何特定 skill。
-        for st in ("s0", "s1"):
-            settings[st] = resolve_settings(None, cfg)
-            clients[st] = _clients(settings[st])
     try:
+        # 序言也纳入 try:store.load/resolve_stage_clients/_clients 抛异常(project.json 损坏、
+        # 畸形 base_url 触发 httpx.InvalidURL、ImportError 等)会被 Future 静默吞掉(无人调 .result()),
+        # 项目永久卡 queued、前端无限轮询;走 _save_error 落 error 状态才诚实。
+        p = store.load(project_id)
+        workdir = store.project_dir(project_id)
+        # 逐环节解析生效 Settings 与 client(同一 cfg 快照,作业内配置一致;不同环节可用不同端点/模型)。
+        settings, clients = resolve_stage_clients(cfg)
+        if not p.params.use_hermes_agent:
+            # 开关关闭:S0/S1 跳过按环节覆盖(如 hermes-agent),回退到全局默认 LLM——
+            # 保留"原始通过 LLM 生成剧本/分镜"的路径,不依赖任何特定 skill。
+            for st in ("s0", "s1"):
+                settings[st] = resolve_settings(None, cfg)
+                clients[st] = _clients(settings[st])
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
         _locked_save(p)
@@ -426,6 +429,7 @@ def create_project(body: NewProject, user: str = Depends(current_user)) -> dict:
         p.style_preset = body.style
         p.status["pipeline"] = "queued"
         store.save(p)
+        _CANCELLED.discard(p.project_id)  # 兜底:清掉上一轮作业可能残留的陈旧取消标记,不污染本次
         _JOBS[p.project_id] = _EXECUTOR.submit(_pipeline, p.project_id, cfg, body.story)
     return {"project_id": p.project_id}
 
@@ -440,18 +444,26 @@ def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
     if p.owner != user:
         raise HTTPException(403, "只能取消自己的生成任务")
-    f = _job_of(project_id)
-    if f is None or f.done():  # 无作业,或作业已跑完(尚未被清理出 _JOBS):都无可取消对象,
-        # 若在此处误标记 _CANCELLED,该标记再无人消费(已完成的 _pipeline/_run_step 早已跑过
-        # 自己的清理),会一直残留污染该项目下次重跑,故一律拒绝而非静默标记。
-        raise HTTPException(400, "该项目当前没有可取消的生成任务")
-    if f.cancel():  # 还在排队没被线程池取走,直接取消成功
-        with _project_lock(project_id):
+    # 「取 f→判定 done/cancel→标记 _CANCELLED」整段收进 _JOBS_LOCK,与 _pipeline/_run_step finally
+    # 里同锁的 _CANCELLED.discard 互斥:否则作业恰在此窗口跑完时,discard 先执行、随后此处 add 让
+    # 标记永久残留,污染该项目下次重跑。锁内只决定「直接取消 or 协作式标记」,不做磁盘 IO(锁序
+    # 恒为 project→jobs 且 _JOBS_LOCK 内不落盘);直接取消的写盘出锁后在 _project_lock 内做。
+    with _JOBS_LOCK:
+        f = _JOBS.get(project_id)
+        if f is None or f.done():  # 无作业,或作业已跑完(尚未被清理出 _JOBS):都无可取消对象,
+            # 若在此处误标记 _CANCELLED,该标记再无人消费(已完成的 _pipeline/_run_step 早已跑过
+            # 自己的清理),会一直残留污染该项目下次重跑,故一律拒绝而非静默标记。
+            raise HTTPException(400, "该项目当前没有可取消的生成任务")
+        cancelled = f.cancel()  # 还在排队没被线程池取走→True 直接取消;已在执行→False 走协作式标记
+        if not cancelled:  # 已在执行:标记协作式取消,由 _pipeline/_run_step 在环节切换点消费
+            _CANCELLED.add(project_id)
+    if cancelled:  # 排队未开始已直接取消:锁外在 _project_lock 内重载最新快照写 cancelled,
+        with _project_lock(project_id):  # 不用锁外读的陈旧 p,避免覆盖窗口期内并发编辑端点的改动
+            p = store.load(project_id)
             p.status["pipeline"] = "cancelled"
+            p.status["pipeline_finished_at"] = _now_iso()
             store.save(p)
         return {"cancelled": True}
-    with _JOBS_LOCK:  # 已在执行:标记协作式取消,由 _pipeline/_run_step 在环节切换点消费
-        _CANCELLED.add(project_id)
     return {"cancelling": True}
 
 
@@ -479,8 +491,12 @@ def list_projects(user: str = Depends(current_user)) -> list[dict]:
 
 @app.get("/api/queue")
 def get_queue(user: str = Depends(current_user)) -> list[dict]:
-    """全局生成队列:基于内存态 _JOBS(无需持久化)实时组装,各自 store.load 拿最新状态。"""
+    """全局生成队列:基于内存态 _JOBS(无需持久化)实时组装,各自 store.load 拿最新状态。
+    顺带清掉已完成(f.done())的作业:否则完成条目会滞留队列(前端带动画、每 3s 轮询读盘),
+    直到下次 create/run_step 提交才惰性清理。清理用 items() 快照后再 del,避免并发迭代改写。"""
     with _JOBS_LOCK:
+        for done in [k for k, f in list(_JOBS.items()) if f.done()]:
+            del _JOBS[done]
         ids = list(_JOBS.keys())
     out = []
     for project_id in ids:
@@ -648,11 +664,13 @@ _STEP_NAMES = ("s2", "s3", "s4", "s5", "s6")
 def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
     """后台线程跑单步,复用 _pipeline 的状态写入 + 异常兜底语义(不复用其整段管线循环,
     因为这里只跑调用方指定的一步)。"""
-    p = store.load(project_id)
-    workdir = store.project_dir(project_id)
-    s = resolve_settings(name, cfg)  # 该环节生效 Settings + client
-    llm, image, tts, music = _clients(s)
     try:
+        # 序言纳入 try(同 _pipeline):store.load/resolve_settings/_clients 抛异常(project.json
+        # 损坏、畸形 base_url、ImportError 等)否则会被 Future 静默吞掉,项目永久卡 queued。
+        p = store.load(project_id)
+        workdir = store.project_dir(project_id)
+        s = resolve_settings(name, cfg)  # 该环节生效 Settings + client
+        llm, image, tts, music = _clients(s)
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
         _locked_save(p)
@@ -720,6 +738,7 @@ def run_step(project_id: str, name: str, user: str = Depends(current_user)) -> J
             p = store.load(project_id)
             p.status["pipeline"] = "queued"
             store.save(p)
+            _CANCELLED.discard(project_id)  # 兜底:清掉上一轮作业可能残留的陈旧取消标记,不污染本次
             _JOBS[project_id] = _EXECUTOR.submit(_run_step, project_id, name, cfg)
     return JSONResponse({"queued": True}, status_code=202)
 
