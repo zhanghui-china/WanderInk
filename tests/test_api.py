@@ -401,6 +401,51 @@ def test_list_projects_sorted_by_created_at_desc(tmp_path, monkeypatch):
     )
 
 
+def test_list_projects_fields_and_skips_corrupt(tmp_path, monkeypatch):
+    # 轻量化后输出结构/字段与改前等价:project_id/scenic_spot/owner/pipeline/mp4(经 _mp4_url 转换);
+    # 损坏/非法 JSON 的 project.json 仍被跳过,不让整表失败。
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = "someone"
+    p.status["pipeline"] = "done"
+    p.output["mp4"] = f"projects/{p.project_id}/output/final.mp4"
+    store.save(p, root=tmp_path)
+    bad_dir = tmp_path / "brokenpid"          # 非法 JSON 的损坏项目
+    bad_dir.mkdir()
+    (bad_dir / "project.json").write_text("{not valid json", encoding="utf-8")
+
+    r = client.get("/api/projects")
+    assert r.status_code == 200
+    items = r.json()
+    assert len(items) == 1                    # 损坏项目被跳过
+    item = items[0]
+    assert set(item) == {"project_id", "scenic_spot", "owner", "pipeline", "mp4"}
+    assert item["project_id"] == p.project_id
+    assert item["scenic_spot"] == "雷峰塔"
+    assert item["owner"] == "someone"
+    assert item["pipeline"] == "done"
+    # 文件不存在故无 ?v= 后缀,与 _mp4_url 对不存在文件的处理一致
+    assert item["mp4"] == f"/files/{p.project_id}/output/final.mp4"
+
+
+def test_list_projects_skips_non_object_json(tmp_path, monkeypatch):
+    # 合法 JSON 但非对象(null/[]/42/字符串):json.loads 成功但 d.get(...) 会抛 AttributeError,
+    # 一个坏文件不得拖垮整表——须被 isinstance 守卫跳过,端点仍 200 且只返回正常项目。
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    good = store.create_project("雷峰塔", root=tmp_path)
+    store.save(good, root=tmp_path)
+    for name, content in (("nullpid", "null"), ("listpid", "[]"),
+                          ("numpid", "42"), ("strpid", '"hi"')):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "project.json").write_text(content, encoding="utf-8")
+
+    r = client.get("/api/projects")
+    assert r.status_code == 200
+    items = r.json()
+    assert [it["project_id"] for it in items] == [good.project_id]  # 非对象项目全被跳过
+
+
 def test_export_rejects_when_job_pending():
     # A3:项目有未完成生成作业时导出返回 409,避免读半成品/回滚管线进度。
     saved = dict(api._JOBS)
@@ -676,7 +721,7 @@ def test_pipeline_records_step_and_total_timing():
     from unittest.mock import MagicMock
     p = Project(project_id="timingid", scenic_spot="雷峰塔")
     mock_settings = MagicMock()
-    mock_settings.image_endpoint = ("https://example.com/v1", "key")  # _image_concurrency 需要能解包
+    mock_settings.image_endpoint = ("https://example.com/v1", "key")  # image_concurrency 需要能解包
     settings = {k: mock_settings for k in ("s0", "s1", "s2", "s3", "s4", "s5")}
     clients = {
         "s0": (MagicMock(),), "s1": (MagicMock(),), "s2": (MagicMock(),),
@@ -824,17 +869,18 @@ def test_image_concurrency_serial_for_local_backend():
     from shanhai.config import Settings
     s = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
                  image_base_url="http://127.0.0.1:8091/v1")
-    assert api._image_concurrency(s) == 1
+    assert api.image_concurrency(s) == 1
     s2 = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
                   image_base_url="http://localhost:8091/v1")
-    assert api._image_concurrency(s2) == 1
+    assert api.image_concurrency(s2) == 1
 
 
 def test_image_concurrency_parallel_for_remote_backend():
     from shanhai.config import Settings
+    from shanhai.runtime_config import REMOTE_IMAGE_CONCURRENCY
     s = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
                  image_base_url="https://api.tu-zi.com/v1")
-    assert api._image_concurrency(s) == api.REMOTE_IMAGE_CONCURRENCY
+    assert api.image_concurrency(s) == REMOTE_IMAGE_CONCURRENCY
 
 
 def test_get_queue_reflects_jobs_owner_and_spot():

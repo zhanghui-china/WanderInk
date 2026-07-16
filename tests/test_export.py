@@ -1,3 +1,5 @@
+import io
+import zipfile
 from pathlib import Path
 
 from PIL import Image, PdfParser
@@ -46,6 +48,30 @@ def test_build_exports_produces_zip_and_pdf(tmp_path: Path):
     assert result.output["pdf"] == str(pdf_path)
     assert p.output["zip"] == str(zip_path)
     assert p.output["pdf"] == str(pdf_path)
+
+
+def test_build_exports_streamed_zip_contents(tmp_path: Path):
+    # 流式导出:zip 内逐页条目名连续、数量=入选页数,且每页仍是合成后的整幅 PNG(1920×1080);
+    # PDF 页数一致。与一次性全读进内存的改前产物等价。
+    pages_dir = tmp_path / "pages"
+    pages_dir.mkdir()
+    for i, color in enumerate(("red", "blue", "green"), start=1):
+        Image.new("RGB", (1920, 1080), color).save(pages_dir / f"page_{i:02d}.png")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.storyboard = [_confirmed_cell(i, f"pages/page_{i:02d}.png") for i in range(1, 4)]
+
+    export.build_exports(p, tmp_path)
+
+    with zipfile.ZipFile(tmp_path / "output" / "pages.zip") as zf:
+        names = zf.namelist()
+        assert names == ["page_01.png", "page_02.png", "page_03.png"]
+        for name in names:
+            with Image.open(io.BytesIO(zf.read(name))) as im:
+                assert im.size == (1920, 1080)       # 合成后整幅页,非空/非截断
+    with (tmp_path / "output" / "book.pdf").open("rb") as fh:
+        pdf = PdfParser.PdfParser(f=fh)
+        assert len(pdf.pages) == 3
+        pdf.close()
 
 
 def test_build_exports_skips_unconfirmed_and_missing_image(tmp_path: Path):

@@ -45,7 +45,9 @@ def test_s3_single_character_failure_does_not_abort_others(tmp_path: Path, capsy
     llm = MagicMock(); llm.chat.return_value = "白衣女子,黑色长发,银簪"
     image = MagicMock()
     image.generate.side_effect = [b"png", RuntimeError("Server disconnected"), b"png"]
-    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    # concurrency=1:位置式 side_effect(第 2 次失败)依赖调用顺序,串行才能确定命中第 2 个角色;
+    # 并行时哪个角色拿到失败是非确定的(该场景的"单角色失败不拖垮其余"由下方 test_s3_parallel 覆盖)
+    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024", concurrency=1)
     assert image.generate.call_count == 3                     # 三个角色都尝试,未中途中断
     assert p.script.characters[0].turnaround_image != ""      # 第 1 个成功
     assert p.script.characters[1].turnaround_image == ""      # 第 2 个失败,退化为纯文字
@@ -94,6 +96,47 @@ def test_s3_secondary_characters_do_not_block_done(tmp_path: Path):
     p = s3_characters.run(p, llm, image, tmp_path, "1536x1024")
     assert p.status["s3"] == "done"
     assert p.script.characters[4].turnaround_image == ""     # 次要角色无三视图,却不影响 done
+
+
+def test_s3_parallel_one_failure_does_not_abort_others(tmp_path: Path):
+    # 并行(concurrency>1)下单角色失败仍不拖垮其余:哪个角色失败非确定,故按名字定向让「角色1」失败,
+    # 断言与顺序无关——其余角色照常产出、失败判定仍为 partial、总调用次数不变。
+    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance=f"衣{i}")
+             for i in range(3)]
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock()
+    llm.chat.side_effect = lambda _sys, user: f"特征-{user.splitlines()[0]}"  # 特征含角色名,可定向
+    image = MagicMock()
+
+    def gen(prompt, **kw):
+        if "角色1" in prompt:
+            raise RuntimeError("Server disconnected")
+        return b"png"
+    image.generate.side_effect = gen
+    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024", concurrency=3)
+    assert image.generate.call_count == 3                     # 三个角色都尝试
+    assert p.script.characters[0].turnaround_image != ""      # 角色0 成功
+    assert p.script.characters[1].turnaround_image == ""      # 角色1 失败,退化纯文字
+    assert p.script.characters[1].locked is False
+    assert p.script.characters[2].turnaround_image != ""      # 角色2 成功
+    assert p.status["s3"] == "partial"
+
+
+def test_s3_parallel_all_success_marks_done(tmp_path: Path):
+    # 并行下全部成功仍逐角色产出、锁定并判定 done(与串行等价)。
+    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance="白衣")
+             for i in range(3)]
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock(); image.generate.return_value = b"png"
+    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024", concurrency=3)
+    assert image.generate.call_count == 3
+    assert p.status["s3"] == "done"
+    assert all(c.locked for c in p.script.characters)
+    for i in range(3):
+        assert (tmp_path / "characters" / f"角色{i}.png").exists()
 
 
 def test_feature_system_handles_non_human_characters():

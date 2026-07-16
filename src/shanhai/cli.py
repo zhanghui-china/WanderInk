@@ -5,7 +5,8 @@ import typer
 
 from shanhai import auth, store
 from shanhai.config import Settings
-from shanhai.runtime_config import STAGE_CLIENTS, AppConfig, resolve_settings
+from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig,
+                                     image_concurrency, resolve_settings)
 from shanhai.providers.image import ImageClient
 from shanhai.providers.llm import LLMClient
 from shanhai.providers.music import MusicClient
@@ -139,9 +140,11 @@ def step(project_id: str, name: str):
     elif name == "s2":
         p = s2_storyboard.run(p, llm)
     elif name == "s3":
-        p = s3_characters.run(p, llm, image, workdir, s.image_size)
+        p = s3_characters.run(p, llm, image, workdir, s.image_size,
+                              concurrency=image_concurrency(s))
     elif name == "s4":
-        p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency)
+        p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
+                         concurrency=image_concurrency(s))
     elif name == "s5":
         p = s5_audio.run(p, tts, s.tts_voice, workdir, music)
     elif name == "s6":
@@ -176,9 +179,11 @@ def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str 
     stages = [("s1", lambda: s1_script.run(p, clients["s1"][0])),
               ("s2", lambda: s2_storyboard.run(p, clients["s2"][0])),
               ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
-                                               settings["s3"].image_size)),
+                                               settings["s3"].image_size,
+                                               concurrency=image_concurrency(settings["s3"]))),
               ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
-                                          strict=settings["s4"].strict_consistency)),
+                                          strict=settings["s4"].strict_consistency,
+                                          concurrency=image_concurrency(settings["s4"]))),
               ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir,
                                          clients["s5"][3])),
               ("s6", lambda: s6_compose.run(p, workdir))]

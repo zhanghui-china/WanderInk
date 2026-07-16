@@ -6,6 +6,7 @@
 - 产物(图/音/mp4)由 StaticFiles 挂 projects/ 目录托管为 /files/<id>/...。
 - 若 web/dist 存在(前端已 build),挂到 / 作为单页应用;dev 时前端另起 Vite 连本服务。
 """
+import json
 import os
 import secrets
 import sys
@@ -14,7 +15,6 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,8 +29,9 @@ from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _clients,
                          resolve_stage_clients)
 from shanhai.config import Settings, load_env
 from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig, apply_put,
-                                     config_view, load_overrides,
-                                     resolve_settings, update_overrides)
+                                     config_view, image_concurrency,
+                                     load_overrides, resolve_settings,
+                                     update_overrides)
 from shanhai.schema import Project
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s6_compose)
@@ -137,19 +138,6 @@ def _save_error(project_id: str, e: Exception) -> None:
 
 # ---------- 后台管线 ----------
 
-REMOTE_IMAGE_CONCURRENCY = 2  # tu-zi 实测扛不住 s4_pages.CONCURRENCY(3)路并发:2026-07-16 复现
-# 3 路并发时 images/edits 端点约 2/3 请求以 500/RemoteProtocolError(服务端断连)失败,
-# 单独串行重放同样的请求则全部成功——是上游并发容量问题,不是 prompt/参考图/审核问题。
-
-
-def _image_concurrency(s: Settings) -> int:
-    """本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发请求只会排队/互相拖慢
-    甚至冲突,强制串行;远程云端 API(如 tu-zi)可以并发出图,但要封顶(见上)。"""
-    base_url, _ = s.image_endpoint
-    host = urlparse(base_url).hostname or ""
-    return 1 if host in ("127.0.0.1", "localhost") else REMOTE_IMAGE_CONCURRENCY
-
-
 def _deliverable_status(p: Project) -> str:
     """诚实闸门:据当前状态判定「整体是否已交付一部成片」。
     无 output['mp4'](未合成/编辑后已失效)→ partial:尚未合成,而非 done(单步重跑 s2–s5 会走到这)。
@@ -230,11 +218,12 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
             ("s1", lambda: s1_script.run(p, clients["s1"][0])),
             ("s2", lambda: s2_storyboard.run(p, clients["s2"][0])),
             ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
-                                             settings["s3"].image_size)),
+                                             settings["s3"].image_size,
+                                             concurrency=image_concurrency(settings["s3"]))),
             ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
                                         strict=settings["s4"].strict_consistency,
                                         on_progress=lambda: _locked_save(p),
-                                        concurrency=_image_concurrency(settings["s4"]))),
+                                        concurrency=image_concurrency(settings["s4"]))),
             ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir,
                                         clients["s5"][3])),
             ("s6", lambda: s6_compose.run(p, workdir)),
@@ -472,24 +461,27 @@ def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
 
 @app.get("/api/projects")
 def list_projects(user: str = Depends(current_user)) -> list[dict]:
+    # PERF:列表端点每次登录/管线跑完都触发,项目多时逐个 store.load(Pydantic 全量校验)会成最慢端点。
+    # 这里只输出 5 个字段,故直接读 project.json、json.loads 取所需,跳过全量反序列化;损坏/半写的 json 仍跳过。
     loaded = []
     for meta in store.DEFAULT_ROOT.glob("*/project.json"):
         try:
-            p = store.load(meta.parent.name, root=store.DEFAULT_ROOT)
+            d = json.loads(meta.read_text(encoding="utf-8"))
             mtime = meta.stat().st_mtime
         except Exception:  # noqa: BLE001 — 跳过损坏/半写的项目,不让列表整体失败
             continue
-        loaded.append((p, mtime))
+        if not isinstance(d, dict):  # 合法 JSON 但非对象(null/[]/42/字符串):下面 d.get 会抛,同样跳过
+            continue
+        item = {
+            "project_id": d.get("project_id") or meta.parent.name,
+            "scenic_spot": d.get("scenic_spot", ""), "owner": d.get("owner", ""),
+            "pipeline": (d.get("status") or {}).get("pipeline", "pending"),
+            "mp4": _mp4_url((d.get("output") or {}).get("mp4", "")),
+        }
+        loaded.append((item, d.get("created_at", ""), mtime))
     # 有 created_at 的项目整体排在前面(新到旧);历史项目(无 created_at)用 mtime 兜底,同样新到旧排在后面
-    loaded.sort(key=lambda pm: (1 if pm[0].created_at else 0, pm[0].created_at or pm[1]), reverse=True)
-    out = []
-    for p, _mtime in loaded:
-        out.append({
-            "project_id": p.project_id, "scenic_spot": p.scenic_spot, "owner": p.owner,
-            "pipeline": p.status.get("pipeline", "pending"),
-            "mp4": _mp4_url(p.output.get("mp4", "")),
-        })
-    return out
+    loaded.sort(key=lambda t: (1 if t[1] else 0, t[1] or t[2]), reverse=True)
+    return [item for item, _created, _mtime in loaded]
 
 
 @app.get("/api/queue")
@@ -686,11 +678,12 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
         if name == "s2":
             p = s2_storyboard.run(p, llm)
         elif name == "s3":
-            p = s3_characters.run(p, llm, image, workdir, s.image_size)
+            p = s3_characters.run(p, llm, image, workdir, s.image_size,
+                                  concurrency=image_concurrency(s))
         elif name == "s4":
             p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
                               on_progress=lambda: _locked_save(p),
-                              concurrency=_image_concurrency(s))
+                              concurrency=image_concurrency(s))
         elif name == "s5":
             p = s5_audio.run(p, tts, s.tts_voice, workdir, music)
         elif name == "s6":

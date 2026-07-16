@@ -27,22 +27,20 @@ def build_exports(project: Project, workdir: Path) -> Project:
         return project
     out_dir = workdir / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    pages: list[Image.Image] = []
-    for cell in cells:
-        base = Image.open(workdir / cell.image).convert("RGBA")
-        overlay = typeset.overlay_image(cell.caption)
-        pages.append(Image.alpha_composite(base, overlay).convert("RGB"))
-
     zip_path = out_dir / "pages.zip"
+    pdf_path = out_dir / "book.pdf"
+
+    # PERF:逐页流式产出,避免所有页合成图同时驻留内存(22 页 140MB+)。zip 逐页写入即释放;
+    # PDF 首页新建、其后 append 追加(Pillow 逐页写盘,不需全部页同时在内存),峰值降到一页量级。
     with zipfile.ZipFile(zip_path, "w") as zf:
-        for i, page in enumerate(pages, start=1):
+        for i, cell in enumerate(cells, start=1):
+            base = Image.open(workdir / cell.image).convert("RGBA")
+            overlay = typeset.overlay_image(cell.caption)
+            page = Image.alpha_composite(base, overlay).convert("RGB")
             buf = io.BytesIO()
             page.save(buf, "PNG")
             zf.writestr(f"page_{i:02d}.png", buf.getvalue())
-
-    pdf_path = out_dir / "book.pdf"
-    pages[0].save(pdf_path, save_all=True, append_images=pages[1:], resolution=PDF_RESOLUTION)
+            page.save(pdf_path, resolution=PDF_RESOLUTION, append=(i > 1))
 
     project.output["zip"] = str(zip_path)
     project.output["pdf"] = str(pdf_path)

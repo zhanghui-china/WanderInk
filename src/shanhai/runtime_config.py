@@ -12,6 +12,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -129,6 +130,20 @@ def resolve_settings(
     if stage is not None and stage in cfg.stages:
         updates.update(cfg.stages[stage].model_dump(exclude_none=True))
     return base.model_copy(update=updates) if updates else base
+
+
+REMOTE_IMAGE_CONCURRENCY = 2  # tu-zi 实测扛不住 s4_pages.CONCURRENCY(3)路并发:2026-07-16 复现
+# 3 路并发时 images/edits 端点约 2/3 请求以 500/RemoteProtocolError(服务端断连)失败,
+# 单独串行重放同样的请求则全部成功——是上游并发容量问题,不是 prompt/参考图/审核问题。
+
+
+def image_concurrency(s: Settings) -> int:
+    """本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发请求只会排队/互相拖慢
+    甚至冲突,强制串行;远程云端 API(如 tu-zi)可以并发出图,但要封顶(见上)。
+    api._pipeline/_run_step 与 cli.step/run 共用,保证 s3/s4 并发数一致跟随后端(本地串行、远程并发)。"""
+    base_url, _ = s.image_endpoint
+    host = urlparse(base_url).hostname or ""
+    return 1 if host in ("127.0.0.1", "localhost") else REMOTE_IMAGE_CONCURRENCY
 
 
 # ---------- PUT 合并 + GET 脱敏视图(HTTP 层与 CLI 共用同一契约) ----------

@@ -68,8 +68,10 @@ def page_clip_cmd(image: Path, overlay: Path, audio: Path | None, duration_ms: i
         cmd += ["-f", "lavfi", "-i", _ANULLSRC]
     # 强制 44.1kHz/立体声,与片头/片尾静音分支(anullsrc=r=44100:cl=stereo)对齐,
     # 否则解说 mp3(常见 24kHz/mono)会让后续 acrossfade 拿到参数不一致的音频流而错乱
+    # 中间 clip 用 ultrafast:后面必被 xfade_concat 整片重编码一次,此处高 preset 白费时间且多一代
+    # 有损;最终成片编码(xfade_concat/finalize)仍用默认 preset,画质不降。
     cmd += ["-t", f"{dur:g}", "-filter_complex", fc, "-map", "[v]", "-map", "2:a",
-            "-r", str(FPS), "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
+            "-r", str(FPS), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-b:a", "192k",
             *_AR_AC, str(out)]
     return cmd
 
@@ -84,8 +86,9 @@ def still_clip_cmd(image: Path, audio: Path | None, duration_ms: int,
         cmd += ["-i", str(audio), "-af", "apad"]
     else:
         cmd += ["-f", "lavfi", "-i", _ANULLSRC]
+    # 中间 clip 用 ultrafast(同 page_clip_cmd):后面会被 xfade_concat 整片重编码,不必在此追求画质。
     cmd += ["-t", f"{dur:g}", "-vf", vf, "-r", str(FPS),
-            "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
+            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-b:a", "192k",
             *_AR_AC, str(out)]
     return cmd
 
