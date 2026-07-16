@@ -678,6 +678,34 @@ def test_run_step_cascades_clears_downstream_status():
     assert p.output == {}                                  # 上游重跑,旧成片失效
 
 
+def test_run_step_error_preserves_disk_storyboard(tmp_path, monkeypatch):
+    # 步骤半途抛错(如 s2 先赋值 storyboard 再校验失败)时,异常兜底不能把半损坏的内存态落盘,
+    # 否则会把磁盘上完整的 storyboard 清空、20 页产物引用永久丢失。须重载磁盘干净快照写 error。
+    from unittest.mock import MagicMock
+
+    from shanhai.config import Settings
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = Project(project_id="s2fail", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page(index=i) for i in range(1, 21)]   # 20 页完整
+    p.status = {"pipeline": "partial"}
+    store.save(p)                                          # 落盘干净快照
+
+    def _corrupt_then_raise(proj, _llm):
+        proj.storyboard = []                              # 模拟 s2 校验抛错前已清空内存 storyboard
+        raise ValueError("分镜为空,S2 未产出任何页")
+
+    fake = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api._clients", return_value=(MagicMock(),) * 4), \
+         patch("shanhai.api.s2_storyboard") as s2:
+        s2.run.side_effect = _corrupt_then_raise
+        api._run_step("s2fail", "s2", runtime_config.AppConfig())
+
+    reloaded = store.load("s2fail")
+    assert len(reloaded.storyboard) == 20                 # 磁盘 storyboard 未被半损坏内存态清空
+    assert reloaded.status["pipeline"].startswith("error:")
+
+
 def test_image_concurrency_serial_for_local_backend():
     # 本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发只会互相拖慢/冲突。
     # image_endpoint 优先取 image_base_url,必须显式传它(而不是只传通用 base_url)——

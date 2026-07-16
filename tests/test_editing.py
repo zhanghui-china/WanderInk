@@ -3,7 +3,17 @@ from pathlib import Path
 import pytest
 
 from shanhai import editing
-from shanhai.schema import CharacterCard, Project, Script, StoryboardCell
+from shanhai.schema import CharacterCard, Panel, Project, Script, StoryboardCell
+
+
+def _add_panels(p: Project, tmp_path: Path, index: int, n_panels: int) -> None:
+    """给第 index 页装 n_panels 个分格,并写真实分格图小文件(内容含页号+格号防串位)。"""
+    cell = editing._cell_at(p, index)
+    cell.panels = []
+    for i in range(1, n_panels + 1):
+        rel = f"pages/page_{index:02d}_panel{i}.png"
+        (tmp_path / rel).write_bytes(f"P{index}-{i}".encode())
+        cell.panels.append(Panel(visual_desc=f"格{i}", image=rel))
 
 
 def _project(tmp_path: Path, n: int = 4) -> Project:
@@ -178,3 +188,55 @@ def test_mark_character_redraw(tmp_path: Path):
     assert p.output == {}
     with pytest.raises(ValueError):
         editing.mark_character_redraw(p, "查无此人")
+
+
+def test_update_visual_desc_voids_panels(tmp_path: Path):
+    # 分格页改画面描述 → 作废分格,回退单图整页重生成(s4 单图分支)。
+    p = _project(tmp_path, n=3)
+    _add_panels(p, tmp_path, 2, 3)
+    editing.update_cell(p, 2, visual_desc="新整页画面")
+    cell = p.storyboard[1]
+    assert cell.panels == []                                # 分格被清空
+    assert cell.status == "draft" and cell.image == ""
+
+
+def test_update_characters_voids_panels(tmp_path: Path):
+    p = _project(tmp_path, n=3)
+    _add_panels(p, tmp_path, 2, 2)
+    editing.update_cell(p, 2, characters=["白素贞"])
+    assert p.storyboard[1].panels == []
+
+
+def test_update_caption_keeps_panels(tmp_path: Path):
+    # caption 编辑只清音轨,不影响分格。
+    p = _project(tmp_path, n=3)
+    _add_panels(p, tmp_path, 2, 2)
+    editing.update_cell(p, 2, caption="新文案")
+    assert len(p.storyboard[1].panels) == 2
+
+
+def test_reorder_swap_panel_files_follow_cells(tmp_path: Path):
+    # 分格页互换:每格自己的图跟着 cell 走,两阶段改名防互相覆盖。
+    p = _project(tmp_path, n=4)
+    _add_panels(p, tmp_path, 3, 2)     # 第3页 2 格
+    _add_panels(p, tmp_path, 4, 3)     # 第4页 3 格
+    editing.reorder_cells(p, tmp_path, [1, 2, 4, 3])       # 互换 3↔4
+    third, fourth = p.storyboard[2], p.storyboard[3]       # 原第4页 / 原第3页
+    assert [pn.image for pn in third.panels] == [
+        "pages/page_03_panel1.png", "pages/page_03_panel2.png", "pages/page_03_panel3.png"]
+    assert [pn.image for pn in fourth.panels] == [
+        "pages/page_04_panel1.png", "pages/page_04_panel2.png"]
+    # 内容不串:原第4页(P4-*)现落到 page_03_panel*,原第3页(P3-*)落到 page_04_panel*
+    assert (tmp_path / "pages" / "page_03_panel3.png").read_bytes() == b"P4-3"
+    assert (tmp_path / "pages" / "page_04_panel2.png").read_bytes() == b"P3-2"
+    assert not (tmp_path / "pages" / "page_04_panel3.png").exists()   # 原第4页第3格已挪走
+
+
+def test_delete_removes_panel_files(tmp_path: Path):
+    p = _project(tmp_path, n=3)
+    _add_panels(p, tmp_path, 2, 3)
+    editing.delete_cell(p, tmp_path, 2)
+    assert [c.index for c in p.storyboard] == [1, 2]
+    # 被删页的每格图都 unlink
+    for i in range(1, 4):
+        assert not (tmp_path / "pages" / f"page_02_panel{i}.png").exists()

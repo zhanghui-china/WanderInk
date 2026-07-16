@@ -121,6 +121,20 @@ def _locked_save(p: Project) -> None:
         store.save(p)
 
 
+def _save_error(project_id: str, e: Exception) -> None:
+    """步骤异常兜底:不落半损坏的内存态(步骤函数可能在校验抛错前已改坏一半 project,
+    如 s2 先赋值 storyboard 再校验),改从磁盘重载重跑前的干净快照,只把 error 状态写回
+    再落盘,保住磁盘上完整的 storyboard/产物引用。重载失败(项目文件本身损坏)则静默放弃,
+    避免在异常处理里再抛异常导致状态完全不写。"""
+    try:
+        p = store.load(project_id)
+    except Exception:  # noqa: BLE001 — 兜底不可再抛;重载失败就放弃写状态,保留磁盘原样
+        return
+    p.status["pipeline"] = f"error: {e}"
+    p.status["pipeline_finished_at"] = _now_iso()
+    _locked_save(p)
+
+
 # ---------- 后台管线 ----------
 
 REMOTE_IMAGE_CONCURRENCY = 2  # tu-zi 实测扛不住 s4_pages.CONCURRENCY(3)路并发:2026-07-16 复现
@@ -235,9 +249,7 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         p.status["pipeline_finished_at"] = _now_iso()
         _locked_save(p)
     except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
-        p.status["pipeline"] = f"error: {e}"
-        p.status["pipeline_finished_at"] = _now_iso()
-        _locked_save(p)
+        _save_error(project_id, e)   # 重载干净快照写 error,不落半损坏的内存 p
     finally:
         # 收尾清掉本次作业残留的取消标记:若取消发生在最后一环节执行期间(其后再无
         # _check_cancelled 会读到它),标记会一直留在 _CANCELLED 里,误伤该项目下次重跑。
@@ -659,9 +671,7 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
         p.status["pipeline_finished_at"] = _now_iso()
         _locked_save(p)
     except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
-        p.status["pipeline"] = f"error: {e}"
-        p.status["pipeline_finished_at"] = _now_iso()
-        _locked_save(p)
+        _save_error(project_id, e)   # 重载干净快照写 error,不落半损坏的内存 p
     finally:
         # 同 _pipeline:收尾清掉本次作业残留的取消标记,避免误伤该项目下次重跑。
         with _JOBS_LOCK:

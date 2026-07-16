@@ -62,6 +62,30 @@ def renumber(project: Project, workdir: Path) -> None:
                 media_dir.mkdir(parents=True, exist_ok=True)
                 tmp.replace(media_dir / f"page_{new_index:02d}.{ext}")
             setattr(cell, attr, f"{subdir}/page_{new_index:02d}.{ext}")
+    # 分格页每格自己的图(pages/page_{index:02d}_panel{i}.png,i 从 1 起,见 s4_pages._render_panel_cell)
+    # 同样两阶段改名对齐新 index,单图页(panels 为空)天然跳过、行为不变。
+    pages_dir = workdir / "pages"
+    panel_temps: dict[tuple[int, int], Path] = {}
+    for ci, cell in enumerate(cells):
+        for pi, panel in enumerate(cell.panels, 1):
+            if not panel.image:
+                continue
+            src = workdir / panel.image
+            if not src.exists():
+                continue
+            tmp = pages_dir / f".renumber.panel.{ci}.{pi}.tmp"   # (列表位置, 格号)天然唯一
+            src.replace(tmp)
+            panel_temps[(ci, pi)] = tmp
+    for ci, cell in enumerate(cells):
+        new_index = ci + 1
+        for pi, panel in enumerate(cell.panels, 1):
+            if not panel.image:
+                continue
+            tmp = panel_temps.get((ci, pi))
+            if tmp is not None:
+                pages_dir.mkdir(parents=True, exist_ok=True)
+                tmp.replace(pages_dir / f"page_{new_index:02d}_panel{pi}.png")
+            panel.image = f"pages/page_{new_index:02d}_panel{pi}.png"
     for i, cell in enumerate(cells):
         cell.index = i + 1
 
@@ -71,7 +95,7 @@ def update_cell(project: Project, index: int, *, caption: str | None = None,
                 characters: list[str] | None = None) -> None:
     """按字段子集改格并精确级联失效:
     - caption:清 audio + duration_ms=0(image/status 不动)
-    - visual_desc / characters:status="draft" + 清 image(audio 不动)
+    - visual_desc / characters:status="draft" + 清 image + 清 panels(分格页回退单图整页)(audio 不动)
     - emotion:不级联(仅影响 s5 的 BGM 情绪匹配)"""
     cell = _cell_at(project, index)
     if caption is not None:
@@ -83,10 +107,12 @@ def update_cell(project: Project, index: int, *, caption: str | None = None,
         cell.visual_desc = visual_desc
         cell.status = "draft"
         cell.image = ""
+        cell.panels = []   # 分格页作废分格:改整页构图后回退成单图整页重生成(s4 单图分支)
     if characters is not None:
         cell.characters = characters
         cell.status = "draft"
         cell.image = ""
+        cell.panels = []   # 同上:出场角色变了,分格构图已过期,回退单图整页重生成
     if emotion is not None:
         cell.emotion = emotion
     _invalidate_downstream(project, "s4")
@@ -127,12 +153,16 @@ def insert_cell(project: Project, workdir: Path, after_index: int, *, caption: s
 
 
 def delete_cell(project: Project, workdir: Path, index: int) -> None:
-    """删除该页并删掉其 image/audio 真实文件(missing_ok);其余页 renumber 对齐。"""
+    """删除该页并删掉其 image/audio 真实文件(missing_ok);分格页再删掉每格自己的图。
+    其余页 renumber 对齐。"""
     cell = _cell_at(project, index)
     for attr, _subdir, _ext in _MEDIA:
         ref = getattr(cell, attr)
         if ref:
             (workdir / ref).unlink(missing_ok=True)
+    for panel in cell.panels:   # 分格页每格自己的图也要删,单图页(panels 为空)天然跳过
+        if panel.image:
+            (workdir / panel.image).unlink(missing_ok=True)
     project.storyboard.remove(cell)
     renumber(project, workdir)
     _invalidate_downstream(project, "s4")
