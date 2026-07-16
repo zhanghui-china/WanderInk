@@ -94,6 +94,7 @@ export interface NewProjectInput {
   voice?: string
   speed?: number
   multi_panel?: boolean
+  use_hermes_agent?: boolean
 }
 
 // 与后端 shanhai/runtime_config.py 的 ConfigOverride / AppConfig 对应

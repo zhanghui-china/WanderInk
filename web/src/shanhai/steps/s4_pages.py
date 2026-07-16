@@ -111,7 +111,8 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
 
 
 def run(project: Project, image: ImageClient, workdir: Path, image_size: str,
-        strict: bool = False, on_progress: Callable[[], None] | None = None) -> Project:
+        strict: bool = False, on_progress: Callable[[], None] | None = None,
+        concurrency: int = CONCURRENCY) -> Project:
     if project.script is None or not project.storyboard:
         raise ValueError("先完成 S2/S3")
     if not any(c.turnaround_image for c in project.script.characters):
@@ -126,7 +127,7 @@ def run(project: Project, image: ImageClient, workdir: Path, image_size: str,
     ref_cache = workdir / "characters" / "_refs"
     pending = [c for c in project.storyboard
                if not (c.status == "confirmed" and c.image and (workdir / c.image).exists())]
-    with cf.ThreadPoolExecutor(max_workers=CONCURRENCY) as ex:
+    with cf.ThreadPoolExecutor(max_workers=concurrency) as ex:
         futures = [ex.submit(_render_cell, cell, style, cards, image,
                              image_size, workdir, pages_dir, ref_cache) for cell in pending]
         for f in cf.as_completed(futures):

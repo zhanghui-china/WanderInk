@@ -157,6 +157,20 @@ def test_pipeline_status_error_when_nothing_imaged():
     assert api._deliverable_status(p).startswith("error")   # 无成图页 → 不可交付
 
 
+def test_pipeline_status_degraded_when_pages_missing():
+    # 回归:S4 部分页生成失败,s6 跳过后仍会正常合成 mp4(_content_cells 只挑 confirmed 页)——
+    # 此时不能报纯 "done",必须诚实标注出图页数少于总页数,否则前端会显示"全部完成"这种假象
+    # (2026-07 用户反馈:漫画没有全部生成,但还是说全部完成)。
+    p = Project(project_id="dlv5", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page(index=1), StoryboardCell(
+        index=2, scene_ref="1-2", visual_desc="v", characters=[],
+        caption="c", emotion="宁静", status="failed")]
+    p.output["mp4"] = "projects/dlv5/output/final.mp4"
+    st = api._deliverable_status(p)
+    assert st.startswith("done(降级")
+    assert "1/2 页出图" in st
+
+
 def test_pipeline_status_partial_when_not_composed():
     # 回归(rootcause 验证复现):有图 + 真人解说但尚未合成 mp4(如编辑后单步重跑 s5),
     # 不能报 done —— 否则 pipeline=done 而 mp4=null 就是被本次改动要根除的"假成片"。
@@ -390,6 +404,33 @@ def test_create_project_multi_panel_defaults_false(mock_create, _save, _settings
     assert p.params.multi_panel is False
 
 
+@patch("shanhai.api._pipeline")
+@patch("shanhai.api.Settings")
+@patch("shanhai.api.store.save")
+@patch("shanhai.api.store.create_project")
+def test_create_project_use_hermes_agent_defaults_true(mock_create, _save, _settings, _pipe):
+    p = Project(project_id="haid01", scenic_spot="花果山")
+    mock_create.return_value = p
+    r = client.post("/api/projects", json={"scenic_spot": "花果山", "minutes": 1})
+    assert r.status_code == 200
+    api._JOBS["haid01"].result(timeout=2)
+    assert p.params.use_hermes_agent is True
+
+
+@patch("shanhai.api._pipeline")
+@patch("shanhai.api.Settings")
+@patch("shanhai.api.store.save")
+@patch("shanhai.api.store.create_project")
+def test_create_project_passes_use_hermes_agent_false(mock_create, _save, _settings, _pipe):
+    p = Project(project_id="haid02", scenic_spot="花果山")
+    mock_create.return_value = p
+    r = client.post("/api/projects",
+                    json={"scenic_spot": "花果山", "minutes": 1, "use_hermes_agent": False})
+    assert r.status_code == 200
+    api._JOBS["haid02"].result(timeout=2)
+    assert p.params.use_hermes_agent is False
+
+
 def test_cancel_rejects_non_owner():
     p = Project(project_id="cancelid1", scenic_spot="雷峰塔", owner="someoneelse")
     saved = dict(api._JOBS)
@@ -510,6 +551,7 @@ def test_pipeline_records_step_and_total_timing():
     from unittest.mock import MagicMock
     p = Project(project_id="timingid", scenic_spot="雷峰塔")
     mock_settings = MagicMock()
+    mock_settings.image_endpoint = ("https://example.com/v1", "key")  # _image_concurrency 需要能解包
     settings = {k: mock_settings for k in ("s0", "s1", "s2", "s3", "s4", "s5")}
     clients = {
         "s0": (MagicMock(),), "s1": (MagicMock(),), "s2": (MagicMock(),),
@@ -539,6 +581,47 @@ def test_pipeline_records_step_and_total_timing():
         float(p.status[f"{step}_elapsed_s"])   # 能转成 float,解析失败即测试失败
 
 
+def test_pipeline_use_hermes_agent_false_falls_back_to_global_llm():
+    # use_hermes_agent=False:S0/S1 应跳过按环节覆盖(如 hermes-agent),改用仅叠加全局默认
+    # 的 Settings/client——即调 resolve_settings(None, cfg),而非 resolve_stage_clients 给的
+    # 那份按环节覆盖后的 s0/s1 client。S2 及之后的环节不受影响,仍用 resolve_stage_clients 原样结果。
+    from unittest.mock import MagicMock
+    p = Project(project_id="hafid", scenic_spot="雷峰塔")
+    p.params.use_hermes_agent = False
+    mock_settings = MagicMock()
+    mock_settings.image_endpoint = ("https://example.com/v1", "key")
+    stage_settings = {k: mock_settings for k in ("s0", "s1", "s2", "s3", "s4", "s5")}
+    hermes_llm = MagicMock(name="hermes_llm")
+    stage_clients = {
+        "s0": (hermes_llm,), "s1": (hermes_llm,), "s2": (MagicMock(),),
+        "s3": (MagicMock(), MagicMock()), "s4": (MagicMock(), MagicMock()),
+        "s5": (MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+    }
+    fallback_llm = MagicMock(name="fallback_llm")
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.resolve_stage_clients", return_value=(stage_settings, stage_clients)), \
+         patch("shanhai.api.resolve_settings", return_value=mock_settings) as resolve_settings, \
+         patch("shanhai.api._clients", return_value=(fallback_llm, MagicMock(), MagicMock(),
+                                                      MagicMock())), \
+         patch("shanhai.api.s0_legend") as s0, \
+         patch("shanhai.api.s1_script") as s1, \
+         patch("shanhai.api.s2_storyboard") as s2, \
+         patch("shanhai.api.s3_characters") as s3, \
+         patch("shanhai.api.s4_pages") as s4, \
+         patch("shanhai.api.s5_audio") as s5, \
+         patch("shanhai.api.s6_compose") as s6:
+        s0.from_text.return_value = p
+        for m in (s1, s2, s3, s4, s5, s6):
+            m.run.return_value = p
+        api._pipeline("hafid", runtime_config.AppConfig(), "自备故事")
+
+    resolve_settings.assert_any_call(None, runtime_config.AppConfig())
+    assert s0.from_text.call_args[0][1] is fallback_llm    # S0 用了回退 client,不是 hermes
+    assert s1.run.call_args[0][1] is fallback_llm          # S1 同上
+    assert s2.run.call_args[0][1] is stage_clients["s2"][0]  # S2 不受影响,原样用 resolve_stage_clients 的结果
+
+
 @patch("shanhai.api.Settings")
 def test_run_step_records_step_timing(_settings):
     from unittest.mock import MagicMock
@@ -554,6 +637,27 @@ def test_run_step_records_step_timing(_settings):
     float(p.status["s6_elapsed_s"])
     assert p.status["pipeline_started_at"]
     assert p.status["pipeline_finished_at"]
+
+
+def test_image_concurrency_serial_for_local_backend():
+    # 本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发只会互相拖慢/冲突。
+    # image_endpoint 优先取 image_base_url,必须显式传它(而不是只传通用 base_url)——
+    # 否则会被运行机器 os.environ 里已加载的真实 SHANHAI_IMAGE_BASE_URL(如 DGX 的
+    # 本地 ComfyUI 地址)悄悄接管,测试结果随部署环境漂移而非只测传入值本身。
+    from shanhai.config import Settings
+    s = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
+                 image_base_url="http://127.0.0.1:8091/v1")
+    assert api._image_concurrency(s) == 1
+    s2 = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
+                  image_base_url="http://localhost:8091/v1")
+    assert api._image_concurrency(s2) == 1
+
+
+def test_image_concurrency_parallel_for_remote_backend():
+    from shanhai.config import Settings
+    s = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x",
+                 image_base_url="https://api.tu-zi.com/v1")
+    assert api._image_concurrency(s) == api.REMOTE_IMAGE_CONCURRENCY
 
 
 def test_get_queue_reflects_jobs_owner_and_spot():

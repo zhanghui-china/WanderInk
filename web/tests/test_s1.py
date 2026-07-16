@@ -64,3 +64,13 @@ def test_s1_system_requires_importance_ordering():
     """characters 需按重要度降序,保证前 4 个主角拿到三视图参考。"""
     system = s1_script.SYSTEM
     assert "重要度" in system and "降序" in system
+
+
+@respx.mock
+def test_s1_blocks_sensitive_generated_script():
+    script = json.loads(json.dumps(SCRIPT))
+    script["theme"] = "周恩来在梅园新村的坚守"     # LLM 生成内容里混入敏感人物,即便传说本身干净
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(script, ensure_ascii=False)}}]}))
+    with pytest.raises(ValueError, match="敏感"):
+        s1_script.run(_project(), LLMClient(BASE, "sk", "m"))

@@ -20,6 +20,7 @@ export function NewProjectForm({
   const [voice, setVoice] = useState('')
   const [speed, setSpeed] = useState(1.0)
   const [multiPanel, setMultiPanel] = useState(false)
+  const [useHermesAgent, setUseHermesAgent] = useState(true)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const ro = !!meta?.readonly   // 公开演示只读:禁用生成
@@ -39,6 +40,7 @@ export function NewProjectForm({
         voice,
         speed,
         multi_panel: multiPanel,
+        use_hermes_agent: useHermesAgent,
       })
       setSpot('')
       setStory('')
@@ -160,6 +162,19 @@ export function NewProjectForm({
         />
         <label htmlFor="multi-panel" className="text-xs text-ink-soft">
           启用分格排版(日式分镜)
+        </label>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <input
+          id="use-hermes-agent"
+          type="checkbox"
+          checked={useHermesAgent}
+          onChange={(e) => setUseHermesAgent(e.target.checked)}
+          className="h-4 w-4 rounded border-line accent-cinnabar"
+        />
+        <label htmlFor="use-hermes-agent" className="text-xs text-ink-soft">
+          用"编剧大师"生成剧本/分镜(关闭则用原始 LLM)
         </label>
       </div>
 

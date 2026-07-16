@@ -80,6 +80,7 @@ class GenerationParams(BaseModel):
     voice: str = ""
     speed: float = 1.0
     multi_panel: bool = False
+    use_hermes_agent: bool = True
 
 
 class Project(BaseModel):

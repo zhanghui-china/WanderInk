@@ -14,6 +14,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -122,18 +123,37 @@ def _locked_save(p: Project) -> None:
 
 # ---------- 后台管线 ----------
 
+REMOTE_IMAGE_CONCURRENCY = 2  # tu-zi 实测扛不住 s4_pages.CONCURRENCY(3)路并发:2026-07-16 复现
+# 3 路并发时 images/edits 端点约 2/3 请求以 500/RemoteProtocolError(服务端断连)失败,
+# 单独串行重放同样的请求则全部成功——是上游并发容量问题,不是 prompt/参考图/审核问题。
+
+
+def _image_concurrency(s: Settings) -> int:
+    """本地 shim(127.0.0.1/localhost)背后是团队共用的单张 GPU,并发请求只会排队/互相拖慢
+    甚至冲突,强制串行;远程云端 API(如 tu-zi)可以并发出图,但要封顶(见上)。"""
+    base_url, _ = s.image_endpoint
+    host = urlparse(base_url).hostname or ""
+    return 1 if host in ("127.0.0.1", "localhost") else REMOTE_IMAGE_CONCURRENCY
+
+
 def _deliverable_status(p: Project) -> str:
     """诚实闸门:据当前状态判定「整体是否已交付一部成片」。
     无 output['mp4'](未合成/编辑后已失效)→ partial:尚未合成,而非 done(单步重跑 s2–s5 会走到这)。
     有 mp4 但无成图页面 → error(理论不该发生,防御);
-    有 mp4 且含静音兜底页 → 降级 done;全程真人解说才 → 纯 done。"""
+    有 mp4 但出图页数 < 总页数(S4 有页生成失败被 s6 跳过)和/或含静音兜底页 → 降级 done;
+    两者都没有(全程出图 + 全程真人解说)才是纯 done。"""
     if not p.output.get("mp4"):
         return "partial: 尚未合成成片"
     if not p.is_deliverable():
         return "error: 生成未产出可交付内容(无成图页面)"
     s = p.content_summary()
+    notes = []
+    if s["imaged"] < s["total"]:
+        notes.append(f"{s['imaged']}/{s['total']} 页出图(其余生成失败已跳过)")
     if s["silent"] > 0:
-        return f"done(降级:{s['narrated']}/{s['total']} 页真人解说,{s['silent']} 页静音兜底)"
+        notes.append(f"{s['narrated']}/{s['total']} 页真人解说,{s['silent']} 页静音兜底")
+    if notes:
+        return f"done(降级:{'; '.join(notes)})"
     return "done"
 
 
@@ -157,6 +177,12 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
     workdir = store.project_dir(project_id)
     # 逐环节解析生效 Settings 与 client(同一 cfg 快照,作业内配置一致;不同环节可用不同端点/模型)。
     settings, clients = resolve_stage_clients(cfg)
+    if not p.params.use_hermes_agent:
+        # 开关关闭:S0/S1 跳过按环节覆盖(如 hermes-agent),回退到全局默认 LLM——
+        # 保留"原始通过 LLM 生成剧本/分镜"的路径,不依赖任何特定 skill。
+        for st in ("s0", "s1"):
+            settings[st] = resolve_settings(None, cfg)
+            clients[st] = _clients(settings[st])
     try:
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
@@ -182,7 +208,8 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
                                              settings["s3"].image_size)),
             ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
                                         strict=settings["s4"].strict_consistency,
-                                        on_progress=lambda: _locked_save(p))),
+                                        on_progress=lambda: _locked_save(p),
+                                        concurrency=_image_concurrency(settings["s4"]))),
             ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir,
                                         clients["s5"][3])),
             ("s6", lambda: s6_compose.run(p, workdir)),
@@ -317,6 +344,7 @@ class NewProject(BaseModel):
     voice: str = ""
     speed: float = 1.0
     multi_panel: bool = False
+    use_hermes_agent: bool = True
 
 
 def _validate(body: NewProject) -> None:
@@ -358,6 +386,7 @@ def create_project(body: NewProject, user: str = Depends(current_user)) -> dict:
         p.params.voice = body.voice
         p.params.speed = body.speed
         p.params.multi_panel = body.multi_panel
+        p.params.use_hermes_agent = body.use_hermes_agent
         p.style_preset = body.style
         p.status["pipeline"] = "queued"
         store.save(p)
@@ -603,7 +632,8 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
             p = s3_characters.run(p, llm, image, workdir, s.image_size)
         elif name == "s4":
             p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
-                              on_progress=lambda: _locked_save(p))
+                              on_progress=lambda: _locked_save(p),
+                              concurrency=_image_concurrency(s))
         elif name == "s5":
             p = s5_audio.run(p, tts, s.tts_voice, workdir, music)
         elif name == "s6":

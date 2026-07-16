@@ -186,7 +186,7 @@ export function ProjectDetailView({
       {project.characters.length > 0 && (
         <div className={card}>
           <CardHead glyph="人" title="人物设定 · 三视图" extra={`${project.characters.length} 位角色`} />
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {project.characters.map((c) => (
               <CharacterCard
                 key={c.name}
@@ -336,6 +336,10 @@ function CharacterCard({
   const [busy, setBusy] = useState(false)
   const [lightboxOpen, setLightboxOpen] = useState(false)
 
+  // 独立于 toolBtn 定义(不叠加覆盖字号):卡片变宽后两个按钮各占一半、居中、不换行
+  const charBtn =
+    'flex-1 justify-center whitespace-nowrap rounded-md border border-line bg-white/50 px-2 py-1 text-center text-[10px] text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
+
   async function redraw() {
     if (!window.confirm('仅重绘设定图,已生成页面需自行重绘。确定继续?')) return
     setBusy(true)
@@ -351,7 +355,7 @@ function CharacterCard({
 
   return (
     <figure className="overflow-hidden rounded-xl border border-line bg-white/60">
-      <div className={`aspect-[3/4] bg-gradient-to-b from-kraft to-rice-deep ${mountFrame}`}>
+      <div className={`aspect-[3/2] bg-gradient-to-b from-kraft to-rice-deep ${mountFrame}`}>
         {c.image ? (
           <img src={c.image} alt={c.name} className="h-full w-full object-cover" />
         ) : (
@@ -371,12 +375,12 @@ function CharacterCard({
         <div className="text-[11px] text-muted">{c.role}</div>
         <div className="mt-2 flex gap-1.5">
           {c.image && (
-            <button type="button" onClick={() => setLightboxOpen(true)} className={toolBtn}>
+            <button type="button" onClick={() => setLightboxOpen(true)} className={charBtn}>
               查看详情
             </button>
           )}
           {editable && (
-            <button type="button" onClick={redraw} disabled={busy} className={toolBtn}>
+            <button type="button" onClick={redraw} disabled={busy} className={charBtn}>
               {busy ? '重绘中…' : '重绘设定图'}
             </button>
           )}
@@ -521,9 +525,14 @@ function PageCard({
 
   async function act(kind: 'redraw' | 'revoice' | 'delete') {
     if (kind === 'delete' && !window.confirm(`确定删除第 ${pg.index} 页?此操作不可撤销。`)) return
+    if (kind === 'redraw' &&
+        !window.confirm(`确定重新生成第 ${pg.index} 页的图片?将调用配置的生图 API。`)) return
     setBusy(kind)
     try {
-      if (kind === 'redraw') await api.redrawCell(projectId, pg.index)
+      if (kind === 'redraw') {
+        await api.redrawCell(projectId, pg.index)
+        await api.runStep(projectId, 's4')   // 标记后立即触发 S4 重跑,只会重画本页等待中的页
+      }
       if (kind === 'revoice') await api.revoiceCell(projectId, pg.index)
       if (kind === 'delete') await api.deleteCell(projectId, pg.index)
       onChanged()

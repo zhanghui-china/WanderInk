@@ -105,7 +105,7 @@ def test_s6_skips_missing_and_unconfirmed_cells(tmp_path: Path):
         p = s6_compose.run(p, tmp_path)
     assert sh.call_count == 5           # 片头 + 1 正文页 + 片尾 + concat + finalize,跳过另两页
     assert ov.call_count == 1           # 仅入选页生成 overlay
-    assert p.status["s6"] == "done"
+    assert p.status["s6"] == "partial"  # 有页被跳过,不能诚实地标 done(见 2026-07-16 反馈)
 
 
 def test_s6_refuses_empty_when_no_content_cells(tmp_path: Path):
