@@ -90,13 +90,7 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
         <CardHeadInline glyph="程" title="生成进度" />
         {running && <GeneratingBars />}
         <span className="text-xs tracking-wide text-muted">
-          {running
-            ? '正在生成…'
-            : project.pipeline === 'done'
-              ? '全部完成'
-              : project.pipeline.startsWith('done(降级')
-                ? '完成(部分页静音兜底)'
-                : project.pipeline}
+          {running ? '正在生成…' : project.pipeline === 'done' ? '全部完成' : project.pipeline}
         </span>
         <span className="ml-auto flex items-center gap-3 text-xs tracking-wide text-muted">
           <span className="tabular-nums">

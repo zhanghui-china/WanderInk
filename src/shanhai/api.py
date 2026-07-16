@@ -140,14 +140,20 @@ def _deliverable_status(p: Project) -> str:
     """诚实闸门:据当前状态判定「整体是否已交付一部成片」。
     无 output['mp4'](未合成/编辑后已失效)→ partial:尚未合成,而非 done(单步重跑 s2–s5 会走到这)。
     有 mp4 但无成图页面 → error(理论不该发生,防御);
-    有 mp4 且含静音兜底页 → 降级 done;全程真人解说才 → 纯 done。"""
+    有 mp4 但出图页数 < 总页数(S4 有页生成失败被 s6 跳过)和/或含静音兜底页 → 降级 done;
+    两者都没有(全程出图 + 全程真人解说)才是纯 done。"""
     if not p.output.get("mp4"):
         return "partial: 尚未合成成片"
     if not p.is_deliverable():
         return "error: 生成未产出可交付内容(无成图页面)"
     s = p.content_summary()
+    notes = []
+    if s["imaged"] < s["total"]:
+        notes.append(f"{s['imaged']}/{s['total']} 页出图(其余生成失败已跳过)")
     if s["silent"] > 0:
-        return f"done(降级:{s['narrated']}/{s['total']} 页真人解说,{s['silent']} 页静音兜底)"
+        notes.append(f"{s['narrated']}/{s['total']} 页真人解说,{s['silent']} 页静音兜底")
+    if notes:
+        return f"done(降级:{'; '.join(notes)})"
     return "done"
 
 

@@ -157,6 +157,20 @@ def test_pipeline_status_error_when_nothing_imaged():
     assert api._deliverable_status(p).startswith("error")   # 无成图页 → 不可交付
 
 
+def test_pipeline_status_degraded_when_pages_missing():
+    # 回归:S4 部分页生成失败,s6 跳过后仍会正常合成 mp4(_content_cells 只挑 confirmed 页)——
+    # 此时不能报纯 "done",必须诚实标注出图页数少于总页数,否则前端会显示"全部完成"这种假象
+    # (2026-07 用户反馈:漫画没有全部生成,但还是说全部完成)。
+    p = Project(project_id="dlv5", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page(index=1), StoryboardCell(
+        index=2, scene_ref="1-2", visual_desc="v", characters=[],
+        caption="c", emotion="宁静", status="failed")]
+    p.output["mp4"] = "projects/dlv5/output/final.mp4"
+    st = api._deliverable_status(p)
+    assert st.startswith("done(降级")
+    assert "1/2 页出图" in st
+
+
 def test_pipeline_status_partial_when_not_composed():
     # 回归(rootcause 验证复现):有图 + 真人解说但尚未合成 mp4(如编辑后单步重跑 s5),
     # 不能报 done —— 否则 pipeline=done 而 mp4=null 就是被本次改动要根除的"假成片"。
