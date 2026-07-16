@@ -81,6 +81,7 @@ class GenerationParams(BaseModel):
     speed: float = 1.0
     multi_panel: bool = False
     use_hermes_agent: bool = True
+    screenwriter_skill: bool = False   # S1 是否显式调用 hermes-agent 的"编剧大师"skill(更慢更贵)
 
 
 class Project(BaseModel):

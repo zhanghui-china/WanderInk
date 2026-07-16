@@ -21,6 +21,7 @@ export function NewProjectForm({
   const [speed, setSpeed] = useState(1.0)
   const [multiPanel, setMultiPanel] = useState(false)
   const [useHermesAgent, setUseHermesAgent] = useState(true)
+  const [screenwriterSkill, setScreenwriterSkill] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const ro = !!meta?.readonly   // 公开演示只读:禁用生成
@@ -41,6 +42,7 @@ export function NewProjectForm({
         speed,
         multi_panel: multiPanel,
         use_hermes_agent: useHermesAgent,
+        screenwriter_skill: screenwriterSkill,
       })
       setSpot('')
       setStory('')
@@ -174,7 +176,20 @@ export function NewProjectForm({
           className="h-4 w-4 rounded border-line accent-cinnabar"
         />
         <label htmlFor="use-hermes-agent" className="text-xs text-ink-soft">
-          用"编剧大师"生成剧本/分镜(关闭则用原始 LLM)
+          S0/S1 用 hermes-agent 后端(关闭则用默认 LLM)
+        </label>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <input
+          id="screenwriter-skill"
+          type="checkbox"
+          checked={screenwriterSkill}
+          onChange={(e) => setScreenwriterSkill(e.target.checked)}
+          className="h-4 w-4 rounded border-line accent-cinnabar"
+        />
+        <label htmlFor="screenwriter-skill" className="text-xs text-ink-soft">
+          用"编剧大师"深度创作剧本(更慢更贵,需 S1 为 hermes-agent 后端)
         </label>
       </div>
 

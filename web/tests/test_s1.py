@@ -1,7 +1,7 @@
 import json
 import httpx, respx, pytest
 from shanhai.providers.llm import LLMClient
-from shanhai.schema import Legend, Project
+from shanhai.schema import Legend, Project, Script
 from shanhai.steps import s1_script
 
 BASE = "https://p.example.com/v1"
@@ -28,6 +28,28 @@ def test_s1_fills_script():
 def test_s1_requires_legend():
     with pytest.raises(ValueError):
         s1_script.run(Project(project_id="x", scenic_spot="雷峰塔"), LLMClient(BASE, "sk", "m"))
+
+
+def test_s1_use_skill_prepends_slash_and_caps_retries():
+    # use_skill=True:system 前置 /screenwriter-master 触发编剧大师 skill,retries 降到 1 封成本
+    from unittest.mock import MagicMock
+    llm = MagicMock()
+    llm.structured.return_value = Script.model_validate(SCRIPT)
+    s1_script.run(_project(), llm, use_skill=True)
+    sys_arg = llm.structured.call_args.args[0]
+    assert sys_arg.startswith("/screenwriter-master")
+    assert "请勿反问" in sys_arg
+    assert llm.structured.call_args.kwargs.get("retries") == 1
+
+
+def test_s1_without_skill_no_slash_default_retries():
+    from unittest.mock import MagicMock
+    llm = MagicMock()
+    llm.structured.return_value = Script.model_validate(SCRIPT)
+    s1_script.run(_project(), llm)                 # use_skill 默认 False
+    sys_arg = llm.structured.call_args.args[0]
+    assert "/screenwriter-master" not in sys_arg
+    assert "retries" not in llm.structured.call_args.kwargs   # 走默认 retries=2
 
 def test_is_narrator():
     assert s1_script.is_narrator("旁白", "叙事者")
