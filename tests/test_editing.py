@@ -141,6 +141,33 @@ def test_update_bad_index_raises(tmp_path: Path):
         editing.update_cell(p, 9, caption="x")
 
 
+def test_page_edit_invalidates_pipeline_and_downstream_status(tmp_path: Path):
+    # 联动诚实化:页级编辑(改画面)使 s4 起的下游产物过期 —— pipeline 打回 partial、
+    # s4/s5/s6(含其 _elapsed_s 计时键)复位,s4 之前的上游环节(s3)保持不动,output 清空。
+    p = _project(tmp_path)
+    p.status = {"pipeline": "done", "s3": "done", "s4": "done", "s4_elapsed_s": "1.0",
+                "s5": "done", "s6": "done"}
+    editing.update_cell(p, 2, visual_desc="新画面")
+    assert p.status["pipeline"] == "partial: 已编辑,待重新生成"
+    assert "s4" not in p.status and "s5" not in p.status and "s6" not in p.status
+    assert "s4_elapsed_s" not in p.status                  # 计时键一并复位,不留陈旧耗时
+    assert p.status["s3"] == "done"                        # s4 上游不受影响
+    assert p.output == {}
+
+
+def test_character_redraw_invalidates_from_s3(tmp_path: Path):
+    # 角色改动影响一致性锚点,须从 s3 起失效(比页级编辑多回收一环)。
+    p = _project(tmp_path, n=1)
+    p.script = Script(title="t", theme="th", acts=[], characters=[
+        CharacterCard(name="白素贞", role="r", personality="p", appearance="a",
+                      turnaround_image="characters/白素贞.png", locked=True)])
+    p.status = {"pipeline": "done", "s3": "done", "s4": "done", "s5": "done", "s6": "done"}
+    editing.mark_character_redraw(p, "白素贞")
+    assert p.status["pipeline"] == "partial: 已编辑,待重新生成"
+    assert "s3" not in p.status and "s4" not in p.status   # 从 s3 起失效
+    assert p.script.characters[0].locked is False
+
+
 def test_mark_character_redraw(tmp_path: Path):
     p = _project(tmp_path, n=1)
     p.script = Script(title="t", theme="th", acts=[], characters=[

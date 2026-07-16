@@ -44,9 +44,14 @@ def run(project: Project, llm: LLMClient, image: ImageClient,
                 c.turnaround_image = str(out.relative_to(workdir))
                 c.locked = True
             except Exception as e:  # noqa: BLE001 单角色三视图失败不拖垮整轮(同 S4 单页失败模式);
+                # 清掉可能残留的旧三视图并解锁,不保留旧图冒充成功(否则重跑时旧图会掩盖本次失败);
                 # 该角色退化为仅文字特征约束,与 MAX_TURNAROUND 之外的次要角色同等对待
+                c.turnaround_image = ""
+                c.locked = False
                 print(f"角色「{c.name}」三视图生成失败,退化为纯文字特征:{e}")
+    # 诚实状态:所有需绘三视图的角色(前 MAX_TURNAROUND 个)都成功产出并锁定才算 done;
+    # 任一失败(未锁定、无三视图)则 partial。MAX_TURNAROUND 之外的次要角色本不绘三视图,不参与判定。
     project.status["s3"] = "done" if all(
-        c.turnaround_image or i >= MAX_TURNAROUND
+        c.locked or i >= MAX_TURNAROUND
         for i, c in enumerate(project.script.characters)) else "partial"
     return project

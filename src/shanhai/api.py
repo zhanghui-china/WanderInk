@@ -140,18 +140,25 @@ def _deliverable_status(p: Project) -> str:
     """诚实闸门:据当前状态判定「整体是否已交付一部成片」。
     无 output['mp4'](未合成/编辑后已失效)→ partial:尚未合成,而非 done(单步重跑 s2–s5 会走到这)。
     有 mp4 但无成图页面 → error(理论不该发生,防御);
-    有 mp4 但出图页数 < 总页数(S4 有页生成失败被 s6 跳过)和/或含静音兜底页 → 降级 done;
-    两者都没有(全程出图 + 全程真人解说)才是纯 done。"""
+    有 mp4 但入选成片页数 < 总页数(S4 缺图 / S5 缺音的页被 s6 跳过)和/或含静音兜底页 → 降级 done;
+    全部都没有(全程出图 + 全程有音 + 全程真人解说)才是纯 done。"""
     if not p.output.get("mp4"):
         return "partial: 尚未合成成片"
     if not p.is_deliverable():
         return "error: 生成未产出可交付内容(无成图页面)"
     s = p.content_summary()
+    total = s["total"]
+    # composed 与 s6_compose._content_cells 的入选契约一致(confirmed 且图/音齐备)。
+    # content_summary['imaged'] 只看 confirmed+image、不含 audio,故"有图但音轨被清(audio='')"的页
+    # 会逃过 imaged<total 判定却入不了成片——单算 composed 才能诚实反映真正入选的页数。
+    composed = sum(1 for c in p.storyboard if c.status == "confirmed" and c.image and c.audio)
     notes = []
-    if s["imaged"] < s["total"]:
-        notes.append(f"{s['imaged']}/{s['total']} 页出图(其余生成失败已跳过)")
+    if s["imaged"] < total:
+        notes.append(f"{s['imaged']}/{total} 页出图(其余生成失败已跳过)")
+    if composed < total:
+        notes.append(f"{composed}/{total} 页入选成片(其余缺图/缺音被跳过)")
     if s["silent"] > 0:
-        notes.append(f"{s['narrated']}/{s['total']} 页真人解说,{s['silent']} 页静音兜底")
+        notes.append(f"{s['narrated']}/{total} 页真人解说,{s['silent']} 页静音兜底")
     if notes:
         return f"done(降级:{'; '.join(notes)})"
     return "done"
@@ -641,6 +648,12 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
         _mark_step_elapsed(p, name, step_t0)
         if name != "s6":
             p.output.clear()   # 重跑上游步骤使已合成的 mp4/zip/pdf 失效,清掉避免残留"假成片"
+            # 级联:重跑上游环节使其下游环节产物过期,清掉下游 status 键避免残留"假完成"标记。
+            # name 恒在 _STEP_NAMES 内(run_step 已校验),故按 _STEP_NAMES 顺序取其后即为下游。
+            idx = _STEP_NAMES.index(name)
+            for step in _STEP_NAMES[idx + 1:]:
+                for key in (step, f"{step}_started_at", f"{step}_elapsed_s"):
+                    p.status.pop(key, None)
         _locked_save(p)
         p.status["pipeline"] = _deliverable_status(p)
         p.status["pipeline_finished_at"] = _now_iso()

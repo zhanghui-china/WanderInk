@@ -171,6 +171,21 @@ def test_pipeline_status_degraded_when_pages_missing():
     assert "1/2 页出图" in st
 
 
+def test_pipeline_status_degraded_when_imaged_but_audio_cleared():
+    # 关键回归:s5 双重失败(cell.audio="" 且 silent=False)的确认页——有图但无音轨,会被 s6 跳过。
+    # content_summary['imaged'] 只看 image、把它算作已出图,若只判 imaged<total 会逃过降级;
+    # 单算 composed(confirmed 且图/音齐备)才能诚实标注,绝不返回纯 done。
+    p = Project(project_id="dlv6", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page(index=1),
+                    _imaged_page(index=2, audio="", silent=False)]   # 有图但音轨被清
+    p.output["mp4"] = "projects/dlv6/output/final.mp4"
+    st = api._deliverable_status(p)
+    assert st != "done"
+    assert st.startswith("done(降级")
+    assert "1/2 页入选成片" in st
+    assert "1/2 页出图" not in st                          # imaged=2==total,出图降级不该误报
+
+
 def test_pipeline_status_partial_when_not_composed():
     # 回归(rootcause 验证复现):有图 + 真人解说但尚未合成 mp4(如编辑后单步重跑 s5),
     # 不能报 done —— 否则 pipeline=done 而 mp4=null 就是被本次改动要根除的"假成片"。
@@ -637,6 +652,30 @@ def test_run_step_records_step_timing(_settings):
     float(p.status["s6_elapsed_s"])
     assert p.status["pipeline_started_at"]
     assert p.status["pipeline_finished_at"]
+
+
+def test_run_step_cascades_clears_downstream_status():
+    # 联动诚实化:重跑上游 s4 使其下游 s5/s6 产物过期,须级联清掉下游 status 键(含计时键),
+    # 避免残留"假完成"标记;本环节 s4 自身与其上游不被级联清除,output 因上游重跑清空。
+    from unittest.mock import MagicMock
+
+    from shanhai.config import Settings
+    p = Project(project_id="cascadeId", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    p.status = {"s4": "done", "s5": "done", "s5_elapsed_s": "2.0", "s6": "done"}
+    fake = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s4_pages") as s4:
+        s4.run.return_value = p
+        api._run_step("cascadeId", "s4", runtime_config.AppConfig())
+    assert "s5" not in p.status and "s6" not in p.status   # 下游被级联清除
+    assert "s5_elapsed_s" not in p.status                  # 下游计时键一并清除
+    assert p.status["s4"] == "done"                        # 本环节自身不被级联清除
+    assert p.output == {}                                  # 上游重跑,旧成片失效
 
 
 def test_image_concurrency_serial_for_local_backend():

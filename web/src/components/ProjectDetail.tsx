@@ -64,7 +64,9 @@ export function ProjectDetailView({
 
   const generating = project.pipeline === 'queued' || project.pipeline === 'running'
   const editable = !meta?.readonly && !generating
-  const pendingCount = project.pages.filter((p) => p.status === 'draft' || !p.audio).length
+  const pendingCount = project.pages.filter(
+    (p) => p.status === 'draft' || p.status === 'failed' || !p.audio,
+  ).length
 
   function handleDrop(targetIndex: number) {
     const from0 = dragIndex

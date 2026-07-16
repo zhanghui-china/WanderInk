@@ -78,8 +78,11 @@ function totalElapsedSeconds(status: Record<string, string>): number | null {
 export function ProgressSteps({ project }: { project: ProjectDetail }) {
   const running = project.pipeline === 'running' || project.pipeline === 'queued'
   const failed = project.pipeline.startsWith('error')
-  // 第一个未完成步骤即“当前步”
-  const currentIdx = STAGES.findIndex((s) => project.status[s.key] !== 'done')
+  // 第一个未完成步骤即“当前步”;partial 是合法降级完成态,视为已推进,
+  // 否则当前步指针/失败标红会错位到上游 partial 环节而非真正出错的环节
+  const currentIdx = STAGES.findIndex(
+    (s) => project.status[s.key] !== 'done' && project.status[s.key] !== 'partial',
+  )
 
   const totalElapsed = totalElapsedSeconds(project.status)
   const doneCount = STAGES.filter((s) => project.status[s.key] === 'done').length
