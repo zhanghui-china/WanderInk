@@ -239,3 +239,26 @@ update_overrides(lambda existing: apply_put(existing, incoming))
 **验证踩坑记录**:第一次端到端验证脚本写成 `resolve_stage_clients(AppConfig())`,传了个空的 `AppConfig()` 而不是 `None`——`runtime_config.resolve_settings` 内部是 `cfg = cfg or load_overrides()`,空的 `AppConfig()` 实例本身是 truthy,导致完全不读磁盘上的 `config.json`,悄悄退回到 `.env` 基线设置。改成传 `None` 才对上。教训:凡是要验证"配置覆盖是否生效"的脚本,必须显式传 `None` 或直接调用 `load_overrides()`,不能用默认构造的空 `AppConfig()` 占位。
 
 **现状(供下次核对)**:S0/S1 生效 LLM 是 hermes-agent(`127.0.0.1:8642`);S2/S3 未受影响,沿用此前就已存在的 `config.json` 全局覆盖(`llm_base_url=https://api.stepfun.com/v1`,`llm_model=step-3.7-flash`——这个全局覆盖是本次任务之前就有的,不是这次改的,顺带发现部署文档此前记录的"glm-4.7-flash:latest"已过期,供下次核对时留意)。
+
+## S1 接入 hermes-agent 的"编剧大师"skill(2026-07-16,commit `48e91ca`)
+
+**背景**:上面那次接入(2026-07-15)只是把 S0/S1 的后端指到 hermes-agent,`LLMClient` 发的是普通 system prompt,**从未显式触发它内置的"编剧大师"skill**——用真实响应核实过:不带 `/screenwriter-master` 时 `prompt_tokens≈16k`、没有任何 skill 元数据,hermes-agent 只是被当成一个普通 LLM 在用。
+
+**实测确认的关键事实**(DGX 上直接调用验证,非推测):
+- 消息内容里加 `/screenwriter-master` 前缀会真正加载 skill——`prompt_tokens` 从 16k 跳到 **70k**,且默认进入**多轮反问式工作流**(会反问篇幅/受众/基调,不直接产出),与我们要求的"单轮直出 JSON"天然冲突。
+- 但**一次性把参数喂全 + 明确要求"请勿反问,直接产出成品"**,可以压住反问、单轮拿到合法 JSON——用真实 `Script` schema(嵌套 acts/scenes/dialogues/characters)验证通过:4 幕、4 个角色、707 字命中目标 650±20%。**不需要多轮对话状态机**,复用现有 `LLMClient.structured()` 单轮 + 重试模式即可接入。
+- **代价很高**:单次约 **150k~165k token、200~400 秒**,约为不用 skill 的 **10 倍 token、2~3 倍耗时**。这是逐作品开关默认关闭的直接原因。
+
+**改动**(只涉及 S1,不碰 S0):
+- `GenerationParams`/`NewProject` 新增 `screenwriter_skill: bool`(默认 `False`),前端新建作品表单新增对应勾选框(默认不勾)。
+- `s1_script.run()` 新增 `use_skill` 参数:为真时 system prompt 包一层 `/screenwriter-master\n\n` 前缀 + `【一次性给全信息,请勿反问,直接产出成品剧本】` 尾缀,`structured(..., retries=1)`(默认 `retries=2`,skill 场景每次重试都是又一次 ~400s/~16 万 token,封顶到最多两次尝试控制最坏成本)。
+- **后端把关**(`api._s1_use_skill`):只有作品勾了开关**且** S1 当前生效 `llm_model == "hermes-agent"` 时才真正启用;否则打印一行提示、静默退化为普通生成——避免开关误开但 S1 配置成别的模型时,把 `/screenwriter-master` 当乱码发过去。`cli.py` 的 `step`/`run` 两处 S1 调用点做了同款 gate。
+- 顺带修正了一处此前遗留的误导性文案:去年(2026-07-15)那次接入时新建表单加的 `use_hermes_agent` 开关文案原写"用编剧大师生成剧本/分镜"——但它实际只是"S0/S1 是否用 hermes-agent 后端",从不触发 skill,这次改成了如实的"S0/S1 用 hermes-agent 后端(关闭则用默认 LLM)",避免和这次新加的 skill 开关混淆。
+
+**超时余量**:用 `scripts/setup-hermes-agent.py --timeout 900` 把 S0/S1 的 `llm_timeout` 从 600s 抬到 900s,给 skill 单次调用(实测 200~400s)留够头,retries=1 时最坏两次尝试串行仍在合理范围。
+
+**DGX 真机端到端验证**(直接跑 wired 的 `api._s1_use_skill` + `s1_script.run(use_skill=True)`,同一套生产代码路径):gate 正确识别 `use_skill=True`(S1 后端确为 hermes-agent),实际调用耗时 212.7s,产出《断桥伞下》4 幕 4 角色(白素贞/许仙/法海/小青),旁白+对白 705 字命中目标区间,`status["s1"]="done"`。
+
+**部署记录**:372 测试全绿(本地+DGX aarch64 一致)、`ruff check` 通过、前端 `npm run build` 通过 → 确认无在途任务 → rsync → DGX `uv sync`+pytest → `systemctl --user restart shanhai-web` → 200。已同步到 WanderInk GitHub 远程(`git subtree`,用户本机执行 `scripts/sync-wanderink.sh`)。
+
+**现状(供下次核对)**:新建作品表单有两个相关开关,注意区分——`use_hermes_agent`(S0/S1 是否走 hermes-agent 后端,默认开)与 `screenwriter_skill`(S1 是否显式触发编剧大师 skill 深度创作,默认关、成本高)。后者依赖前者为真且后端确实解析到 `hermes-agent` 才生效。S0 未接 skill(检索类任务,skill 意义不大,决策已明确不做)。
