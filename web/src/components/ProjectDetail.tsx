@@ -525,9 +525,14 @@ function PageCard({
 
   async function act(kind: 'redraw' | 'revoice' | 'delete') {
     if (kind === 'delete' && !window.confirm(`确定删除第 ${pg.index} 页?此操作不可撤销。`)) return
+    if (kind === 'redraw' &&
+        !window.confirm(`确定重新生成第 ${pg.index} 页的图片?将调用配置的生图 API。`)) return
     setBusy(kind)
     try {
-      if (kind === 'redraw') await api.redrawCell(projectId, pg.index)
+      if (kind === 'redraw') {
+        await api.redrawCell(projectId, pg.index)
+        await api.runStep(projectId, 's4')   // 标记后立即触发 S4 重跑,只会重画本页等待中的页
+      }
       if (kind === 'revoice') await api.revoiceCell(projectId, pg.index)
       if (kind === 'delete') await api.deleteCell(projectId, pg.index)
       onChanged()
