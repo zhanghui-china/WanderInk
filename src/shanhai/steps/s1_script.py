@@ -1,4 +1,5 @@
 from shanhai.providers.llm import LLMClient
+from shanhai.safety import find_sensitive
 from shanhai.schema import Project, Script
 
 WORD_TARGETS = {1: 210, 3: 650, 5: 1100}
@@ -21,7 +22,21 @@ SYSTEM = """你是儿童文学与文旅内容编剧。把给定的景区传说�
 叙事框架(引人入胜的故事结构):
 - 冷开场钩子:第一幕第一场用悬念、冲突或强画面抓住观众,避免平铺直叙的背景交代式开头;可勾连景区意象(如"这座塔下,压着一段千年往事…")
 - 起承转合:整体遵循起(setup)→承(发展)→转(转折/高潮)→合(收束)四段式;张力逐幕递增,高潮置于后段
-- 情感落点:结尾给出清晰的情感收束(温情/怅惘/释然),呼应主题"""
+- 情感落点:结尾给出清晰的情感收束(温情/怅惘/释然),呼应主题
+- 避免虚构或引入近现代真实政治人物、政治事件等敏感内容;传说本身涉及此类背景时,
+  聚焦民俗/情感/文化侧面改编,避开政治敏感表述"""
+
+
+def _script_text(script: Script) -> str:
+    parts = [script.title, script.theme]
+    for act in script.acts:
+        for scene in act.scenes:
+            parts.append(scene.description)
+            parts.append(scene.narration)
+            parts.extend(d.line for d in scene.dialogues)
+    for c in script.characters:
+        parts.append(f"{c.name}{c.role}{c.personality}{c.appearance}")
+    return "".join(parts)
 
 
 def run(project: Project, llm: LLMClient) -> Project:
@@ -30,7 +45,11 @@ def run(project: Project, llm: LLMClient) -> Project:
     words = WORD_TARGETS[project.params.duration_min]
     user = (f"传说:《{project.legend.title}》\n梗概:{project.legend.summary}\n"
             f"目标总字数:{words}\n受众:{project.params.audience}\n基调:{project.params.tone}")
-    project.script = llm.structured(SYSTEM, user, Script)
+    script = llm.structured(SYSTEM, user, Script)
+    hits = find_sensitive(_script_text(script))
+    if hits:
+        raise ValueError(f"生成剧本涉及敏感内容({'、'.join(hits)}),已阻止生成")
+    project.script = script
     # 防御:即便 LLM 仍把旁白/叙事者塞进 characters,也剔除,避免占三视图名额、被误画
     project.script.characters = [c for c in project.script.characters
                                  if not is_narrator(c.name, c.role)]
