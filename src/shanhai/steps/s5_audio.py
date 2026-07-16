@@ -73,7 +73,9 @@ def _split_clauses(caption: str) -> list[str]:
 def _synthesize_clause(tts: TTSClient, text: str, voice: str, dest: Path,
                        speed: float = 1.0) -> int:
     """合成一句并检测截断:时长明显偏短则重合成,始终保留最长的一次。返回时长 ms。"""
-    floor = len(text) * MIN_MS_PER_CHAR
+    # floor 随 speed 缩放:MIN_MS_PER_CHAR 按 speed=1.0 校准,语速越快每字应有的最短时长越短,
+    # 否则高语速正常语音会被误判截断而空转 TTS_TRIES。speed=1.0 时与原值一致(无回归)。
+    floor = round(len(text) * MIN_MS_PER_CHAR / speed)
     tmp = dest.with_suffix(".try.mp3")
     best_ms = 0
     for _ in range(TTS_TRIES):
@@ -100,7 +102,8 @@ def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path,
     if not caption.strip():
         raise ValueError("空文案,无法合成")
     ms = _synthesize_single(tts, caption, voice, out, speed=speed)
-    floor = len(caption) * MIN_MS_PER_CHAR
+    # floor 随 speed 缩放(同 _synthesize_clause):高语速下正常语音更短,不应误判为截断而退化逐句。
+    floor = round(len(caption) * MIN_MS_PER_CHAR / speed)
     if ms >= floor:
         return ms
     print(f"⚠️ 整段合成疑似截断({ms}ms<{floor}ms),退化逐句合成")

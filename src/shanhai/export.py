@@ -11,10 +11,18 @@ PDF_RESOLUTION = 150.0  # 供打印/查看引用,不影响像素内容
 
 
 def build_exports(project: Project, workdir: Path) -> Project:
-    """已确认页(status=="confirmed" 且有 image)逐页与字幕/水印叠加层合成,
-    打包 output/pages.zip + output/book.pdf,回写 project.output["zip"|"pdf"]。
-    无确认页则不产出、不报错。"""
-    cells = [c for c in project.storyboard if c.status == "confirmed" and c.image]
+    """已确认页(status=="confirmed"、有 image 且图片文件确实存在)逐页与字幕/水印叠加层
+    合成,打包 output/pages.zip + output/book.pdf,回写 project.output["zip"|"pdf"]。
+    无入选页则不产出、不报错。存在性检查与 s6_compose._content_cells 的入选契约对齐:
+    confirmed 页引用悬空时跳过该页(打印原因)而非让整体导出崩溃。"""
+    cells = []
+    for c in project.storyboard:
+        if c.status != "confirmed" or not c.image:
+            continue
+        if not (workdir / c.image).exists():
+            print(f"跳过第 {c.index} 页(图片缺失:{c.image})")
+            continue
+        cells.append(c)
     if not cells:
         return project
     out_dir = workdir / "output"

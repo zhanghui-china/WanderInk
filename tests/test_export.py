@@ -62,3 +62,37 @@ def test_build_exports_skips_unconfirmed_and_missing_image(tmp_path: Path):
     assert not (tmp_path / "output" / "pages.zip").exists()
     assert "zip" not in p.output
     assert "pdf" not in p.output
+
+
+def test_build_exports_skips_confirmed_page_with_missing_file(tmp_path: Path):
+    # confirmed 且有 image,但引用的图片文件悬空 → 跳过该页而非崩溃(与 s6 存在性契约一致)
+    pages_dir = tmp_path / "pages"
+    pages_dir.mkdir()
+    Image.new("RGB", (1920, 1080), "green").save(pages_dir / "page_02.png")
+
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.storyboard = [
+        _confirmed_cell(1, "pages/page_01.png"),   # 文件不存在(悬空引用)
+        _confirmed_cell(2, "pages/page_02.png"),   # 文件存在
+    ]
+
+    result = export.build_exports(p, tmp_path)
+
+    pdf_path = tmp_path / "output" / "book.pdf"
+    assert pdf_path.exists()                       # 未崩溃,仍产出
+    with pdf_path.open("rb") as fh:
+        pdf = PdfParser.PdfParser(f=fh)
+        assert len(pdf.pages) == 1                 # 只含存在文件的那一页
+        pdf.close()
+    assert result.output["pdf"] == str(pdf_path)
+
+
+def test_build_exports_no_output_when_all_files_missing(tmp_path: Path):
+    # 所有 confirmed 页都悬空 → 无入选页,不产出、不报错
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.storyboard = [_confirmed_cell(1, "pages/page_01.png")]  # 文件不存在
+
+    export.build_exports(p, tmp_path)
+
+    assert not (tmp_path / "output" / "pages.zip").exists()
+    assert "zip" not in p.output

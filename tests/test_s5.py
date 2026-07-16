@@ -213,6 +213,44 @@ def test_s5_falls_back_to_chunked_when_truncated(mock_probe, mock_sh, tmp_path: 
 
 
 @patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=3000)
+def test_s5_high_speed_not_judged_truncated(mock_probe, mock_sh, tmp_path: Path):
+    # 批7a:floor 随 speed 缩放。28字、probe=3000ms。speed=2.0 → floor=round(28×150/2)=2100,
+    # 3000≥2100 → 采用整段单发,不退化逐句(高语速正常语音不再被误判截断)。
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    cap = "黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。"
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
+                                   caption=cap, emotion="宁静")]
+    p.params.speed = 2.0
+    tts = _writing_tts()
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    tts.synthesize.assert_called_once()                     # 仅整段一次,未退化逐句
+    cmds = [" ".join(c.args[0]) for c in mock_sh.call_args_list]
+    assert not any("-f concat" in c for c in cmds)          # 无拼接
+    assert p.storyboard[0].duration_ms == 3000              # 正常语音,不误判
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=3000)
+def test_s5_speed_one_still_chunks_same_audio(mock_probe, mock_sh, tmp_path: Path):
+    # 对照(回归保护):同样 28字/probe=3000,speed=1.0 时 floor=4200,3000<4200 → 仍退化逐句。
+    # 证明区别纯由 speed 缩放带来,speed=1.0 行为与改动前完全一致。
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    cap = "黄昏的西湖边，雷峰塔映入水中，像藏着一封千年未拆的旧信。"
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="v", characters=[],
+                                   caption=cap, emotion="宁静")]  # speed 默认 1.0
+    tts = _writing_tts()
+    p = s5_audio.run(p, tts, "alloy", tmp_path, manifest_path=manifest)
+    assert tts.synthesize.call_count == 4                   # 整段1 + 逐句3(退化路径)
+    cmds = [" ".join(c.args[0]) for c in mock_sh.call_args_list]
+    assert any("-f concat" in c for c in cmds)              # 退化拼接
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
 @patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
 def test_s5_silent_fallback_on_tts_failure(mock_probe, mock_sh, tmp_path: Path):
     manifest = tmp_path / "manifest.json"
