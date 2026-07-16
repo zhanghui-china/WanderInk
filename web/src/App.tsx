@@ -86,7 +86,9 @@ export default function App() {
           refreshList()
         }
       } catch {
-        /* ignore */
+        // 瞬时网络错误不能让轮询永久停摆(否则进度冻结)。用比正常 2000 更长的
+        // 退避重排下一次,既能自愈也避免出错时高频空转;组件卸载时下方 clearTimeout 照常清理。
+        if (alive) timer = window.setTimeout(tick, 4000)
       }
     }
     tick()
@@ -191,7 +193,12 @@ export default function App() {
 
           <main>
             {detail ? (
-              <ProjectDetailView project={detail} meta={meta} onChanged={onDetailChanged} />
+              <ProjectDetailView
+                key={detail.project_id}
+                project={detail}
+                meta={meta}
+                onChanged={onDetailChanged}
+              />
             ) : (
               <EmptyState />
             )}

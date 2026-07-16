@@ -125,6 +125,35 @@ def test_serialize_builds_urls():
     assert d["content_summary"] == {"total": 1, "imaged": 1, "narrated": 1, "silent": 0}
 
 
+def test_serialize_appends_version_to_existing_files(tmp_path, monkeypatch):
+    # /files 静态挂载不发 Cache-Control:存在的产物文件须带 ?v=<mtime> 做 cache-busting,
+    # 否则重绘/重排后同名文件被浏览器缓存挡住不回源。
+    proj = tmp_path / "abcd"
+    (proj / "pages").mkdir(parents=True)
+    (proj / "audio").mkdir()
+    (proj / "characters").mkdir()
+    (proj / "pages" / "page_01.png").write_bytes(b"img")
+    (proj / "audio" / "page_01.mp3").write_bytes(b"aud")
+    (proj / "characters" / "白娘子.png").write_bytes(b"chr")
+    monkeypatch.setattr(store, "project_dir", lambda pid, *a, **k: tmp_path / pid)
+    p = Project(project_id="abcd", scenic_spot="雷峰塔")
+    p.script = Script(title="白蛇传", theme="t", acts=[], characters=[
+        CharacterCard(name="白娘子", role="蛇仙", personality="p", appearance="a",
+                      turnaround_image="characters/白娘子.png")])
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="断桥",
+                                   characters=["白娘子"], caption="初遇", emotion="宁静",
+                                   image="pages/page_01.png", audio="audio/page_01.mp3",
+                                   duration_ms=3200, status="confirmed")]
+    d = api._serialize(p)
+    assert d["pages"][0]["image"].startswith("/files/abcd/pages/page_01.png?v=")
+    assert d["pages"][0]["audio"].startswith("/files/abcd/audio/page_01.mp3?v=")
+    assert d["characters"][0]["image"].startswith("/files/abcd/characters/白娘子.png?v=")
+    # 不存在的文件不加版本参数,退回原始 URL
+    p.storyboard[0].image = "pages/missing.png"
+    d2 = api._serialize(p)
+    assert d2["pages"][0]["image"] == "/files/abcd/pages/missing.png"
+
+
 def _imaged_page(**kw) -> StoryboardCell:
     base = dict(index=1, scene_ref="1-1", visual_desc="v", characters=[], caption="c",
                 emotion="宁静", image="pages/page_01.png", audio="audio/page_01.mp3",

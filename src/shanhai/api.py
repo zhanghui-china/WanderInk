@@ -259,29 +259,46 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
 
 # ---------- 序列化:把落盘相对路径转成可访问 URL ----------
 
-def _file_url(project_id: str, rel: str) -> str | None:
-    """cell.image/audio、character.turnaround_image 都是相对项目目录的路径。"""
-    return f"/files/{project_id}/{rel}" if rel else None
+def _version_suffix(path: Path) -> str:
+    """给存在的文件追加 ?v=<mtime> 做 cache-busting;文件不存在则不加(返回空串)。
+    /files 静态挂载不发 Cache-Control,重绘/重排后同名文件会被浏览器缓存挡住不回源。"""
+    try:
+        return f"?v={int(path.stat().st_mtime)}"
+    except OSError:
+        return ""
+
+
+def _file_url(project_id: str, rel: str, workdir: Path | None = None) -> str | None:
+    """cell.image/audio、character.turnaround_image 都是相对项目目录的路径。
+    传入 workdir 时对存在的文件追加 ?v=<mtime>,避免重绘/重排后旧图被缓存挡住。"""
+    if not rel:
+        return None
+    url = f"/files/{project_id}/{rel}"
+    if workdir is not None:
+        url += _version_suffix(workdir / rel)
+    return url
 
 
 def _mp4_url(mp4: str) -> str | None:
-    """output['mp4'] 形如 'projects/<id>/output/final.mp4',去掉 projects/ 前缀挂到 /files。"""
+    """output['mp4'] 形如 'projects/<id>/output/final.mp4',去掉 projects/ 前缀挂到 /files。
+    成片重合成后同名,顺带追加 ?v=<mtime> 做 cache-busting。"""
     if not mp4:
         return None
-    return "/files/" + mp4.split("projects/", 1)[-1]
+    return "/files/" + mp4.split("projects/", 1)[-1] + _version_suffix(Path(mp4))
 
 
 def _serialize(p: Project) -> dict:
+    workdir = store.project_dir(p.project_id)
     pages = [{
         "index": c.index, "caption": c.caption, "emotion": c.emotion,
         "status": c.status, "duration_ms": c.duration_ms, "silent": c.silent,
         "scene_ref": c.scene_ref, "visual_desc": c.visual_desc, "characters": c.characters,
-        "image": _file_url(p.project_id, c.image),
-        "audio": _file_url(p.project_id, c.audio),
+        "image": _file_url(p.project_id, c.image, workdir),
+        "audio": _file_url(p.project_id, c.audio, workdir),
     } for c in p.storyboard]
     characters = [{
         "name": c.name, "role": c.role,
-        "image": _file_url(p.project_id, c.turnaround_image),
+        "image": _file_url(p.project_id, c.turnaround_image, workdir),
     } for c in (p.script.characters if p.script else [])]
     return {
         "project_id": p.project_id,
