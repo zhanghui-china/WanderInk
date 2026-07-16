@@ -43,27 +43,29 @@ def test_generations_b64():
 
 @respx.mock
 @patch("shanhai.providers._http.time.sleep")
-def test_generate_retries_on_timeout(mock_sleep):
+def test_generate_retries_transient_status(mock_sleep):
+    # 生成非幂等,但明确的瞬时状态码(请求未被成功受理、重试安全)仍应重试
     route = respx.post(f"{BASE}/images/generations")
-    route.side_effect = [httpx.ReadTimeout("slow"),
+    route.side_effect = [httpx.Response(503, text="busy"),
                          httpx.Response(200, json={"data": [{"b64_json": PNG}]})]
     c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
-    assert c.generate("a cat") == REAL_PNG           # 超时后重试成功
+    assert c.generate("a cat") == REAL_PNG           # 5xx 后重试成功
     assert route.call_count == 2
 
 
 @respx.mock
 @patch("shanhai.providers._http.time.sleep")
-def test_generate_retries_on_remote_protocol_error(mock_sleep):
-    # "Server disconnected without sending a response" 是 RemoteProtocolError,
-    # 曾被窄写的 except (TimeoutException, ConnectError) 漏抓,单次瞬时故障直接杀死整条 S3
+def test_generate_does_not_retry_transport_error(mock_sleep):
+    # 生成非幂等(idempotent=False):连接层断连(含已发出请求后的 ReadTimeout / 服务端中途断连)
+    # 可能已被上游受理并计费,不得盲重试——叠加 S4 外层 MAX_ATTEMPTS 会让单格最坏计费 9 次。
     route = respx.post(f"{BASE}/images/generations")
     route.side_effect = [
         httpx.RemoteProtocolError("Server disconnected without sending a response"),
         httpx.Response(200, json={"data": [{"b64_json": PNG}]})]
     c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
-    assert c.generate("a cat") == REAL_PNG
-    assert route.call_count == 2
+    with pytest.raises(httpx.RemoteProtocolError):
+        c.generate("a cat")
+    assert route.call_count == 1                        # 连接层错误不重试
 
 
 @respx.mock
@@ -135,6 +137,14 @@ def test_chat_mode_http_url_downloaded():
         return_value=httpx.Response(200, content=REAL_PNG))
     c = ImageClient(BASE, "sk", "nano-banana", mode="chat_api")
     assert c.generate("a cat") == REAL_PNG
+
+
+def test_timeout_is_configurable():
+    # 超时可配(方案A):默认 600,构造传入的值应落到底层 httpx.Client
+    default = ImageClient(BASE, "sk", "gpt-image-1")
+    assert default._client.timeout.read == 600
+    custom = ImageClient(BASE, "sk", "gpt-image-1", timeout=120)
+    assert custom._client.timeout.read == 120
 
 
 @respx.mock

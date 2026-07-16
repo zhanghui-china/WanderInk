@@ -3,7 +3,8 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from shanhai.cli import app
+from shanhai.cli import app, resolve_stage_clients
+from shanhai.runtime_config import STAGE_CLIENTS
 from shanhai.schema import Legend, Project, StoryboardCell
 
 runner = CliRunner()
@@ -190,6 +191,63 @@ def test_status(store):
     store.load.return_value = proj
     result = runner.invoke(app, ["status", "ab12cd34"])
     assert result.exit_code == 0 and "s1" in result.output
+
+
+@patch("shanhai.cli._clients")
+@patch("shanhai.cli.resolve_settings")
+def test_resolve_stage_clients_reuses_same_config(mock_resolve, mock_clients):
+    # 全环节同配置 → 只建一组 client,6 个环节复用同一实例(避免泄漏 24 个连接池)
+    same = _stub_settings()
+    mock_resolve.side_effect = lambda st, cfg=None: same
+    mock_clients.side_effect = lambda s: object()
+    _settings, clients = resolve_stage_clients()
+    assert mock_clients.call_count == 1
+    assert len({id(c) for c in clients.values()}) == 1
+
+
+@patch("shanhai.cli._clients")
+@patch("shanhai.cli.resolve_settings")
+def test_resolve_stage_clients_distinct_config_not_shared(mock_resolve, mock_clients):
+    # 两种配置:同配置的环节复用,不同配置的环节各自持有独立 client
+    order = list(STAGE_CLIENTS)
+    a, b = _stub_settings(), _stub_settings()
+    mapping = {st: (a if i < 3 else b) for i, st in enumerate(order)}
+    mock_resolve.side_effect = lambda st, cfg=None: mapping[st]
+    mock_clients.side_effect = lambda s: object()
+    _settings, clients = resolve_stage_clients()
+    assert mock_clients.call_count == 2                    # 两种配置各建一组
+    a_ids = {id(clients[st]) for st in order[:3]}
+    b_ids = {id(clients[st]) for st in order[3:]}
+    assert len(a_ids) == 1 and len(b_ids) == 1            # 同配置复用同一实例
+    assert a_ids.isdisjoint(b_ids)                         # 不同配置不共享
+
+
+def _explicit_settings(**overrides):
+    """所有 _client_key 要素都用具名常量的 settings,便于构造"仅单字段不同"的用例
+    (纯 MagicMock 各属性天然互异,漏掉某个 key 要素也测不出)。"""
+    base = dict(llm_provider="openai", llm_endpoint=("https://p/v1", "sk"), llm_model="m",
+                llm_timeout=300.0, image_endpoint=("https://p/v1", "sk"), image_model="im",
+                image_api_mode="chat_api", image_timeout=600.0,
+                tts_endpoint=("https://p/v1", "sk"), tts_model="t",
+                music_endpoint=("https://m/v1", "sk"), music_model="mu")
+    base.update(overrides)
+    return MagicMock(**base)
+
+
+@patch("shanhai.cli._clients")
+@patch("shanhai.cli.resolve_settings")
+def test_resolve_stage_clients_key_covers_image_timeout(mock_resolve, mock_clients):
+    # 回归守卫:两配置仅 image_timeout 不同(其余全同)也必须不共享 client——
+    # 锁死 _client_key 覆盖 image_timeout(否则漏掉该要素,仅超时不同的环节会错误复用同一实例)
+    order = list(STAGE_CLIENTS)
+    a = _explicit_settings(image_timeout=600.0)
+    b = _explicit_settings(image_timeout=120.0)
+    mapping = {st: (a if i < 3 else b) for i, st in enumerate(order)}
+    mock_resolve.side_effect = lambda st, cfg=None: mapping[st]
+    mock_clients.side_effect = lambda s: object()
+    _settings, clients = resolve_stage_clients()
+    assert mock_clients.call_count == 2                    # 仅 image_timeout 不同也各建一组
+    assert {id(clients[st]) for st in order[:3]}.isdisjoint({id(clients[st]) for st in order[3:]})
 
 
 def test_adduser_writes_account(tmp_path, monkeypatch):

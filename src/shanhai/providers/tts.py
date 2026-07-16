@@ -3,7 +3,7 @@ from pathlib import Path
 
 import httpx
 
-from shanhai.providers._http import local_backend_guard, request_with_retry
+from shanhai.providers._http import request_with_retry
 
 
 class TTSError(Exception):
@@ -19,10 +19,9 @@ class TTSClient:
 
     def synthesize(self, text: str, voice: str, out: Path, retries: int = 2,
                    speed: float = 1.0) -> None:
-        with local_backend_guard(self._base_url):
-            r = request_with_retry(lambda: self._client.post("/audio/speech", json={
-                "model": self.model, "voice": voice, "input": text, "response_format": "mp3",
-                "speed": speed}), retries)
+        r = request_with_retry(lambda: self._client.post("/audio/speech", json={
+            "model": self.model, "voice": voice, "input": text, "response_format": "mp3",
+            "speed": speed}), retries, base_url=self._base_url)
         r.raise_for_status()
         ctype = r.headers.get("content-type", "").lower()
         body = r.content

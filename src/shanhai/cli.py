@@ -44,18 +44,36 @@ def _clients(s: Settings) -> tuple[LLMClient, ImageClient, TTSClient, MusicClien
     else:
         llm = LLMClient(llm_base, llm_key, s.llm_model, timeout=s.llm_timeout)
     return (llm,
-            ImageClient(img_base, img_key, s.image_model, s.image_api_mode),
+            ImageClient(img_base, img_key, s.image_model, s.image_api_mode,
+                        timeout=s.image_timeout),
             TTSClient(tts_base, tts_key, s.tts_model),
             MusicClient(music_base, music_key, s.music_model))
+
+
+def _client_key(s: Settings) -> tuple:
+    """一次 resolve 内的 client 去重键:相同构造要素的环节复用同一组 httpx.Client,
+    把最多 6×4 个连接池收敛到实际不同配置数(默认全环节同配置 → 只建一组)。"""
+    return (s.llm_provider, s.llm_endpoint, s.llm_model, s.llm_timeout,
+            s.image_endpoint, s.image_model, s.image_api_mode, s.image_timeout,
+            s.tts_endpoint, s.tts_model,
+            s.music_endpoint, s.music_model)
 
 
 def resolve_stage_clients(
     cfg: AppConfig | None = None,
 ) -> tuple[dict[str, Settings], dict[str, tuple[LLMClient, ImageClient, TTSClient, MusicClient]]]:
     """为每个用到 client 的环节(STAGE_CLIENTS 键,S0–S5)解析生效 Settings 与 (llm,image,tts)。
-    api._pipeline 与 cli.run 共用,避免两处硬编码环节列表与解析样板(环节列表以 STAGE_CLIENTS 为单一真源)。"""
+    api._pipeline 与 cli.run 共用,避免两处硬编码环节列表与解析样板(环节列表以 STAGE_CLIENTS 为单一真源)。
+    按构造要素在本次调用内去重:配置相同的环节复用同一组 client,避免每作业泄漏 24 个连接池;
+    每次调用各自建缓存(作业级隔离),config 变更下次 resolve 自然拿到新 client,不跨作业串味。"""
     settings = {st: resolve_settings(st, cfg) for st in STAGE_CLIENTS}
-    clients = {st: _clients(settings[st]) for st in settings}
+    cache: dict[tuple, tuple[LLMClient, ImageClient, TTSClient, MusicClient]] = {}
+    clients = {}
+    for st in settings:
+        key = _client_key(settings[st])
+        if key not in cache:
+            cache[key] = _clients(settings[st])
+        clients[st] = cache[key]
     return settings, clients
 
 

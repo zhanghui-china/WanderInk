@@ -9,7 +9,7 @@ disconnected without sending a response")等连接层瞬时故障的公共基类
 import threading
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from urllib.parse import urlparse
 
 import httpx
@@ -36,16 +36,31 @@ def local_backend_guard(base_url: str):
         yield
 
 
-def request_with_retry(do_request: Callable[[], httpx.Response], retries: int,
-                       transient_status: set[int] = TRANSIENT_STATUS) -> httpx.Response:
+def request_with_retry(do_request: Callable[[], httpx.Response], retries: int, *,
+                       idempotent: bool = True,
+                       transient_status: set[int] = TRANSIENT_STATUS,
+                       base_url: str | None = None) -> httpx.Response:
     """执行 do_request(),对 TransportError 与瞬时状态码重试,退避 2*(attempt+1) 秒;
     最后一次仍失败则原样抛出。调用方拿到返回的 Response 后照旧自行 raise_for_status() 与解析。
+
+    idempotent=False(生成类非幂等 POST:images/generations、images/edits、audio/music):
+    连接层 TransportError(含已发出请求后的 ReadTimeout / 服务端中途断连,请求可能已被上游受理
+    并计费)不重试;但明确的瞬时状态码(429/5xx——请求未被成功受理、重试安全)仍照常重试。
+    默认 True 保持 LLM/TTS 等文本类请求的既有行为。
+
+    base_url 非 None 时,每次实际网络调用都在 local_backend_guard(base_url) 内进行,而退避 sleep
+    落在锁外——本地后端一次抖动不再让持锁线程 sleep 数秒、期间拖住同进程其它跨环节请求空等。
     """
     for attempt in range(retries + 1):
         try:
-            r = do_request()
-        except httpx.TransportError:
-            if attempt == retries:
+            with local_backend_guard(base_url) if base_url is not None else nullcontext():
+                r = do_request()
+        except httpx.TransportError as e:
+            # 连接建立阶段的错误(ConnectError/ConnectTimeout/PoolTimeout:请求根本没发出去)重试
+            # 100% 安全、零重复计费,即便非幂等也重试——正是本模块抵御 DGX 隧道抖动的本职;
+            # 其它 TransportError(ReadTimeout/中途断连,请求可能已发出并被上游受理计费)仅幂等请求重试。
+            connect_phase = isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+            if attempt == retries or not (idempotent or connect_phase):
                 raise
             time.sleep(2 * (attempt + 1))
             continue
