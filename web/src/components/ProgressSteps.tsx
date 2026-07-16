@@ -108,15 +108,27 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
           const c = cell(stepStatus, isCurrent)
           const elapsedRaw = project.status[`${s.key}_elapsed_s`]
           const startedAt = project.status[`${s.key}_started_at`]
+          const elapsedNum = elapsedRaw !== undefined ? Number(elapsedRaw) : NaN
 
           let timeText: string | null = null
-          if (elapsedRaw !== undefined) {
-            const n = Number(elapsedRaw)
-            if (!Number.isNaN(n)) timeText = formatElapsed(n)
+          if (!Number.isNaN(elapsedNum)) {
+            timeText = formatElapsed(elapsedNum)
           } else if (isCurrent && startedAt) {
             const secs = elapsedSince(startedAt)
             if (secs !== null) timeText = `进行中 · 约 ${formatElapsed(secs)}`
           }
+
+          // 悬停提示:该环节的起止时刻(本地时区)。结束时刻由 started_at + elapsed_s 推算,
+          // 未存独立的 finished_at 字段;尚未结束(仅有 started_at)则只显示"开始"。
+          const startedDate = startedAt ? new Date(startedAt) : null
+          const finishedDate =
+            startedDate && !Number.isNaN(elapsedNum)
+              ? new Date(startedDate.getTime() + elapsedNum * 1000)
+              : null
+          const timeTooltip = startedDate
+            ? `开始:${startedDate.toLocaleTimeString()}` +
+              (finishedDate ? ` · 结束:${finishedDate.toLocaleTimeString()}` : ' · 进行中')
+            : undefined
 
           // S4 逐页生图耗时较长,当前步是它时额外显示"已出图 N/M 页",不用干等一个笼统的"生成中"
           const pageProgress =
@@ -125,7 +137,7 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
               : null
 
           return (
-            <li key={s.key} className="flex items-center gap-3">
+            <li key={s.key} className="flex items-center gap-3" title={timeTooltip}>
               <span
                 className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ${c.dot}`}
               >
