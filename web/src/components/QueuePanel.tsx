@@ -64,7 +64,7 @@ export function QueuePanel({
                 </span>
               </span>
             </span>
-            {it.owner === user && (
+            {it.owner === user && (it.pipeline === 'queued' || it.pipeline === 'running') && (
               <button
                 type="button"
                 onClick={(e) => {
