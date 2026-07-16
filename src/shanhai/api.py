@@ -138,6 +138,17 @@ def _save_error(project_id: str, e: Exception) -> None:
 
 # ---------- 后台管线 ----------
 
+def _s1_use_skill(p: Project, s1_settings: Settings) -> bool:
+    """S1 是否调"编剧大师"skill:仅当作品勾了开关**且** S1 后端确为 hermes-agent
+    (/screenwriter-master 发给别的模型会被当乱码)。开关开了但后端不是 hermes 时提示并退化。"""
+    if not p.params.screenwriter_skill:
+        return False
+    if s1_settings.llm_model == "hermes-agent":
+        return True
+    print(f"⚠️ 编剧大师 skill 需 hermes-agent 后端,当前 S1 用 {s1_settings.llm_model},已忽略该开关")
+    return False
+
+
 def _deliverable_status(p: Project) -> str:
     """诚实闸门:据当前状态判定「整体是否已交付一部成片」。
     无 output['mp4'](未合成/编辑后已失效)→ partial:尚未合成,而非 done(单步重跑 s2–s5 会走到这)。
@@ -215,7 +226,8 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         _mark_step_elapsed(p, "s0", t0)
         _locked_save(p)
         stages = [
-            ("s1", lambda: s1_script.run(p, clients["s1"][0])),
+            ("s1", lambda: s1_script.run(p, clients["s1"][0],
+                                         use_skill=_s1_use_skill(p, settings["s1"]))),
             ("s2", lambda: s2_storyboard.run(p, clients["s2"][0])),
             ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
                                              settings["s3"].image_size,
@@ -376,6 +388,7 @@ class NewProject(BaseModel):
     # 命名沿用历史,真实机制见 _pipeline:关闭时 S0/S1 跳过按环节覆盖、回退全局默认 LLM,
     # 而非字面的"是否用编剧大师"——仅当 hermes 恰配成 s0/s1 stage 覆盖时两者才等价。
     use_hermes_agent: bool = True
+    screenwriter_skill: bool = False   # S1 是否显式调 hermes-agent 的"编剧大师"skill(更慢更贵)
 
 
 def _validate(body: NewProject) -> None:
@@ -418,6 +431,7 @@ def create_project(body: NewProject, user: str = Depends(current_user)) -> dict:
         p.params.speed = body.speed
         p.params.multi_panel = body.multi_panel
         p.params.use_hermes_agent = body.use_hermes_agent
+        p.params.screenwriter_skill = body.screenwriter_skill
         p.style_preset = body.style
         p.status["pipeline"] = "queued"
         store.save(p)
