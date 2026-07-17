@@ -854,12 +854,44 @@ def test_run_step_cascades_clears_downstream_status():
          patch("shanhai.api._clients",
                return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
          patch("shanhai.api.s4_pages") as s4:
-        s4.run.return_value = p
+        def _run_s4(*_args, **_kwargs):
+            p.status["s4"] = "done"   # 模拟真实 s4_pages.run() 跑完后写回终态(自身状态由 run() 负责)
+            return p
+        s4.run.side_effect = _run_s4
         api._run_step("cascadeId", "s4", runtime_config.AppConfig())
     assert "s5" not in p.status and "s6" not in p.status   # 下游被级联清除
     assert "s5_elapsed_s" not in p.status                  # 下游计时键一并清除
     assert p.status["s4"] == "done"                        # 本环节自身不被级联清除
     assert p.output == {}                                  # 上游重跑,旧成片失效
+
+
+def test_run_step_clears_own_stale_status_before_running():
+    # 修复:重跑期间必须先清掉本环节自己陈旧的终态(如上次成功的 done),否则前端
+    # currentIdx(只认非 done/非 partial 为"当前步")判定错位——正在重跑的这一格
+    # 不会显示动感。断言 s3_characters.run 真正被调用时,status["s3"] 已经不是旧的 "done"。
+    from unittest.mock import MagicMock
+
+    from shanhai.config import Settings
+    p = Project(project_id="staleId", scenic_spot="雷峰塔")
+    p.status = {"s3": "done"}
+    fake = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+    seen: dict = {}
+
+    def _capture_run(*_args, **_kwargs):
+        seen["s3_during_run"] = p.status.get("s3")
+        p.status["s3"] = "done"   # 模拟真实 s3_characters.run() 跑完后写回终态
+        return p
+
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s3_characters") as s3:
+        s3.run.side_effect = _capture_run
+        api._run_step("staleId", "s3", runtime_config.AppConfig())
+    assert seen["s3_during_run"] != "done"   # 执行期间已清空旧终态,而非等跑完才更新
+    assert p.status["s3"] == "done"          # 跑完后 s3.run 的返回值(仍是 done)照常生效
 
 
 def test_run_step_error_preserves_disk_storyboard(tmp_path, monkeypatch):

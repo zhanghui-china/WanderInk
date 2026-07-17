@@ -239,3 +239,70 @@ update_overrides(lambda existing: apply_put(existing, incoming))
 **验证踩坑记录**:第一次端到端验证脚本写成 `resolve_stage_clients(AppConfig())`,传了个空的 `AppConfig()` 而不是 `None`——`runtime_config.resolve_settings` 内部是 `cfg = cfg or load_overrides()`,空的 `AppConfig()` 实例本身是 truthy,导致完全不读磁盘上的 `config.json`,悄悄退回到 `.env` 基线设置。改成传 `None` 才对上。教训:凡是要验证"配置覆盖是否生效"的脚本,必须显式传 `None` 或直接调用 `load_overrides()`,不能用默认构造的空 `AppConfig()` 占位。
 
 **现状(供下次核对)**:S0/S1 生效 LLM 是 hermes-agent(`127.0.0.1:8642`);S2/S3 未受影响,沿用此前就已存在的 `config.json` 全局覆盖(`llm_base_url=https://api.stepfun.com/v1`,`llm_model=step-3.7-flash`——这个全局覆盖是本次任务之前就有的,不是这次改的,顺带发现部署文档此前记录的"glm-4.7-flash:latest"已过期,供下次核对时留意)。
+
+## S1 接入 hermes-agent 的"编剧大师"skill(2026-07-16,commit `48e91ca`)
+
+**背景**:上面那次接入(2026-07-15)只是把 S0/S1 的后端指到 hermes-agent,`LLMClient` 发的是普通 system prompt,**从未显式触发它内置的"编剧大师"skill**——用真实响应核实过:不带 `/screenwriter-master` 时 `prompt_tokens≈16k`、没有任何 skill 元数据,hermes-agent 只是被当成一个普通 LLM 在用。
+
+**实测确认的关键事实**(DGX 上直接调用验证,非推测):
+- 消息内容里加 `/screenwriter-master` 前缀会真正加载 skill——`prompt_tokens` 从 16k 跳到 **70k**,且默认进入**多轮反问式工作流**(会反问篇幅/受众/基调,不直接产出),与我们要求的"单轮直出 JSON"天然冲突。
+- 但**一次性把参数喂全 + 明确要求"请勿反问,直接产出成品"**,可以压住反问、单轮拿到合法 JSON——用真实 `Script` schema(嵌套 acts/scenes/dialogues/characters)验证通过:4 幕、4 个角色、707 字命中目标 650±20%。**不需要多轮对话状态机**,复用现有 `LLMClient.structured()` 单轮 + 重试模式即可接入。
+- **代价很高**:单次约 **150k~165k token、200~400 秒**,约为不用 skill 的 **10 倍 token、2~3 倍耗时**。这是逐作品开关默认关闭的直接原因。
+
+**改动**(只涉及 S1,不碰 S0):
+- `GenerationParams`/`NewProject` 新增 `screenwriter_skill: bool`(默认 `False`),前端新建作品表单新增对应勾选框(默认不勾)。
+- `s1_script.run()` 新增 `use_skill` 参数:为真时 system prompt 包一层 `/screenwriter-master\n\n` 前缀 + `【一次性给全信息,请勿反问,直接产出成品剧本】` 尾缀,`structured(..., retries=1)`(默认 `retries=2`,skill 场景每次重试都是又一次 ~400s/~16 万 token,封顶到最多两次尝试控制最坏成本)。
+- **后端把关**(`api._s1_use_skill`):只有作品勾了开关**且** S1 当前生效 `llm_model == "hermes-agent"` 时才真正启用;否则打印一行提示、静默退化为普通生成——避免开关误开但 S1 配置成别的模型时,把 `/screenwriter-master` 当乱码发过去。`cli.py` 的 `step`/`run` 两处 S1 调用点做了同款 gate。
+- 顺带修正了一处此前遗留的误导性文案:去年(2026-07-15)那次接入时新建表单加的 `use_hermes_agent` 开关文案原写"用编剧大师生成剧本/分镜"——但它实际只是"S0/S1 是否用 hermes-agent 后端",从不触发 skill,这次改成了如实的"S0/S1 用 hermes-agent 后端(关闭则用默认 LLM)",避免和这次新加的 skill 开关混淆。
+
+**超时余量**:用 `scripts/setup-hermes-agent.py --timeout 900` 把 S0/S1 的 `llm_timeout` 从 600s 抬到 900s,给 skill 单次调用(实测 200~400s)留够头,retries=1 时最坏两次尝试串行仍在合理范围。
+
+**DGX 真机端到端验证**(直接跑 wired 的 `api._s1_use_skill` + `s1_script.run(use_skill=True)`,同一套生产代码路径):gate 正确识别 `use_skill=True`(S1 后端确为 hermes-agent),实际调用耗时 212.7s,产出《断桥伞下》4 幕 4 角色(白素贞/许仙/法海/小青),旁白+对白 705 字命中目标区间,`status["s1"]="done"`。
+
+**部署记录**:372 测试全绿(本地+DGX aarch64 一致)、`ruff check` 通过、前端 `npm run build` 通过 → 确认无在途任务 → rsync → DGX `uv sync`+pytest → `systemctl --user restart shanhai-web` → 200。已同步到 WanderInk GitHub 远程(`git subtree`,用户本机执行 `scripts/sync-wanderink.sh`)。
+
+**现状(供下次核对)**:新建作品表单有两个相关开关,注意区分——`use_hermes_agent`(S0/S1 是否走 hermes-agent 后端,默认开)与 `screenwriter_skill`(S1 是否显式触发编剧大师 skill 深度创作,默认关、成本高)。后者依赖前者为真且后端确实解析到 `hermes-agent` 才生效。S0 未接 skill(检索类任务,skill 意义不大,决策已明确不做)。
+
+## tu-zi 图像额度耗尽 + S5 配音从 CosyVoice2 切到 Qwen3-TTS(男/女声可选)(2026-07-16/17)
+
+**起因**:用户反馈"生成任务好像卡住了"。排查发现不是卡死——所有项目 `pipeline` 都是终态(done/error/partial),没有一个 running/queued;真正的问题是 **tu-zi 账户余额已耗尽**(实测调用 `images/generations` 返回 `403 insufficient_user_quota`,余额 `-$0.003338`),S3/S4 每张图都在几秒内被直接拒绝(不在 `TRANSIENT_STATUS` 里,不重试),22 页项目整个 S4 只花 14.4s 就全灭——这种"异常快的全灭"就是额度耗尽的指纹,不是网络/代码问题。**处理方式**:引导用户在配置面板把"图像生成"整组四个字段点"清除(改为继承)",回退到 `.env` 里本来就配好的本地 ComfyUI(`shanhai-image.service`,`127.0.0.1:8091`,模型 `comfyui-local`),S4 并发也会自动跟着变回串行(按 base_url 是否本地判定)。此项是用户自行操作,不是代码改动。
+
+**顺带需求**:用户想让配音音色可选男/女。排查现状:CosyVoice2 走的是**零样本声音克隆**(需要参考音频 + 精确逐字稿配对),`tts_shim.py` 里当时只定义了一个 `"default"` 音色,模型本身(`CosyVoice2-0.5B`)不含内置说话人库(模型目录无 `spk2info.pt`)——要加男/女声,常规做法得录/找两条不同性别的参考音频,用户暂时给不出。
+
+**转折**:查看 WanderInk 仓库(`comfyui-bridge/` 目录,队友 wuzi 维护)时发现一套现成方案——**Qwen3-TTS VoiceDesign**,通过 ComfyUI 自定义节点 `Comfyui-HAIGC-QwenTTS`(`Qwen3TTSModelLoader` + `Qwen3TTSVoiceDesign`)实现,**不需要参考音频**,只需一句**英文声音描述**(如 `"A young female voice, clear and gentle..."`)就能控制音色特征。实测确认这套在 DGX 上已经完整就绪:自定义节点已装(`curl /object_info/Qwen3TTSVoiceDesign` 查询确认节点活的)、模型权重已下载(`Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`)、工作流模板已在 `~wuzi/WanderInk/comfyui-bridge/VoiceDesign-QwenTTS.json`(注意:DGX 上实际部署的目录是**扁平的**,没有 git 仓库里看到的 `workflows/` 子目录,踩过一次路径坑)。
+
+**改动**(纯 DGX 运维,不改 shanhai 代码/git 仓库,与 `image-shim`/`music-shim`/原 `tts_shim.py` 现状一致):
+- 新写 `~/qwentts-shim/main.py`(独立 venv),对外契约与原 CosyVoice2 shim 完全一致(`POST /v1/audio/speech`,`{model,voice,input,response_format,speed}` → 原始 mp3),`shanhai` 侧 `TTSClient` **零代码改动**。内部走 ComfyUI websocket 排队协议,直接照搬 `music-shim` 已验证过的"先连 WebSocket、再提交任务"顺序(否则命中缓存瞬间完成会错过完成事件、永久挂起),省了重新踩那个坑。
+- `voice` 参数直接用中文键("女声"/"男声")映射到英文声音描述提示词,前端下拉框(`meta.voices` 现有的通用 `<select>`)不用改代码就能显示正确的中文选项。
+- `语速` 字段直接映射到 Qwen3TTSVoiceDesign 节点原生的"语速"输入(范围 0.5~2.0),比 CosyVoice2 shim 用 ffmpeg `atempo` 后处理变速更干净。
+- systemd 服务复用同一个 unit 名 `shanhai-tts.service`、同端口 `8090`,只换 `WorkingDirectory`/`ExecStart` 指向新目录+新 venv——`shanhai` 应用侧 `.env` 只需改 `SHANHAI_TTS_MODEL`/`SHANHAI_TTS_VOICE`/`SHANHAI_TTS_VOICES` 三个字段,`SHANHAI_TTS_BASE_URL` 不变。旧 CosyVoice2 unit 备份为 `shanhai-tts.service.cosyvoice2.bak`,`.env` 也有时间戳备份,可随时回滚。
+
+**验证**(真实调用,非推测):先在测试端口(8099)分别测女声/男声——女声 14.4s/56719 字节、男声 4.2s/55064 字节,均为合法 mp3(ID3v2.4,MPEG Layer III,24kHz);生成的音频发给用户本人听感确认后,才正式切到生产端口 8090。切换后用生产同一套 `TTSClient.synthesize()` 代码路径(经 `resolve_settings("s5")`)再跑一次真实端到端,女声/男声都成功产出(42037/50798 字节)。
+
+**现状(供下次核对)**:`shanhai-tts.service` 现在跑的是 Qwen3-TTS VoiceDesign(经 ComfyUI `127.0.0.1:8188`,和图像/音乐生成共用同一个 ComfyUI 实例,受同一张 GPU 排队约束),不再是 CosyVoice2;`SHANHAI_TTS_VOICES=女声,男声`,默认音色女声。新建作品表单的音色下拉框会显示这两项。图像生成如果用户已按上面的引导切回本地 ComfyUI,S3/S4 应该已恢复正常,若之后想再切回 tu-zi,前提是账户先充值。
+
+## DGX 重启后:四个 shanhai 服务 + wuzi 的 ComfyUI 都要手动拉起(2026-07-17)
+
+**现象**:部署"下载完整成片"按钮(见下一节)时 SSH 隧道(`14801`)突然连不上(`Connection refused`,非之前那种瞬时抖动的 `Connection closed`),公网 HTTP 隧道也 15 秒超时无响应——判断是 DGX 整机重启,不是隧道自己的问题。约 15 分钟后隧道恢复,`uptime` 确认机器 12 分钟前刚起来。
+
+**两层损坏,分两拨排查**:
+1. **shanhai 自己的四个服务**(`shanhai-web`/`shanhai-tts`/`shanhai-image`/`shanhai-music`):`systemctl --user status` 全部 `inactive (dead)`——这是本仓库自己反复踩过的"无 `loginctl enable-linger`"老问题(见上面 2026-07-15 那节),`systemctl --user start` 四个一起拉起来即可,`shanhai-web` 起来后登录、看历史作品都正常。
+2. **但图像/配音/配乐三个功能实际还是坏的**:`shanhai-image`/`shanhai-tts`(现在是 Qwen3-TTS)/`shanhai-music` 的 `/health` 端点都报"ComfyUI 不可达"——因为它们仨全靠**队友 wuzi 自己维护的 ComfyUI 进程**(`127.0.0.1:8188`,`ps aux` 确认整个进程都没了,不是卡死)。这个进程**不是** shanhai 的 systemd 服务,不受我们管;`huntun` 这个账号对 `wuzi` 账号下的进程既没有 sudo(`sudo -n` 要密码)也没有直接权限去启动——**必须由 wuzi 本人(或有权限的人)登录 DGX 手动重新跑起来**。
+
+**处理顺序**(下次遇到同样情况照此办):
+```
+systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music   # 第一步,自己就能做
+# 然后确认 ComfyUI 是否也需要人工拉起:
+curl http://127.0.0.1:8188/system_stats   # 200 说明 ComfyUI 活着;超时/连不上说明还得等 wuzi 处理
+```
+本次等 wuzi 把 ComfyUI 重新起来后,`curl :8091/health`(image)、`:8090/health`(tts)、`:8092/health`(music)三个全部转 `ok`。
+
+**验证**(真实调用,非仅 health 检查):用生产同一套代码路径(`resolve_settings`+`_clients`)分别跑了一次真实生图(本地 ComfyUI,`127.0.0.1:8091`,产出 1.5MB 图片)和真实配音(Qwen3-TTS 女声,产出 42KB mp3),确认不是"端口通了但功能没恢复"这种假象。
+
+**现状(供下次核对)**:DGX 目前有**两层"重启不自愈"的风险**——① shanhai 自己四个服务因无 linger 不自启(自己能修);② image/tts/music 三个 shim 依赖的 wuzi ComfyUI 进程同样不会自启且不归我们管(需要 wuzi 配合)。这次 shim 从 CosyVoice2 换成 Qwen3-TTS 之后,TTS 也第一次纳入了这个"靠 ComfyUI"的依赖链,以前 CosyVoice2 是独立进程、不受 ComfyUI 重启影响,这点是切换后新增的耦合,值得记住。
+
+## "下载完整成片"按钮(2026-07-17)
+
+**内容**:成片播放器(`<video>`)下方原本只有"下载 PDF"/"下载图片包"两个按钮(都需要先调 `/api/projects/{id}/export` 现场打包),新加一个"下载完整成片"直接指向 `project.mp4`——这个文件生成完就已经现成存在,不需要额外打包步骤,加一个 `<a href download>` 即可,不需要 `busy` 状态或额外请求。
+
+**部署记录**:372 测试全绿、前端 `npm run build` 通过 → 确认无在途任务 → rsync → DGX `uv sync`+pytest → `systemctl --user restart shanhai-web` → 200。此次部署恰好撞上上面那次 DGX 重启,rsync/重启本身在隧道恢复后一次成功,记录顺带并入上一节。

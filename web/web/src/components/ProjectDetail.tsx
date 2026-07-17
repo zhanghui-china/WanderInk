@@ -304,6 +304,9 @@ function ExportButtons({ project }: { project: Detail }) {
 
   return (
     <div className="mt-3 flex flex-wrap gap-2">
+      <a href={project.mp4 ?? undefined} download className={btn}>
+        下载完整成片
+      </a>
       {pdf ? (
         <a href={pdf} download className={btn}>
           下载 PDF
@@ -497,6 +500,7 @@ function PageCard({
   const [charInput, setCharInput] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [lightboxOpen, setLightboxOpen] = useState(false)
 
   function startEdit() {
     setCaption(pg.caption)
@@ -732,43 +736,59 @@ function PageCard({
           </div>
           {pg.audio && <audio src={pg.audio} controls className="h-9 w-full" />}
 
-          {editable && (
+          {(pg.image || editable) && (
             <div className="flex flex-wrap items-center gap-1.5 border-t border-line pt-2.5">
-              <button
-                type="button"
-                onClick={() => act('redraw')}
-                disabled={busy !== null}
-                className={toolBtn}
-              >
-                {busy === 'redraw' ? '重绘中…' : '重绘'}
-              </button>
-              <button
-                type="button"
-                onClick={() => act('revoice')}
-                disabled={busy !== null}
-                className={toolBtn}
-              >
-                {busy === 'revoice' ? '配音中…' : '重配音'}
-              </button>
-              <button
-                type="button"
-                onClick={onInsertAfter}
-                disabled={busy !== null}
-                className={toolBtn}
-              >
-                + 插入下一页
-              </button>
-              <button
-                type="button"
-                onClick={() => act('delete')}
-                disabled={busy !== null}
-                className={`${toolBtn} ml-auto text-alarm hover:border-alarm`}
-              >
-                {busy === 'delete' ? '删除中…' : '删除'}
-              </button>
+              {pg.image && (
+                <button
+                  type="button"
+                  onClick={() => setLightboxOpen(true)}
+                  className={toolBtn}
+                >
+                  查看漫画页
+                </button>
+              )}
+              {editable && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => act('redraw')}
+                    disabled={busy !== null}
+                    className={toolBtn}
+                  >
+                    {busy === 'redraw' ? '重绘中…' : '重绘'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => act('revoice')}
+                    disabled={busy !== null}
+                    className={toolBtn}
+                  >
+                    {busy === 'revoice' ? '配音中…' : '重配音'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onInsertAfter}
+                    disabled={busy !== null}
+                    className={toolBtn}
+                  >
+                    + 插入下一页
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => act('delete')}
+                    disabled={busy !== null}
+                    className={`${toolBtn} ml-auto text-alarm hover:border-alarm`}
+                  >
+                    {busy === 'delete' ? '删除中…' : '删除'}
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
+      )}
+      {lightboxOpen && pg.image && (
+        <ImageLightbox src={pg.image} alt={`第 ${pg.index} 页`} onClose={() => setLightboxOpen(false)} />
       )}
     </div>
   )

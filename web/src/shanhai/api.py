@@ -689,6 +689,10 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
             _locked_save(p)
             return
         step_t0 = _mark_step_started(p, name)
+        # 清掉该环节自己的陈旧终态(如上次成功的 done):否则重跑期间磁盘上仍是旧值,
+        # 前端 currentIdx(非 done/非 partial 才算"当前步")会判定错位,动感显示不到这一格。
+        p.status.pop(name, None)
+        _locked_save(p)
         if name == "s2":
             p = s2_storyboard.run(p, llm)
         elif name == "s3":

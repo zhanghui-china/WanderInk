@@ -20,7 +20,6 @@ export function NewProjectForm({
   const [voice, setVoice] = useState('')
   const [speed, setSpeed] = useState(1.0)
   const [multiPanel, setMultiPanel] = useState(false)
-  const [useHermesAgent, setUseHermesAgent] = useState(true)
   const [screenwriterSkill, setScreenwriterSkill] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -41,7 +40,6 @@ export function NewProjectForm({
         voice,
         speed,
         multi_panel: multiPanel,
-        use_hermes_agent: useHermesAgent,
         screenwriter_skill: screenwriterSkill,
       })
       setSpot('')
@@ -169,19 +167,6 @@ export function NewProjectForm({
 
       <div className="flex items-center gap-2">
         <input
-          id="use-hermes-agent"
-          type="checkbox"
-          checked={useHermesAgent}
-          onChange={(e) => setUseHermesAgent(e.target.checked)}
-          className="h-4 w-4 rounded border-line accent-cinnabar"
-        />
-        <label htmlFor="use-hermes-agent" className="text-xs text-ink-soft">
-          S0/S1 用 hermes-agent 后端(关闭则用默认 LLM)
-        </label>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <input
           id="screenwriter-skill"
           type="checkbox"
           checked={screenwriterSkill}
@@ -189,7 +174,7 @@ export function NewProjectForm({
           className="h-4 w-4 rounded border-line accent-cinnabar"
         />
         <label htmlFor="screenwriter-skill" className="text-xs text-ink-soft">
-          用"编剧大师"深度创作剧本(更慢更贵,需 S1 为 hermes-agent 后端)
+          使用编剧大师skill
         </label>
       </div>
 
