@@ -280,3 +280,29 @@ update_overrides(lambda existing: apply_put(existing, incoming))
 **验证**(真实调用,非推测):先在测试端口(8099)分别测女声/男声——女声 14.4s/56719 字节、男声 4.2s/55064 字节,均为合法 mp3(ID3v2.4,MPEG Layer III,24kHz);生成的音频发给用户本人听感确认后,才正式切到生产端口 8090。切换后用生产同一套 `TTSClient.synthesize()` 代码路径(经 `resolve_settings("s5")`)再跑一次真实端到端,女声/男声都成功产出(42037/50798 字节)。
 
 **现状(供下次核对)**:`shanhai-tts.service` 现在跑的是 Qwen3-TTS VoiceDesign(经 ComfyUI `127.0.0.1:8188`,和图像/音乐生成共用同一个 ComfyUI 实例,受同一张 GPU 排队约束),不再是 CosyVoice2;`SHANHAI_TTS_VOICES=女声,男声`,默认音色女声。新建作品表单的音色下拉框会显示这两项。图像生成如果用户已按上面的引导切回本地 ComfyUI,S3/S4 应该已恢复正常,若之后想再切回 tu-zi,前提是账户先充值。
+
+## DGX 重启后:四个 shanhai 服务 + wuzi 的 ComfyUI 都要手动拉起(2026-07-17)
+
+**现象**:部署"下载完整成片"按钮(见下一节)时 SSH 隧道(`14801`)突然连不上(`Connection refused`,非之前那种瞬时抖动的 `Connection closed`),公网 HTTP 隧道也 15 秒超时无响应——判断是 DGX 整机重启,不是隧道自己的问题。约 15 分钟后隧道恢复,`uptime` 确认机器 12 分钟前刚起来。
+
+**两层损坏,分两拨排查**:
+1. **shanhai 自己的四个服务**(`shanhai-web`/`shanhai-tts`/`shanhai-image`/`shanhai-music`):`systemctl --user status` 全部 `inactive (dead)`——这是本仓库自己反复踩过的"无 `loginctl enable-linger`"老问题(见上面 2026-07-15 那节),`systemctl --user start` 四个一起拉起来即可,`shanhai-web` 起来后登录、看历史作品都正常。
+2. **但图像/配音/配乐三个功能实际还是坏的**:`shanhai-image`/`shanhai-tts`(现在是 Qwen3-TTS)/`shanhai-music` 的 `/health` 端点都报"ComfyUI 不可达"——因为它们仨全靠**队友 wuzi 自己维护的 ComfyUI 进程**(`127.0.0.1:8188`,`ps aux` 确认整个进程都没了,不是卡死)。这个进程**不是** shanhai 的 systemd 服务,不受我们管;`huntun` 这个账号对 `wuzi` 账号下的进程既没有 sudo(`sudo -n` 要密码)也没有直接权限去启动——**必须由 wuzi 本人(或有权限的人)登录 DGX 手动重新跑起来**。
+
+**处理顺序**(下次遇到同样情况照此办):
+```
+systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music   # 第一步,自己就能做
+# 然后确认 ComfyUI 是否也需要人工拉起:
+curl http://127.0.0.1:8188/system_stats   # 200 说明 ComfyUI 活着;超时/连不上说明还得等 wuzi 处理
+```
+本次等 wuzi 把 ComfyUI 重新起来后,`curl :8091/health`(image)、`:8090/health`(tts)、`:8092/health`(music)三个全部转 `ok`。
+
+**验证**(真实调用,非仅 health 检查):用生产同一套代码路径(`resolve_settings`+`_clients`)分别跑了一次真实生图(本地 ComfyUI,`127.0.0.1:8091`,产出 1.5MB 图片)和真实配音(Qwen3-TTS 女声,产出 42KB mp3),确认不是"端口通了但功能没恢复"这种假象。
+
+**现状(供下次核对)**:DGX 目前有**两层"重启不自愈"的风险**——① shanhai 自己四个服务因无 linger 不自启(自己能修);② image/tts/music 三个 shim 依赖的 wuzi ComfyUI 进程同样不会自启且不归我们管(需要 wuzi 配合)。这次 shim 从 CosyVoice2 换成 Qwen3-TTS 之后,TTS 也第一次纳入了这个"靠 ComfyUI"的依赖链,以前 CosyVoice2 是独立进程、不受 ComfyUI 重启影响,这点是切换后新增的耦合,值得记住。
+
+## "下载完整成片"按钮(2026-07-17)
+
+**内容**:成片播放器(`<video>`)下方原本只有"下载 PDF"/"下载图片包"两个按钮(都需要先调 `/api/projects/{id}/export` 现场打包),新加一个"下载完整成片"直接指向 `project.mp4`——这个文件生成完就已经现成存在,不需要额外打包步骤,加一个 `<a href download>` 即可,不需要 `busy` 状态或额外请求。
+
+**部署记录**:372 测试全绿、前端 `npm run build` 通过 → 确认无在途任务 → rsync → DGX `uv sync`+pytest → `systemctl --user restart shanhai-web` → 200。此次部署恰好撞上上面那次 DGX 重启,rsync/重启本身在隧道恢复后一次成功,记录顺带并入上一节。
