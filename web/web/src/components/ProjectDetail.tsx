@@ -3,6 +3,7 @@ import { api } from '../api'
 import { STYLE_LABEL } from '../styles'
 import type { Meta, ProjectDetail as Detail, Character, Page } from '../types'
 import { CardHead, Seal, mountFrame } from './decor'
+import { CharacterRedrawDialog } from './CharacterRedrawDialog'
 import { ImageLightbox } from './ImageLightbox'
 import { ProgressSteps } from './ProgressSteps'
 
@@ -193,6 +194,7 @@ export function ProjectDetailView({
               <CharacterCard
                 key={c.name}
                 c={c}
+                pages={project.pages}
                 projectId={project.project_id}
                 editable={editable}
                 onChanged={onChanged}
@@ -331,27 +333,49 @@ function ExportButtons({ project }: { project: Detail }) {
 
 function CharacterCard({
   c,
+  pages,
   projectId,
   editable,
   onChanged,
 }: {
   c: Character
+  pages: Page[]
   projectId: string
   editable: boolean
   onChanged: () => void
 }) {
   const [busy, setBusy] = useState(false)
   const [lightboxOpen, setLightboxOpen] = useState(false)
+  const [dialogOpen, setDialogOpen] = useState(false)
 
   // 独立于 toolBtn 定义(不叠加覆盖字号):卡片变宽后两个按钮各占一半、居中、不换行
   const charBtn =
     'flex-1 justify-center whitespace-nowrap rounded-md border border-line bg-white/50 px-2 py-1 text-center text-[10px] text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
 
-  async function redraw() {
-    if (!window.confirm('仅重绘设定图,已生成页面需自行重绘。确定继续?')) return
+  // 该角色设定图重绘后,哪些已生成页会因画风不一致而过期(仅已成功出图的 confirmed 页算数)
+  const affected = pages.filter(
+    (p) => p.characters.includes(c.name) && p.status === 'confirmed' && p.image,
+  )
+
+  function redraw() {
+    if (affected.length === 0) {
+      if (!window.confirm('仅重绘设定图,已生成页面需自行重绘。确定继续?')) return
+      void doRedraw(false)
+      return
+    }
+    setDialogOpen(true)
+  }
+
+  async function doRedraw(cascade: boolean) {
+    setDialogOpen(false)
     setBusy(true)
     try {
       await api.redrawCharacter(projectId, c.name)
+      if (cascade) {
+        for (const pg of affected) {
+          await api.redrawCell(projectId, pg.index)
+        }
+      }
       onChanged()
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e))
@@ -395,6 +419,15 @@ function CharacterCard({
       </figcaption>
       {lightboxOpen && c.image && (
         <ImageLightbox src={c.image} alt={c.name} onClose={() => setLightboxOpen(false)} />
+      )}
+      {dialogOpen && (
+        <CharacterRedrawDialog
+          characterName={c.name}
+          affectedPages={affected.map((p) => ({ index: p.index, caption: p.caption }))}
+          busy={busy}
+          onConfirm={(cascade) => void doRedraw(cascade)}
+          onCancel={() => setDialogOpen(false)}
+        />
       )}
     </figure>
   )

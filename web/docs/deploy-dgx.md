@@ -2,6 +2,7 @@
 
 > 状态:P0/P1/**P2(GPU TTS)均已上线**(2026-07-11/12);P3(Ollama 适配器)已开发待部署。**P4(端点/模型配置 Web 界面)已上线**(2026-07-12)。**P5(AI 生成 BGM,ACE-Step)已上线**(2026-07-12/13)。DGX 现为"本地 LLM+本地图像(ComfyUI)+本地 GPU TTS+本地 AI BGM+本地合成"完整闭环,且支持 Web 端按环节切换端点/模型。
 > 前置:R1 冒烟见 [decisions/0006](decisions/0006-r1-local-llm-smoke.md)。
+> 日常运维(启动/停止/查日志/8091 图像服务排查)速查表见 [ops-dgx.md](ops-dgx.md);本文件是按时间倒序的部署变更日志。
 
 ## P2 GPU TTS 已上线(2026-07-12)
 
