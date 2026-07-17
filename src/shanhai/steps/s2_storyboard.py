@@ -35,14 +35,26 @@ class _Cells(BaseModel):
     cells: list[StoryboardCell]
 
 
-def run(project: Project, llm: LLMClient) -> Project:
+# hermes-agent 的"导演大师"skill(与编剧大师联动,从剧本出发拆分镜):system 前置
+# /director-master 显式触发,尾缀"别反问+只输出 JSON"压住它原生的多轮工作流/xlsx 分镜表输出,
+# 单轮直出符合 _Cells schema 的 JSON(实测有效)。仅在 S2 后端确为 hermes-agent 时由调用方
+# 传 use_skill=True;单次约 3.5 万 token/300s,故 retries 降到 1 封顶最坏两次尝试。
+DIRECTOR_PREFIX = "/director-master\n\n"
+DIRECTOR_SUFFIX = "\n\n【一次性给全信息,请勿反问,直接产出成品;严格只输出 JSON,不要输出 xlsx/表格/其它格式】"
+
+
+def run(project: Project, llm: LLMClient, use_skill: bool = False) -> Project:
     if project.script is None:
         raise ValueError("先完成 S1")
     lo, hi = PAGE_TARGETS[project.params.duration_min]
     system = SYSTEM + (PANEL_RULES if project.params.multi_panel else "")
     user = (f"页数要求:{lo}~{hi} 页。\n剧本 JSON:\n"
             + project.script.model_dump_json(indent=1))
-    project.storyboard = llm.structured(system, user, _Cells).cells
+    if use_skill:
+        result = llm.structured(DIRECTOR_PREFIX + system + DIRECTOR_SUFFIX, user, _Cells, retries=1)
+    else:
+        result = llm.structured(system, user, _Cells)
+    project.storyboard = result.cells
     if len(project.storyboard) == 0:  # 诚实链:零页不算成功,让管线记 error 而非空书
         raise ValueError("分镜为空,S2 未产出任何页")
     # index 强制重排为 1..n:LLM 可能给出重复/跳号 index,而下游 S4/S5/S6 与并行落盘

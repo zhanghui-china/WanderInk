@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""把"编剧大师"(hermes-agent)接入指定环节的 LLM 配置(默认 S0/S1),写进
+"""把"编剧/导演大师"(hermes-agent)接入指定环节的 LLM 配置(默认 S0/S1/S2),写进
 ~/shanhai/config.json 的按环节覆盖——和 Web 配置面板点保存效果完全一样,只是
 可重复执行、能进 git(脚本本身不含真实密钥)。
 
 背景:hermes-agent 对结构化请求(JSON Schema + "只输出 JSON"指令)会直接执行,
-不会触发它自己的"编剧大师"反问式对话;S0/S1 现有的 system prompt 已经足够
+不会触发它自己的"编剧大师"反问式对话;S0/S1/S2 现有的 system prompt 已经足够
 构成这种强约束,LLMClient 不需要任何改动即可直接对接(纯 OpenAI 兼容协议)。
 详见 docs/deploy-dgx.md "S0/S1 接入编剧大师(hermes-agent)"一节。
 
 用法(须在仓库根目录执行,让 config.json 落在正确位置):
     HERMES_AGENT_API_KEY=xxx uv run python scripts/setup-hermes-agent.py
-    uv run python scripts/setup-hermes-agent.py --api-key xxx --stages s0,s1
+    uv run python scripts/setup-hermes-agent.py --api-key xxx --stages s0,s1,s2
     uv run python scripts/setup-hermes-agent.py --remove          # 切回继承全局默认
 """
 import argparse
@@ -22,7 +22,7 @@ from shanhai.runtime_config import AppConfig, ConfigOverride, apply_put, update_
 DEFAULT_BASE_URL = "http://127.0.0.1:8642/v1"
 DEFAULT_MODEL = "hermes-agent"
 DEFAULT_TIMEOUT = 600.0
-DEFAULT_STAGES = ("s0", "s1")
+DEFAULT_STAGES = ("s0", "s1", "s2")
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -31,7 +31,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     p.add_argument("--stages", default=",".join(DEFAULT_STAGES),
-                    help="逗号分隔的环节列表,默认 s0,s1")
+                    help="逗号分隔的环节列表,默认 s0,s1,s2")
     p.add_argument("--api-key", default=os.getenv("HERMES_AGENT_API_KEY"),
                     help="不传则读环境变量 HERMES_AGENT_API_KEY;--remove 模式下不需要")
     p.add_argument("--remove", action="store_true",
