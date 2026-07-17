@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api'
 import { CardHead } from './decor'
+import { ScenicSpotPicker } from './ScenicSpotPicker'
 import { STYLE_LABEL } from '../styles'
 import type { Meta } from '../types'
 
@@ -67,10 +68,10 @@ export function NewProjectForm({
 
       <div>
         <label className={label}>景区名</label>
-        <input
+        <ScenicSpotPicker
           className={field}
           value={spot}
-          onChange={(e) => setSpot(e.target.value)}
+          onChange={setSpot}
           placeholder="如：雷峰塔、黄鹤楼"
           required
         />
