@@ -304,6 +304,9 @@ function ExportButtons({ project }: { project: Detail }) {
 
   return (
     <div className="mt-3 flex flex-wrap gap-2">
+      <a href={project.mp4 ?? undefined} download className={btn}>
+        下载完整成片
+      </a>
       {pdf ? (
         <a href={pdf} download className={btn}>
           下载 PDF
