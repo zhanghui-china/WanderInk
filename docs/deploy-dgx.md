@@ -262,3 +262,21 @@ update_overrides(lambda existing: apply_put(existing, incoming))
 **部署记录**:372 测试全绿(本地+DGX aarch64 一致)、`ruff check` 通过、前端 `npm run build` 通过 → 确认无在途任务 → rsync → DGX `uv sync`+pytest → `systemctl --user restart shanhai-web` → 200。已同步到 WanderInk GitHub 远程(`git subtree`,用户本机执行 `scripts/sync-wanderink.sh`)。
 
 **现状(供下次核对)**:新建作品表单有两个相关开关,注意区分——`use_hermes_agent`(S0/S1 是否走 hermes-agent 后端,默认开)与 `screenwriter_skill`(S1 是否显式触发编剧大师 skill 深度创作,默认关、成本高)。后者依赖前者为真且后端确实解析到 `hermes-agent` 才生效。S0 未接 skill(检索类任务,skill 意义不大,决策已明确不做)。
+
+## tu-zi 图像额度耗尽 + S5 配音从 CosyVoice2 切到 Qwen3-TTS(男/女声可选)(2026-07-16/17)
+
+**起因**:用户反馈"生成任务好像卡住了"。排查发现不是卡死——所有项目 `pipeline` 都是终态(done/error/partial),没有一个 running/queued;真正的问题是 **tu-zi 账户余额已耗尽**(实测调用 `images/generations` 返回 `403 insufficient_user_quota`,余额 `-$0.003338`),S3/S4 每张图都在几秒内被直接拒绝(不在 `TRANSIENT_STATUS` 里,不重试),22 页项目整个 S4 只花 14.4s 就全灭——这种"异常快的全灭"就是额度耗尽的指纹,不是网络/代码问题。**处理方式**:引导用户在配置面板把"图像生成"整组四个字段点"清除(改为继承)",回退到 `.env` 里本来就配好的本地 ComfyUI(`shanhai-image.service`,`127.0.0.1:8091`,模型 `comfyui-local`),S4 并发也会自动跟着变回串行(按 base_url 是否本地判定)。此项是用户自行操作,不是代码改动。
+
+**顺带需求**:用户想让配音音色可选男/女。排查现状:CosyVoice2 走的是**零样本声音克隆**(需要参考音频 + 精确逐字稿配对),`tts_shim.py` 里当时只定义了一个 `"default"` 音色,模型本身(`CosyVoice2-0.5B`)不含内置说话人库(模型目录无 `spk2info.pt`)——要加男/女声,常规做法得录/找两条不同性别的参考音频,用户暂时给不出。
+
+**转折**:查看 WanderInk 仓库(`comfyui-bridge/` 目录,队友 wuzi 维护)时发现一套现成方案——**Qwen3-TTS VoiceDesign**,通过 ComfyUI 自定义节点 `Comfyui-HAIGC-QwenTTS`(`Qwen3TTSModelLoader` + `Qwen3TTSVoiceDesign`)实现,**不需要参考音频**,只需一句**英文声音描述**(如 `"A young female voice, clear and gentle..."`)就能控制音色特征。实测确认这套在 DGX 上已经完整就绪:自定义节点已装(`curl /object_info/Qwen3TTSVoiceDesign` 查询确认节点活的)、模型权重已下载(`Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`)、工作流模板已在 `~wuzi/WanderInk/comfyui-bridge/VoiceDesign-QwenTTS.json`(注意:DGX 上实际部署的目录是**扁平的**,没有 git 仓库里看到的 `workflows/` 子目录,踩过一次路径坑)。
+
+**改动**(纯 DGX 运维,不改 shanhai 代码/git 仓库,与 `image-shim`/`music-shim`/原 `tts_shim.py` 现状一致):
+- 新写 `~/qwentts-shim/main.py`(独立 venv),对外契约与原 CosyVoice2 shim 完全一致(`POST /v1/audio/speech`,`{model,voice,input,response_format,speed}` → 原始 mp3),`shanhai` 侧 `TTSClient` **零代码改动**。内部走 ComfyUI websocket 排队协议,直接照搬 `music-shim` 已验证过的"先连 WebSocket、再提交任务"顺序(否则命中缓存瞬间完成会错过完成事件、永久挂起),省了重新踩那个坑。
+- `voice` 参数直接用中文键("女声"/"男声")映射到英文声音描述提示词,前端下拉框(`meta.voices` 现有的通用 `<select>`)不用改代码就能显示正确的中文选项。
+- `语速` 字段直接映射到 Qwen3TTSVoiceDesign 节点原生的"语速"输入(范围 0.5~2.0),比 CosyVoice2 shim 用 ffmpeg `atempo` 后处理变速更干净。
+- systemd 服务复用同一个 unit 名 `shanhai-tts.service`、同端口 `8090`,只换 `WorkingDirectory`/`ExecStart` 指向新目录+新 venv——`shanhai` 应用侧 `.env` 只需改 `SHANHAI_TTS_MODEL`/`SHANHAI_TTS_VOICE`/`SHANHAI_TTS_VOICES` 三个字段,`SHANHAI_TTS_BASE_URL` 不变。旧 CosyVoice2 unit 备份为 `shanhai-tts.service.cosyvoice2.bak`,`.env` 也有时间戳备份,可随时回滚。
+
+**验证**(真实调用,非推测):先在测试端口(8099)分别测女声/男声——女声 14.4s/56719 字节、男声 4.2s/55064 字节,均为合法 mp3(ID3v2.4,MPEG Layer III,24kHz);生成的音频发给用户本人听感确认后,才正式切到生产端口 8090。切换后用生产同一套 `TTSClient.synthesize()` 代码路径(经 `resolve_settings("s5")`)再跑一次真实端到端,女声/男声都成功产出(42037/50798 字节)。
+
+**现状(供下次核对)**:`shanhai-tts.service` 现在跑的是 Qwen3-TTS VoiceDesign(经 ComfyUI `127.0.0.1:8188`,和图像/音乐生成共用同一个 ComfyUI 实例,受同一张 GPU 排队约束),不再是 CosyVoice2;`SHANHAI_TTS_VOICES=女声,男声`,默认音色女声。新建作品表单的音色下拉框会显示这两项。图像生成如果用户已按上面的引导切回本地 ComfyUI,S3/S4 应该已恢复正常,若之后想再切回 tu-zi,前提是账户先充值。
