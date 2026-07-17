@@ -534,29 +534,32 @@ def test_create_project_passes_use_hermes_agent_false(mock_create, _save, _setti
 @patch("shanhai.api.Settings")
 @patch("shanhai.api.store.save")
 @patch("shanhai.api.store.create_project")
-def test_create_project_passes_screenwriter_skill(mock_create, _save, _settings, _pipe):
+def test_create_project_passes_master_skill(mock_create, _save, _settings, _pipe):
     p = Project(project_id="swid01", scenic_spot="花果山")
     mock_create.return_value = p
     r = client.post("/api/projects",
-                    json={"scenic_spot": "花果山", "minutes": 1, "screenwriter_skill": True})
+                    json={"scenic_spot": "花果山", "minutes": 1, "master_skill": True})
     assert r.status_code == 200
     api._JOBS["swid01"].result(timeout=2)
-    assert p.params.screenwriter_skill is True
+    assert p.params.master_skill is True
 
 
-def test_s1_use_skill_gate_requires_hermes_backend():
-    # 开关开了但 S1 后端不是 hermes-agent → gate 落为 False(退化普通生成,不把斜杠发给别的模型)
+def test_use_master_skill_gate_requires_hermes_backend():
+    # 开关开了但该环节后端不是 hermes-agent → gate 落为 False(退化普通生成,不把斜杠发给别的模型)。
+    # 用 S1/S2 两个 stage_label 分别验证,gate 逻辑与调用哪个环节无关,只看 stage_settings。
     from shanhai.config import Settings
     p = Project(project_id="g1", scenic_spot="花果山")
-    p.params.screenwriter_skill = True
+    p.params.master_skill = True
     hermes = Settings(_env_file=None, base_url="http://127.0.0.1:8642/v1", api_key="x",
                       llm_model="hermes-agent")
     other = Settings(_env_file=None, base_url="https://api.stepfun.com/v1", api_key="x",
                      llm_model="step-3.7-flash")
-    assert api._s1_use_skill(p, hermes) is True
-    assert api._s1_use_skill(p, other) is False
-    p.params.screenwriter_skill = False
-    assert api._s1_use_skill(p, hermes) is False   # 开关关 → 恒 False
+    assert api._use_master_skill(p, hermes, "S1") is True
+    assert api._use_master_skill(p, other, "S1") is False
+    assert api._use_master_skill(p, hermes, "S2") is True
+    assert api._use_master_skill(p, other, "S2") is False
+    p.params.master_skill = False
+    assert api._use_master_skill(p, hermes, "S1") is False   # 开关关 → 恒 False
 
 
 def test_cancel_rejects_non_owner():

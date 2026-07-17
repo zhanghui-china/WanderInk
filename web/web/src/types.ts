@@ -95,7 +95,7 @@ export interface NewProjectInput {
   speed?: number
   multi_panel?: boolean
   use_hermes_agent?: boolean
-  screenwriter_skill?: boolean
+  master_skill?: boolean
 }
 
 // 与后端 shanhai/runtime_config.py 的 ConfigOverride / AppConfig 对应

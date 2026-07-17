@@ -20,7 +20,7 @@ export function NewProjectForm({
   const [voice, setVoice] = useState('')
   const [speed, setSpeed] = useState(1.0)
   const [multiPanel, setMultiPanel] = useState(false)
-  const [screenwriterSkill, setScreenwriterSkill] = useState(false)
+  const [masterSkill, setMasterSkill] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const ro = !!meta?.readonly   // 公开演示只读:禁用生成
@@ -40,7 +40,7 @@ export function NewProjectForm({
         voice,
         speed,
         multi_panel: multiPanel,
-        screenwriter_skill: screenwriterSkill,
+        master_skill: masterSkill,
       })
       setSpot('')
       setStory('')
@@ -167,14 +167,14 @@ export function NewProjectForm({
 
       <div className="flex items-center gap-2">
         <input
-          id="screenwriter-skill"
+          id="master-skill"
           type="checkbox"
-          checked={screenwriterSkill}
-          onChange={(e) => setScreenwriterSkill(e.target.checked)}
+          checked={masterSkill}
+          onChange={(e) => setMasterSkill(e.target.checked)}
           className="h-4 w-4 rounded border-line accent-cinnabar"
         />
-        <label htmlFor="screenwriter-skill" className="text-xs text-ink-soft">
-          使用编剧大师skill
+        <label htmlFor="master-skill" className="text-xs text-ink-soft">
+          使用编剧/导演大师skill
         </label>
       </div>
 

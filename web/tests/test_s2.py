@@ -110,6 +110,34 @@ def test_s2_multi_panel_includes_panel_rules_in_system_prompt():
     assert "分格" in system_msg and "insert" in system_msg
 
 
+def test_s2_use_skill_prepends_slash_and_caps_retries():
+    # use_skill=True:system 前置 /director-master 触发导演大师 skill,retries 降到 1 封成本
+    from unittest.mock import MagicMock
+    llm = MagicMock()
+    llm.structured.return_value = s2_storyboard._Cells.model_validate(CELLS)
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.duration_min = 1
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    s2_storyboard.run(p, llm, use_skill=True)
+    sys_arg = llm.structured.call_args.args[0]
+    assert sys_arg.startswith("/director-master")
+    assert "请勿反问" in sys_arg
+    assert llm.structured.call_args.kwargs.get("retries") == 1
+
+
+def test_s2_without_skill_no_slash_default_retries():
+    from unittest.mock import MagicMock
+    llm = MagicMock()
+    llm.structured.return_value = s2_storyboard._Cells.model_validate(CELLS)
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.duration_min = 1
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    s2_storyboard.run(p, llm)
+    sys_arg = llm.structured.call_args.args[0]
+    assert not sys_arg.startswith("/director-master")
+    assert "retries" not in llm.structured.call_args.kwargs
+
+
 @respx.mock
 def test_s2_multi_panel_clamps_panels_to_hard_cap():
     cells = {"cells": [

@@ -136,10 +136,11 @@ def step(project_id: str, name: str):
     workdir = store.project_dir(project_id)
     t0 = time.time()
     if name == "s1":
-        p = s1_script.run(p, llm, use_skill=(p.params.screenwriter_skill
+        p = s1_script.run(p, llm, use_skill=(p.params.master_skill
                                              and s.llm_model == "hermes-agent"))
     elif name == "s2":
-        p = s2_storyboard.run(p, llm)
+        p = s2_storyboard.run(p, llm, use_skill=(p.params.master_skill
+                                                 and s.llm_model == "hermes-agent"))
     elif name == "s3":
         p = s3_characters.run(p, llm, image, workdir, s.image_size,
                               concurrency=image_concurrency(s))
@@ -178,9 +179,11 @@ def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str 
         p.legend = p.legend_candidates[0]
     store.save(p)
     stages = [("s1", lambda: s1_script.run(p, clients["s1"][0],
-                                           use_skill=(p.params.screenwriter_skill
+                                           use_skill=(p.params.master_skill
                                                       and settings["s1"].llm_model == "hermes-agent"))),
-              ("s2", lambda: s2_storyboard.run(p, clients["s2"][0])),
+              ("s2", lambda: s2_storyboard.run(p, clients["s2"][0],
+                                               use_skill=(p.params.master_skill
+                                                          and settings["s2"].llm_model == "hermes-agent"))),
               ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
                                                settings["s3"].image_size,
                                                concurrency=image_concurrency(settings["s3"]))),

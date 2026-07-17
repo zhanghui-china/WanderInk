@@ -306,3 +306,24 @@ curl http://127.0.0.1:8188/system_stats   # 200 说明 ComfyUI 活着;超时/连
 **内容**:成片播放器(`<video>`)下方原本只有"下载 PDF"/"下载图片包"两个按钮(都需要先调 `/api/projects/{id}/export` 现场打包),新加一个"下载完整成片"直接指向 `project.mp4`——这个文件生成完就已经现成存在,不需要额外打包步骤,加一个 `<a href download>` 即可,不需要 `busy` 状态或额外请求。
 
 **部署记录**:372 测试全绿、前端 `npm run build` 通过 → 确认无在途任务 → rsync → DGX `uv sync`+pytest → `systemctl --user restart shanhai-web` → 200。此次部署恰好撞上上面那次 DGX 重启,rsync/重启本身在隧道恢复后一次成功,记录顺带并入上一节。
+
+## S2(分镜)接入"导演大师"skill,与 S1"编剧大师"合并成一个开关(2026-07-17)
+
+**起因**:用户希望 S1(剧本)/S2(分镜)都能在"LLM 直接做"与"大师 skill 深度创作"间二选一,而且要求合并成一个开关(勾选后 S1 编剧大师 + S2 导演大师一起生效),不做两个互相搭配的独立选项。
+
+**发现方式**:此前一直没意识到 hermes-agent 除了已知的 `/screenwriter-master` 之外还有哪些 skill,这次探测到一个之前没用过的 `GET /v1/skills` 接口(需 `Authorization: Bearer` 头),一次调用就拿到全部已装 skill 的清单(`name`/`description`/`category`)。清单里确认 `director-master`("山音超级导演大师")真实存在,描述明确写着"与「山音超级编剧大师」联动"、"当用户已有编剧大师生成的剧本并想进入导演阶段时,也应触发"——这正是 S2 的定位,不是凭空嫁接的。清单里还看到 `character-turnaround-prep`(S3 角色三视图)、`key-prop-design-prep`(道具)、`historical-accuracy-research`(S0 史实核查)等潜在匹配,均未实现,本次明确只做 director-master。
+
+**真实验证**(director-master 原生输出是"标准九列分镜表(xlsx)",不是 JSON,格式不匹配是真实风险,已实测排除):用真实剧本(《白蛇传·断桥情》)+ 真实 `_Cells`(`StoryboardCell` 列表)JSON Schema + `/director-master` 前缀 + "一次性给全信息、请勿反问、只输出 JSON,不要 xlsx/表格"约束,单轮调用成功产出 **24 页合法分镜**(命中 3 分钟档 20~24 页目标区间),`_Cells.model_validate` 校验通过。**代价**:约 3.5 万 token、319 秒(比编剧大师的 15~16 万 token 轻,但仍比普通 S2 调用慢不少)。
+
+**改动**:
+- `screenwriter_skill` 改名为 **`master_skill`**(`GenerationParams`/`NewProject`),因为现在它同时控制编剧+导演两个 skill,不再是单指编剧。一次性干净重命名,无兼容层。
+- `_s1_use_skill` 泛化为 `_use_master_skill(p, stage_settings, stage_label)`:仅当作品勾了开关**且**该环节当前生效 `llm_model == "hermes-agent"` 才真正启用;否则打印一行提示、静默退化为普通生成,不报错。`_pipeline` 的 S1/S2 两处调用点、`cli.py` 的 `step`/`run`、以及 `api._run_step` 单步重跑的 S2 分支(S2 与 S1 不同,可单独重跑,这个入口容易漏,一并接上了)均已接入同一把关。
+- `s2_storyboard.run()` 新增 `use_skill` 参数,复用 S1 已验证的模式:`/director-master\n\n` 前缀 + "一次性给全信息……不要 xlsx/表格"尾缀,`structured(..., retries=1)`(封顶最坏两次尝试)。
+- 前端勾选框文案统一为"使用编剧/导演大师skill",不提 hermes/S1/S2 等技术名词。
+- `scripts/setup-hermes-agent.py` 默认 `--stages` 从 `s0,s1` 扩到 `s0,s1,s2`(S2 此前根本没有 hermes-agent 覆盖,不补配就算勾了开关也会被把关逻辑静默忽略)。
+
+**DGX 真机端到端验证**(直接跑 wired 的 `api._use_master_skill` + `s2_storyboard.run(use_skill=True)`,同一套生产代码路径,复用已有项目《玄奘建塔藏经》的真实 S1 剧本):先补跑 `setup-hermes-agent.py --stages s0,s1,s2 --timeout 900` 让 S2 真正指向 hermes-agent,再实测——gate 正确识别 `use_skill=True`,实际调用产出 **22 页分镜、耗时 265 秒**,`status["s2"]="done"`。
+
+**部署记录**:375 测试全绿(本地+DGX 一致,较此前基线 373 净增 2 个新 skill 测试)、前端 `npm run build` 通过 → 确认无在途任务 → rsync(代码 + 单独 rsync `web/dist`,DGX 上无 `node_modules`/`tsgo`,前端固定在本机构建后同步产物,不在 DGX 上跑 `npm run build`)→ DGX `uv sync`+pytest → `systemctl --user restart shanhai-web` → 200。
+
+**现状(供下次核对)**:新建作品表单现在只有一个"使用编剧/导演大师skill"开关(勾选=S1+S2 都用),`master_skill` 字段名替代了旧的 `screenwriter_skill`。DGX `config.json` 现在 s0/s1/s2 三个环节都有 hermes-agent 覆盖。`director-master` 单次约 3.5 万 token/265~319 秒,比编剧大师(15~16 万 token/200~400 秒)轻,但仍显著慢于普通 S2 调用,这也是开关默认关闭的原因。
