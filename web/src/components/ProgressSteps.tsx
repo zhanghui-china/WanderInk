@@ -43,9 +43,8 @@ function cell(status: string | undefined, running: boolean): Cell {
   }
 }
 
-// 秒数格式化:60s 内显示 "12.3s",超过则显示 "1分23秒"
+// 秒数格式化:统一"M分S秒",不管长短都是同一个单位体系,避免同屏一会儿"s"一会儿"分秒"
 function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${seconds.toFixed(1)}s`
   const m = Math.floor(seconds / 60)
   const s = Math.round(seconds % 60)
   return `${m}分${s}秒`
