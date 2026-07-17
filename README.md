@@ -127,7 +127,13 @@ bun install && bun run dev   # 前端 :5173
 
 ### 5. 启动Web服务
 
+```bash
+# 启动 Web、TTS、图像和音乐服务
+systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music
 
+# 查看服务状态
+systemctl --user status shanhai-web shanhai-tts shanhai-image shanhai-music
+```
 
 ### 6.安装Hermes
 
