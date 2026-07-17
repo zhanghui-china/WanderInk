@@ -446,6 +446,55 @@ def test_list_projects_skips_non_object_json(tmp_path, monkeypatch):
     assert [it["project_id"] for it in items] == [good.project_id]  # 非对象项目全被跳过
 
 
+def test_delete_project_requires_admin(monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    r = client.delete("/api/projects/anything")
+    assert r.status_code == 403
+
+
+def test_delete_project_admin_removes_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    workdir = tmp_path / "delme01"
+    workdir.mkdir()
+    (workdir / "project.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(api.store, "project_dir", lambda pid: workdir)
+
+    r = client.delete("/api/projects/delme01")
+    assert r.status_code == 200
+    assert r.json() == {"deleted": True}
+    assert not workdir.exists()
+
+
+def test_delete_project_404_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setattr(api.store, "project_dir", lambda pid: tmp_path / "nope")
+    r = client.delete("/api/projects/does-not-exist")
+    assert r.status_code == 404
+
+
+def test_delete_project_rejects_when_job_pending(monkeypatch):
+    # 有未完成生成作业时删除返回 409,避免删掉正在被后台线程写入的目录。
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f = Future()
+    api._JOBS["delbusy"] = f
+    try:
+        r = client.delete("/api/projects/delbusy")
+        assert r.status_code == 409
+    finally:
+        f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
+def test_delete_project_blocked_in_readonly_mode(monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setattr(api, "_READONLY", True)
+    r = client.delete("/api/projects/anything")
+    assert r.status_code == 403
+
+
 def test_export_rejects_when_job_pending():
     # A3:项目有未完成生成作业时导出返回 409,避免读半成品/回滚管线进度。
     saved = dict(api._JOBS)

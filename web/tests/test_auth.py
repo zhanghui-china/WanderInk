@@ -61,7 +61,7 @@ def test_login_cookie_flow(tmp_path, monkeypatch):
 
     ok = c.post("/api/login", json={"username": "wuzi", "password": "pw1"})
     assert ok.status_code == 200 and ok.json() == {"username": "wuzi"}
-    assert c.get("/api/me").json() == {"username": "wuzi"}
+    assert c.get("/api/me").json() == {"username": "wuzi", "is_admin": False}
     assert c.get("/api/meta").status_code == 200           # 带 cookie 访问受保护端点通过
 
     assert c.post("/api/logout").status_code == 200
@@ -99,6 +99,39 @@ def test_every_api_route_requires_login_except_login_logout():
             checked += 1
             assert auth.current_user in calls, f"{method} {path} 缺少 Depends(current_user)"
     assert checked >= 15   # 防止筛选逻辑写坏导致循环体从未真正执行
+
+
+def test_add_user_admin_flag_persists(tmp_path, monkeypatch):
+    users = tmp_path / "users.json"
+    monkeypatch.setattr(auth, "USERS_PATH", users)
+    auth.add_user("boss", "pw1", admin=True)
+    assert auth.is_admin("boss") is True
+    assert auth.is_admin("nobody") is False           # 未知用户视为非管理员
+
+
+def test_add_user_default_not_admin(tmp_path, monkeypatch):
+    users = tmp_path / "users.json"
+    monkeypatch.setattr(auth, "USERS_PATH", users)
+    auth.add_user("wuzi", "pw1")
+    assert auth.is_admin("wuzi") is False
+
+
+def test_add_user_password_reset_preserves_admin_when_unspecified(tmp_path, monkeypatch):
+    # admin=None(默认)重置口令时不应静默把已有管理员降级为普通用户。
+    users = tmp_path / "users.json"
+    monkeypatch.setattr(auth, "USERS_PATH", users)
+    auth.add_user("boss", "old", admin=True)
+    auth.add_user("boss", "new")                      # 不传 admin,只重置口令
+    assert auth.is_admin("boss") is True
+    assert auth.verify_login("boss", "new") is True
+
+
+def test_add_user_can_explicitly_revoke_admin(tmp_path, monkeypatch):
+    users = tmp_path / "users.json"
+    monkeypatch.setattr(auth, "USERS_PATH", users)
+    auth.add_user("boss", "pw1", admin=True)
+    auth.add_user("boss", "pw1", admin=False)
+    assert auth.is_admin("boss") is False
 
 
 def test_add_user_long_password_raises_friendly_error(tmp_path, monkeypatch):

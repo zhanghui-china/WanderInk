@@ -208,16 +208,16 @@ def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str 
 
 
 @app.command()
-def adduser():
+def adduser(admin: bool = typer.Option(False, "--admin", help="设为管理员(可删除作品,其余权限与普通用户一致)")):
     """交互式建账号:输入用户名+密码,bcrypt 哈希后落盘 users.json(仅供管理员用,不做批量导入)。"""
     username = typer.prompt("用户名")
     password = typer.prompt("密码", hide_input=True)
     try:
-        auth.add_user(username, password)
+        auth.add_user(username, password, admin=admin)
     except ValueError as e:
         typer.echo(f"⚠️ {e}")
         raise typer.Exit(1) from e
-    typer.echo(f"已写入 users.json: {username}")
+    typer.echo(f"已写入 users.json: {username}" + ("(管理员)" if admin else ""))
 
 
 @app.command()

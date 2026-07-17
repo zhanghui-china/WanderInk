@@ -21,6 +21,7 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0)
   const [showSettings, setShowSettings] = useState(false)
   const [user, setUser] = useState<string | null>(null)
+  const [isAdmin, setIsAdmin] = useState(false)
   const [authChecked, setAuthChecked] = useState(false)
 
   const refreshList = useCallback(async () => {
@@ -35,7 +36,10 @@ export default function App() {
   useEffect(() => {
     api
       .me()
-      .then((m) => setUser(m.username))
+      .then((m) => {
+        setUser(m.username)
+        setIsAdmin(m.is_admin)
+      })
       .catch(() => setUser(null))
       .finally(() => setAuthChecked(true))
   }, [])
@@ -50,7 +54,10 @@ export default function App() {
   const onLoggedIn = useCallback(() => {
     api
       .me()
-      .then((m) => setUser(m.username))
+      .then((m) => {
+        setUser(m.username)
+        setIsAdmin(m.is_admin)
+      })
       .catch(() => setUser(null))
   }, [])
 
@@ -61,10 +68,22 @@ export default function App() {
       /* ignore */
     }
     setUser(null)
+    setIsAdmin(false)
     setSelectedId(null)
     setDetail(null)
     setList([])
   }, [])
+
+  const onProjectDeleted = useCallback(
+    (id: string) => {
+      if (selectedId === id) {
+        setSelectedId(null)
+        setDetail(null)
+      }
+      refreshList()
+    },
+    [selectedId, refreshList],
+  )
 
   // 选中项目:拉详情;若管线在跑则轮询
   // 依赖里的 user 是必要的:分享链接(?project=<id>)可能在登录完成前就已经把
@@ -190,7 +209,13 @@ export default function App() {
           <aside className="space-y-5">
             <NewProjectForm meta={meta} onCreated={onCreated} />
             <QueuePanel user={user} onSelect={setSelectedId} />
-            <ProjectList items={list} selectedId={selectedId} onSelect={setSelectedId} />
+            <ProjectList
+              items={list}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              isAdmin={isAdmin}
+              onDeleted={onProjectDeleted}
+            />
           </aside>
 
           <main>
