@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 980" width="1180" height="980" font-family="Helvetica,'PingFang SC','Microsoft YaHei',sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1770 1470" width="1770" height="1470" font-family="Helvetica,'PingFang SC','Microsoft YaHei',sans-serif">
   <defs>
     <filter id="sh" x="-5%" y="-5%" width="110%" height="110%">
-      <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#000" flood-opacity="0.08"/>
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.5" flood-color="#000" flood-opacity="0.12"/>
     </filter>
     <marker id="ag" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#9CA3AF"/></marker>
     <marker id="ap" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#7C3AED"/></marker>
@@ -9,191 +9,191 @@
     <marker id="ao" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#EA580C"/></marker>
   </defs>
 
-  <rect width="1180" height="980" fill="#FFFFFF"/>
+  <rect width="1770" height="1470" fill="#FFFFFF"/>
 
   <!-- Title -->
-  <text x="590" y="32" text-anchor="middle" font-size="22" font-weight="700" fill="#0F172A">WanderInk（漫游墨绘）系统架构图</text>
-  <text x="590" y="52" text-anchor="middle" font-size="12" fill="#6B7280">景区名称进，有声连环画出</text>
+  <text x="885" y="48" text-anchor="middle" font-size="33.0" font-weight="700" fill="#0F172A">WanderInk（漫游墨绘）系统架构图</text>
+  <text x="885" y="78" text-anchor="middle" font-size="18.0" fill="#6B7280">景区名称进，有声连环画出</text>
 
   <!-- Left category tags -->
-  <g font-size="11" font-weight="600">
-    <rect x="8" y="80" width="6" height="110" fill="#3B82F6" rx="3"/><text x="20" y="96" fill="#1E3A8A">用户层</text><text x="20" y="110" fill="#1E3A8A">（前端）</text>
-    <rect x="8" y="210" width="6" height="110" fill="#EAB308" rx="3"/><text x="20" y="226" fill="#854D0E">编排层</text><text x="20" y="240" fill="#854D0E">（流水线）</text>
-    <rect x="8" y="340" width="6" height="110" fill="#9CA3AF" rx="3"/><text x="20" y="356" fill="#1F2937">Project</text><text x="20" y="370" fill="#1F2937">数据层</text>
-    <rect x="8" y="470" width="6" height="110" fill="#7C3AED" rx="3"/><text x="20" y="486" fill="#4C1D95">Provider 层</text><text x="20" y="500" fill="#4C1D95">（能力服务）</text>
-    <rect x="8" y="600" width="6" height="110" fill="#16A34A" rx="3"/><text x="20" y="616" fill="#14532D">模型服务层</text><text x="20" y="630" fill="#14532D">（引擎模型）</text>
-    <rect x="8" y="730" width="6" height="110" fill="#EA580C" rx="3"/><text x="20" y="746" fill="#7C2D12">输出层</text><text x="20" y="760" fill="#7C2D12">（合成输出）</text>
-    <rect x="8" y="860" width="6" height="110" fill="#0891B2" rx="3"/><text x="20" y="876" fill="#155E75">部署环境</text>
+  <g font-size="16.5" font-weight="600">
+    <rect x="12" y="120" width="9" height="165" fill="#3B82F6" rx="4.5"/><text x="30" y="144" fill="#1E3A8A">用户层</text><text x="30" y="165" fill="#1E3A8A">（前端）</text>
+    <rect x="12" y="315" width="9" height="165" fill="#EAB308" rx="4.5"/><text x="30" y="339" fill="#854D0E">编排层</text><text x="30" y="360" fill="#854D0E">（流水线）</text>
+    <rect x="12" y="510" width="9" height="165" fill="#9CA3AF" rx="4.5"/><text x="30" y="534" fill="#1F2937">Project</text><text x="30" y="555" fill="#1F2937">数据层</text>
+    <rect x="12" y="705" width="9" height="165" fill="#7C3AED" rx="4.5"/><text x="30" y="729" fill="#4C1D95">Provider 层</text><text x="30" y="750" fill="#4C1D95">（能力服务）</text>
+    <rect x="12" y="900" width="9" height="165" fill="#16A34A" rx="4.5"/><text x="30" y="924" fill="#14532D">模型服务层</text><text x="30" y="945" fill="#14532D">（引擎模型）</text>
+    <rect x="12" y="1095" width="9" height="165" fill="#EA580C" rx="4.5"/><text x="30" y="1119" fill="#7C2D12">输出层</text><text x="30" y="1140" fill="#7C2D12">（合成输出）</text>
+    <rect x="12" y="1290" width="9" height="165" fill="#0891B2" rx="4.5"/><text x="30" y="1314" fill="#155E75">部署环境</text>
   </g>
 
   <!-- ===== USER LAYER (y:80-190) ===== -->
-  <rect x="40" y="80" width="1040" height="110" rx="10" fill="#EAF3FF" stroke="#BFDBFE"/>
-  <text x="54" y="100" font-size="13" font-weight="700" fill="#1E3A8A">用户层 · User Layer</text>
+  <rect x="60" y="120" width="1560" height="165" rx="15" fill="#EAF3FF" stroke="#BFDBFE"/>
+  <text x="81" y="150" font-size="19.5" font-weight="700" fill="#1E3A8A">用户层 · User Layer</text>
 
-  <circle cx="90" cy="138" r="14" fill="#3B82F6"/><circle cx="90" cy="133" r="5" fill="#FFF"/><path d="M80,152 Q90,142 100,152 L100,156 L80,156 Z" fill="#FFF"/>
-  <text x="90" y="176" text-anchor="middle" font-size="10" fill="#1E3A8A">用户</text>
-  <line x1="112" y1="138" x2="138" y2="138" stroke="#9CA3AF" stroke-width="1" marker-end="url(#ag)"/>
+  <circle cx="135" cy="207" r="21" fill="#3B82F6"/><circle cx="135" cy="199.5" r="7.5" fill="#FFF"/><path d="M80,152 Q90,142 100,152 L100,156 L80,156 Z" fill="#FFF"/>
+  <text x="135" y="264" text-anchor="middle" font-size="15.0" fill="#1E3A8A">用户</text>
+  <line x1="168" y1="207" x2="207" y2="207" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#ag)"/>
 
-  <g filter="url(#sh)"><rect x="142" y="110" width="175" height="72" rx="8" fill="#FFF" stroke="#93C5FD"/><rect x="142" y="110" width="175" height="18" rx="8" fill="#3B82F6"/><text x="152" y="123" font-size="11" font-weight="700" fill="#FFF">Web 工作台</text><text x="230" y="142" text-anchor="middle" font-size="9" fill="#1F2937">React + Ant Design</text><text x="152" y="156" font-size="9" fill="#1F2937">· 项目管理（新建/队列/详情）</text><text x="152" y="168" font-size="9" fill="#1F2937">· 配置管理（端点/模型/密钥）</text><text x="152" y="180" font-size="9" fill="#1F2937">· 进度监控（每步耗时/页数计数）</text></g>
-  <line x1="317" y1="146" x2="337" y2="146" stroke="#9CA3AF" marker-end="url(#ag)"/>
+  <g filter="url(#sh)"><rect x="213" y="165" width="262.5" height="108" rx="12" fill="#FFF" stroke="#93C5FD"/><rect x="213" y="165" width="262.5" height="27" rx="12" fill="#3B82F6"/><text x="228" y="184.5" font-size="16.5" font-weight="700" fill="#FFF">Web 工作台</text><text x="345" y="213" text-anchor="middle" font-size="13.5" fill="#1F2937">React + Ant Design</text><text x="228" y="234" font-size="13.5" fill="#1F2937">· 项目管理（新建/队列/详情）</text><text x="228" y="252" font-size="13.5" fill="#1F2937">· 配置管理（端点/模型/密钥）</text><text x="228" y="270" font-size="13.5" fill="#1F2937">· 进度监控（每步耗时/页数计数）</text></g>
+  <line x1="475.5" y1="219" x2="505.5" y2="219" stroke="#9CA3AF" marker-end="url(#ag)"/>
 
-  <g filter="url(#sh)"><rect x="341" y="110" width="175" height="72" rx="8" fill="#FFF" stroke="#93C5FD"/><rect x="341" y="110" width="175" height="18" rx="8" fill="#3B82F6"/><text x="351" y="123" font-size="11" font-weight="700" fill="#FFF">分步可干预创作</text><text x="429" y="142" text-anchor="middle" font-size="9" fill="#1F2937">Human-in-the-loop</text><text x="351" y="156" font-size="9" fill="#1F2937">· 预览与审核（传说/剧本/分镜）</text><text x="351" y="168" font-size="9" fill="#1F2937">· 编辑与修改（文案/画面/角色）</text><text x="351" y="180" font-size="9" fill="#1F2937">· 重绘与重配（单页/单步重跑）</text></g>
-  <line x1="516" y1="146" x2="536" y2="146" stroke="#9CA3AF" marker-end="url(#ag)"/>
+  <g filter="url(#sh)"><rect x="511.5" y="165" width="262.5" height="108" rx="12" fill="#FFF" stroke="#93C5FD"/><rect x="511.5" y="165" width="262.5" height="27" rx="12" fill="#3B82F6"/><text x="526.5" y="184.5" font-size="16.5" font-weight="700" fill="#FFF">分步可干预创作</text><text x="643.5" y="213" text-anchor="middle" font-size="13.5" fill="#1F2937">Human-in-the-loop</text><text x="526.5" y="234" font-size="13.5" fill="#1F2937">· 预览与审核（传说/剧本/分镜）</text><text x="526.5" y="252" font-size="13.5" fill="#1F2937">· 编辑与修改（文案/画面/角色）</text><text x="526.5" y="270" font-size="13.5" fill="#1F2937">· 重绘与重配（单页/单步重跑）</text></g>
+  <line x1="774" y1="219" x2="804" y2="219" stroke="#9CA3AF" marker-end="url(#ag)"/>
 
-  <g filter="url(#sh)"><rect x="540" y="110" width="175" height="72" rx="8" fill="#FFF" stroke="#93C5FD"/><rect x="540" y="110" width="175" height="18" rx="8" fill="#3B82F6"/><text x="550" y="123" font-size="11" font-weight="700" fill="#FFF">输出与分享</text><text x="628" y="142" text-anchor="middle" font-size="9" fill="#1F2937">Export &amp; Share</text><text x="550" y="156" font-size="9" fill="#1F2937">· 在线预览（MP4 播放器）</text><text x="550" y="168" font-size="9" fill="#1F2937">· 下载 MP4 / PDF / 图片包 ZIP</text><text x="550" y="180" font-size="9" fill="#1F2937">· 分享链接（?project=&lt;id&gt;）</text></g>
-  <line x1="715" y1="146" x2="735" y2="146" stroke="#9CA3AF" marker-end="url(#ag)"/>
+  <g filter="url(#sh)"><rect x="810" y="165" width="262.5" height="108" rx="12" fill="#FFF" stroke="#93C5FD"/><rect x="810" y="165" width="262.5" height="27" rx="12" fill="#3B82F6"/><text x="825" y="184.5" font-size="16.5" font-weight="700" fill="#FFF">输出与分享</text><text x="942" y="213" text-anchor="middle" font-size="13.5" fill="#1F2937">Export &amp; Share</text><text x="825" y="234" font-size="13.5" fill="#1F2937">· 在线预览（MP4 播放器）</text><text x="825" y="252" font-size="13.5" fill="#1F2937">· 下载 MP4 / PDF / 图片包 ZIP</text><text x="825" y="270" font-size="13.5" fill="#1F2937">· 分享链接（?project=&lt;id&gt;）</text></g>
+  <line x1="1072.5" y1="219" x2="1102.5" y2="219" stroke="#9CA3AF" marker-end="url(#ag)"/>
 
-  <g filter="url(#sh)"><rect x="739" y="110" width="175" height="72" rx="8" fill="#FFF" stroke="#93C5FD"/><rect x="739" y="110" width="175" height="18" rx="8" fill="#3B82F6"/><text x="749" y="123" font-size="11" font-weight="700" fill="#FFF">多用户与队列</text><text x="827" y="142" text-anchor="middle" font-size="9" fill="#1F2937">Multi-user</text><text x="749" y="156" font-size="9" fill="#1F2937">· Cookie session 登录</text><text x="749" y="168" font-size="9" fill="#1F2937">· 归属可见 · 取消自己的任务</text><text x="749" y="180" font-size="9" fill="#1F2937">· 生成队列实时展示（全局）</text></g>
-  <line x1="914" y1="146" x2="934" y2="146" stroke="#9CA3AF" marker-end="url(#ag)"/>
+  <g filter="url(#sh)"><rect x="1108.5" y="165" width="262.5" height="108" rx="12" fill="#FFF" stroke="#93C5FD"/><rect x="1108.5" y="165" width="262.5" height="27" rx="12" fill="#3B82F6"/><text x="1123.5" y="184.5" font-size="16.5" font-weight="700" fill="#FFF">多用户与队列</text><text x="1240.5" y="213" text-anchor="middle" font-size="13.5" fill="#1F2937">Multi-user</text><text x="1123.5" y="234" font-size="13.5" fill="#1F2937">· Cookie session 登录</text><text x="1123.5" y="252" font-size="13.5" fill="#1F2937">· 归属可见 · 取消自己的任务</text><text x="1123.5" y="270" font-size="13.5" fill="#1F2937">· 生成队列实时展示（全局）</text></g>
+  <line x1="1371" y1="219" x2="1401" y2="219" stroke="#9CA3AF" marker-end="url(#ag)"/>
 
-  <g filter="url(#sh)"><rect x="938" y="110" width="135" height="72" rx="8" fill="#FFF" stroke="#93C5FD"/><rect x="938" y="110" width="135" height="18" rx="8" fill="#1E40AF"/><text x="948" y="123" font-size="11" font-weight="700" fill="#FFF">CLI 入口</text><text x="1063" y="123" text-anchor="end" font-size="8" fill="#DBEAFE">CLI</text><text x="948" y="142" font-size="9" fill="#1F2937">shanhai (Typer CLI)</text><text x="948" y="156" font-size="9" fill="#1F2937">· new / pick / step</text><text x="948" y="168" font-size="9" fill="#1F2937">· run / status</text><text x="948" y="180" font-size="9" fill="#1F2937">· 同套 steps/* 与 provider</text></g>
+  <g filter="url(#sh)"><rect x="1407" y="165" width="202.5" height="108" rx="12" fill="#FFF" stroke="#93C5FD"/><rect x="1407" y="165" width="202.5" height="27" rx="12" fill="#1E40AF"/><text x="1422" y="184.5" font-size="16.5" font-weight="700" fill="#FFF">CLI 入口</text><text x="1594.5" y="184.5" text-anchor="end" font-size="12.0" fill="#DBEAFE">CLI</text><text x="1422" y="213" font-size="13.5" fill="#1F2937">shanhai (Typer CLI)</text><text x="1422" y="234" font-size="13.5" fill="#1F2937">· new / pick / step</text><text x="1422" y="252" font-size="13.5" fill="#1F2937">· run / status</text><text x="1422" y="270" font-size="13.5" fill="#1F2937">· 同套 steps/* 与 provider</text></g>
 
   <!-- ===== PIPELINE LAYER (y:210-320) ===== -->
-  <rect x="40" y="210" width="870" height="110" rx="10" fill="#FEF9C3" stroke="#FDE68A"/>
-  <text x="54" y="230" font-size="13" font-weight="700" fill="#854D0E">编排层 · Supervisor（FastAPI）任务编排 / 状态管理 / 断点续跑 / 日志监控</text>
+  <rect x="60" y="315" width="1305" height="165" rx="15" fill="#FEF9C3" stroke="#FDE68A"/>
+  <text x="81" y="345" font-size="19.5" font-weight="700" fill="#854D0E">编排层 · Supervisor（FastAPI）任务编排 / 状态管理 / 断点续跑 / 日志监控</text>
 
-  <g filter="url(#sh)"><rect x="52" y="244" width="112" height="68" rx="6" fill="#FFF" stroke="#FCD34D"/><rect x="52" y="244" width="112" height="16" rx="6" fill="#EAB308"/><text x="108" y="256" text-anchor="middle" font-size="10" font-weight="700" fill="#FFF">S0 传说检索与甄别</text><circle cx="108" cy="278" r="7" fill="none" stroke="#EAB308" stroke-width="1.5"/><line x1="114" y1="284" x2="119" y2="289" stroke="#EAB308" stroke-width="1.5"/><text x="108" y="302" text-anchor="middle" font-size="8" fill="#1F2937">2-5条候选传说</text><text x="108" y="310" text-anchor="middle" font-size="8" fill="#1F2937">及来源标注</text></g>
-  <line x1="164" y1="278" x2="172" y2="278" stroke="#D97706" stroke-width="1.2" marker-end="url(#ao)"/>
-  <g filter="url(#sh)"><rect x="172" y="244" width="112" height="68" rx="6" fill="#FFF" stroke="#FCD34D"/><rect x="172" y="244" width="112" height="16" rx="6" fill="#EAB308"/><text x="228" y="256" text-anchor="middle" font-size="10" font-weight="700" fill="#FFF">S1 剧本改编</text><rect x="216" y="270" width="24" height="16" fill="none" stroke="#EAB308" stroke-width="1.2"/><line x1="220" y1="275" x2="236" y2="275" stroke="#EAB308" stroke-width="0.8"/><line x1="220" y1="280" x2="234" y2="280" stroke="#EAB308" stroke-width="0.8"/><text x="228" y="302" text-anchor="middle" font-size="8" fill="#1F2937">结构化剧本</text><text x="228" y="310" text-anchor="middle" font-size="8" fill="#1F2937">（幕/场/对白/旁白）</text></g>
-  <line x1="284" y1="278" x2="292" y2="278" stroke="#D97706" stroke-width="1.2" marker-end="url(#ao)"/>
-  <g filter="url(#sh)"><rect x="292" y="244" width="112" height="68" rx="6" fill="#FFF" stroke="#FCD34D"/><rect x="292" y="244" width="112" height="16" rx="6" fill="#EAB308"/><text x="348" y="256" text-anchor="middle" font-size="10" font-weight="700" fill="#FFF">S2 分镜设计</text><g transform="translate(330,270)"><rect x="0" y="0" width="6" height="16" fill="none" stroke="#EAB308" stroke-width="0.8"/><rect x="8" y="0" width="6" height="16" fill="none" stroke="#EAB308" stroke-width="0.8"/><rect x="16" y="0" width="6" height="16" fill="none" stroke="#EAB308" stroke-width="0.8"/><rect x="24" y="0" width="6" height="16" fill="none" stroke="#EAB308" stroke-width="0.8"/></g><text x="348" y="302" text-anchor="middle" font-size="8" fill="#1F2937">分页分镜表</text><text x="348" y="310" text-anchor="middle" font-size="8" fill="#1F2937">（画面/情绪/文案）</text></g>
-  <line x1="404" y1="278" x2="412" y2="278" stroke="#D97706" stroke-width="1.2" marker-end="url(#ao)"/>
-  <g filter="url(#sh)"><rect x="412" y="244" width="112" height="68" rx="6" fill="#FFF" stroke="#FCD34D"/><rect x="412" y="244" width="112" height="16" rx="6" fill="#EAB308"/><text x="468" y="256" text-anchor="middle" font-size="10" font-weight="700" fill="#FFF">S3 角色设定</text><circle cx="468" cy="278" r="7" fill="#EAB308"/><circle cx="468" cy="275" r="3" fill="#FFF"/><path d="M461,284 Q468,278 475,284 L475,285 L461,285 Z" fill="#FFF"/><text x="468" y="302" text-anchor="middle" font-size="8" fill="#1F2937">角色卡 + 三视图</text><text x="468" y="310" text-anchor="middle" font-size="8" fill="#1F2937">（正/侧/背）</text></g>
-  <line x1="524" y1="278" x2="532" y2="278" stroke="#D97706" stroke-width="1.2" marker-end="url(#ao)"/>
-  <g filter="url(#sh)"><rect x="532" y="244" width="112" height="68" rx="6" fill="#FFF" stroke="#FCD34D"/><rect x="532" y="244" width="112" height="16" rx="6" fill="#EAB308"/><text x="588" y="256" text-anchor="middle" font-size="10" font-weight="700" fill="#FFF">S4 连环画生成</text><rect x="572" y="270" width="32" height="16" fill="none" stroke="#EAB308" stroke-width="1"/><path d="M578,286 L588,274 L594,278 L604,268" fill="none" stroke="#EAB308" stroke-width="1"/><circle cx="588" cy="278" r="1.5" fill="#EAB308"/><text x="588" y="302" text-anchor="middle" font-size="8" fill="#1F2937">逐页 1920×1080</text><text x="588" y="310" text-anchor="middle" font-size="8" fill="#1F2937">漫画画面</text></g>
-  <line x1="644" y1="278" x2="652" y2="278" stroke="#D97706" stroke-width="1.2" marker-end="url(#ao)"/>
-  <g filter="url(#sh)"><rect x="652" y="244" width="112" height="68" rx="6" fill="#FFF" stroke="#FCD34D"/><rect x="652" y="244" width="112" height="16" rx="6" fill="#EAB308"/><text x="708" y="256" text-anchor="middle" font-size="10" font-weight="700" fill="#FFF">S5 配音配乐</text><path d="M704,278 L704,286 L701,286 L701,294 L706,294 L706,286 L709,286 L709,278 Z" fill="#EAB308"/><circle cx="715" cy="286" r="4" fill="none" stroke="#EAB308" stroke-width="1"/><text x="708" y="302" text-anchor="middle" font-size="8" fill="#1F2937">逐页解说音频</text><text x="708" y="310" text-anchor="middle" font-size="8" fill="#1F2937">+ BGM</text></g>
-  <line x1="764" y1="278" x2="772" y2="278" stroke="#D97706" stroke-width="1.2" marker-end="url(#ao)"/>
-  <g filter="url(#sh)"><rect x="772" y="244" width="128" height="68" rx="6" fill="#FFF" stroke="#FB923C"/><rect x="772" y="244" width="128" height="16" rx="6" fill="#EA580C"/><text x="836" y="256" text-anchor="middle" font-size="10" font-weight="700" fill="#FFF">S6 合成输出</text><rect x="820" y="270" width="32" height="16" rx="2" fill="none" stroke="#EA580C" stroke-width="1"/><line x1="824" y1="278" x2="848" y2="278" stroke="#EA580C" stroke-width="0.8"/><line x1="824" y1="283" x2="846" y2="283" stroke="#EA580C" stroke-width="0.8"/><text x="836" y="302" text-anchor="middle" font-size="8" fill="#1F2937">字幕/水印/片尾</text><text x="836" y="310" text-anchor="middle" font-size="8" fill="#1F2937">MP4 成片</text></g>
+  <g filter="url(#sh)"><rect x="78" y="366" width="168" height="102" rx="9" fill="#FFF" stroke="#FCD34D"/><rect x="78" y="366" width="168" height="24" rx="9" fill="#EAB308"/><text x="162" y="384" text-anchor="middle" font-size="15.0" font-weight="700" fill="#FFF">S0 传说检索与甄别</text><circle cx="162" cy="417" r="10.5" fill="none" stroke="#EAB308" stroke-width="2.25"/><line x1="171" y1="426" x2="178.5" y2="433.5" stroke="#EAB308" stroke-width="2.25"/><text x="162" y="453" text-anchor="middle" font-size="12.0" fill="#1F2937">2-5条候选传说</text><text x="162" y="465" text-anchor="middle" font-size="12.0" fill="#1F2937">及来源标注</text></g>
+  <line x1="246" y1="417" x2="258" y2="417" stroke="#D97706" stroke-width="1.8" marker-end="url(#ao)"/>
+  <g filter="url(#sh)"><rect x="258" y="366" width="168" height="102" rx="9" fill="#FFF" stroke="#FCD34D"/><rect x="258" y="366" width="168" height="24" rx="9" fill="#EAB308"/><text x="342" y="384" text-anchor="middle" font-size="15.0" font-weight="700" fill="#FFF">S1 剧本改编</text><rect x="324" y="405" width="36" height="24" fill="none" stroke="#EAB308" stroke-width="1.8"/><line x1="330" y1="412.5" x2="354" y2="412.5" stroke="#EAB308" stroke-width="1.2"/><line x1="330" y1="420" x2="351" y2="420" stroke="#EAB308" stroke-width="1.2"/><text x="342" y="453" text-anchor="middle" font-size="12.0" fill="#1F2937">结构化剧本</text><text x="342" y="465" text-anchor="middle" font-size="12.0" fill="#1F2937">（幕/场/对白/旁白）</text></g>
+  <line x1="426" y1="417" x2="438" y2="417" stroke="#D97706" stroke-width="1.8" marker-end="url(#ao)"/>
+  <g filter="url(#sh)"><rect x="438" y="366" width="168" height="102" rx="9" fill="#FFF" stroke="#FCD34D"/><rect x="438" y="366" width="168" height="24" rx="9" fill="#EAB308"/><text x="522" y="384" text-anchor="middle" font-size="15.0" font-weight="700" fill="#FFF">S2 分镜设计</text><g transform="translate(495,405)"><rect x="0" y="0" width="9" height="24" fill="none" stroke="#EAB308" stroke-width="1.2"/><rect x="12" y="0" width="9" height="24" fill="none" stroke="#EAB308" stroke-width="1.2"/><rect x="24" y="0" width="9" height="24" fill="none" stroke="#EAB308" stroke-width="1.2"/><rect x="36" y="0" width="9" height="24" fill="none" stroke="#EAB308" stroke-width="1.2"/></g><text x="522" y="453" text-anchor="middle" font-size="12.0" fill="#1F2937">分页分镜表</text><text x="522" y="465" text-anchor="middle" font-size="12.0" fill="#1F2937">（画面/情绪/文案）</text></g>
+  <line x1="606" y1="417" x2="618" y2="417" stroke="#D97706" stroke-width="1.8" marker-end="url(#ao)"/>
+  <g filter="url(#sh)"><rect x="618" y="366" width="168" height="102" rx="9" fill="#FFF" stroke="#FCD34D"/><rect x="618" y="366" width="168" height="24" rx="9" fill="#EAB308"/><text x="702" y="384" text-anchor="middle" font-size="15.0" font-weight="700" fill="#FFF">S3 角色设定</text><circle cx="702" cy="417" r="10.5" fill="#EAB308"/><circle cx="702" cy="412.5" r="4.5" fill="#FFF"/><path d="M461,284 Q468,278 475,284 L475,285 L461,285 Z" fill="#FFF"/><text x="702" y="453" text-anchor="middle" font-size="12.0" fill="#1F2937">角色卡 + 三视图</text><text x="702" y="465" text-anchor="middle" font-size="12.0" fill="#1F2937">（正/侧/背）</text></g>
+  <line x1="786" y1="417" x2="798" y2="417" stroke="#D97706" stroke-width="1.8" marker-end="url(#ao)"/>
+  <g filter="url(#sh)"><rect x="798" y="366" width="168" height="102" rx="9" fill="#FFF" stroke="#FCD34D"/><rect x="798" y="366" width="168" height="24" rx="9" fill="#EAB308"/><text x="882" y="384" text-anchor="middle" font-size="15.0" font-weight="700" fill="#FFF">S4 连环画生成</text><rect x="858" y="405" width="48" height="24" fill="none" stroke="#EAB308" stroke-width="1.5"/><path d="M578,286 L588,274 L594,278 L604,268" fill="none" stroke="#EAB308" stroke-width="1.5"/><circle cx="882" cy="417" r="2.25" fill="#EAB308"/><text x="882" y="453" text-anchor="middle" font-size="12.0" fill="#1F2937">逐页 1920×1080</text><text x="882" y="465" text-anchor="middle" font-size="12.0" fill="#1F2937">漫画画面</text></g>
+  <line x1="966" y1="417" x2="978" y2="417" stroke="#D97706" stroke-width="1.8" marker-end="url(#ao)"/>
+  <g filter="url(#sh)"><rect x="978" y="366" width="168" height="102" rx="9" fill="#FFF" stroke="#FCD34D"/><rect x="978" y="366" width="168" height="24" rx="9" fill="#EAB308"/><text x="1062" y="384" text-anchor="middle" font-size="15.0" font-weight="700" fill="#FFF">S5 配音配乐</text><path d="M704,278 L704,286 L701,286 L701,294 L706,294 L706,286 L709,286 L709,278 Z" fill="#EAB308"/><circle cx="1072.5" cy="429" r="6" fill="none" stroke="#EAB308" stroke-width="1.5"/><text x="1062" y="453" text-anchor="middle" font-size="12.0" fill="#1F2937">逐页解说音频</text><text x="1062" y="465" text-anchor="middle" font-size="12.0" fill="#1F2937">+ BGM</text></g>
+  <line x1="1146" y1="417" x2="1158" y2="417" stroke="#D97706" stroke-width="1.8" marker-end="url(#ao)"/>
+  <g filter="url(#sh)"><rect x="1158" y="366" width="192" height="102" rx="9" fill="#FFF" stroke="#FB923C"/><rect x="1158" y="366" width="192" height="24" rx="9" fill="#EA580C"/><text x="1254" y="384" text-anchor="middle" font-size="15.0" font-weight="700" fill="#FFF">S6 合成输出</text><rect x="1230" y="405" width="48" height="24" rx="3" fill="none" stroke="#EA580C" stroke-width="1.5"/><line x1="1236" y1="417" x2="1272" y2="417" stroke="#EA580C" stroke-width="1.2"/><line x1="1236" y1="424.5" x2="1269" y2="424.5" stroke="#EA580C" stroke-width="1.2"/><text x="1254" y="453" text-anchor="middle" font-size="12.0" fill="#1F2937">字幕/水印/片尾</text><text x="1254" y="465" text-anchor="middle" font-size="12.0" fill="#1F2937">MP4 成片</text></g>
 
   <!-- Right config panel (y:210-330) -->
-  <rect x="920" y="210" width="160" height="240" rx="10" fill="#EFF6FF" stroke="#BFDBFE"/>
-  <text x="934" y="230" font-size="12" font-weight="700" fill="#1E3A8A">配置管理（Web UI）</text>
-  <g filter="url(#sh)"><circle cx="1000" cy="252" r="11" fill="#3B82F6"/><text x="1000" y="257" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">⚙</text></g>
-  <text x="934" y="282" font-size="10" fill="#1F2937">· 全局默认配置</text>
-  <text x="934" y="296" font-size="10" fill="#1F2937">· S0-S5 按环节覆盖</text>
-  <text x="934" y="310" font-size="10" fill="#1F2937">· 端点/模型/密钥</text>
-  <text x="934" y="324" font-size="10" fill="#1F2937">· 即时生效</text>
-  <g filter="url(#sh)"><circle cx="1000" cy="354" r="11" fill="#3B82F6"/><path d="M996,354 L1004,354 M1000,350 L1000,358" stroke="#FFF" stroke-width="1.5"/></g>
-  <text x="934" y="384" font-size="12" font-weight="700" fill="#1E3A8A">日志与监控</text>
-  <text x="934" y="402" font-size="10" fill="#1F2937">· 实时进度</text>
-  <text x="934" y="416" font-size="10" fill="#1F2937">· 步骤日志</text>
-  <text x="934" y="430" font-size="10" fill="#1F2937">· 性能监控</text>
+  <rect x="1380" y="315" width="240" height="360" rx="15" fill="#EFF6FF" stroke="#BFDBFE"/>
+  <text x="1401" y="345" font-size="18.0" font-weight="700" fill="#1E3A8A">配置管理（Web UI）</text>
+  <g filter="url(#sh)"><circle cx="1500" cy="378" r="16.5" fill="#3B82F6"/><text x="1500" y="385.5" text-anchor="middle" font-size="18.0" font-weight="700" fill="#FFF">⚙</text></g>
+  <text x="1401" y="423" font-size="15.0" fill="#1F2937">· 全局默认配置</text>
+  <text x="1401" y="444" font-size="15.0" fill="#1F2937">· S0-S5 按环节覆盖</text>
+  <text x="1401" y="465" font-size="15.0" fill="#1F2937">· 端点/模型/密钥</text>
+  <text x="1401" y="486" font-size="15.0" fill="#1F2937">· 即时生效</text>
+  <g filter="url(#sh)"><circle cx="1500" cy="531" r="16.5" fill="#3B82F6"/><path d="M996,354 L1004,354 M1000,350 L1000,358" stroke="#FFF" stroke-width="2.25"/></g>
+  <text x="1401" y="576" font-size="18.0" font-weight="700" fill="#1E3A8A">日志与监控</text>
+  <text x="1401" y="603" font-size="15.0" fill="#1F2937">· 实时进度</text>
+  <text x="1401" y="624" font-size="15.0" fill="#1F2937">· 步骤日志</text>
+  <text x="1401" y="645" font-size="15.0" fill="#1F2937">· 性能监控</text>
 
   <!-- ===== PROJECT DATA CORE (y:340-450) ===== -->
-  <rect x="40" y="340" width="870" height="110" rx="10" fill="#F3F4F6" stroke="#D1D5DB"/>
-  <text x="54" y="360" font-size="13" font-weight="700" fill="#1F2937">Project 聚合根 · 唯一事实源</text>
-  <text x="54" y="374" font-size="10" fill="#6B7280">projects/&lt;id&gt;/project.json</text>
+  <rect x="60" y="510" width="1305" height="165" rx="15" fill="#F3F4F6" stroke="#D1D5DB"/>
+  <text x="81" y="540" font-size="19.5" font-weight="700" fill="#1F2937">Project 聚合根 · 唯一事实源</text>
+  <text x="81" y="561" font-size="15.0" fill="#6B7280">projects/&lt;id&gt;/project.json</text>
 
   <!-- 7 data fields: y=382 height=58, bottom=440 (容器结束 450) -->
-  <g filter="url(#sh)"><rect x="52" y="382" width="90" height="58" rx="6" fill="#FFF" stroke="#D1D5DB"/><rect x="80" y="390" width="20" height="12" fill="none" stroke="#9CA3AF"/><line x1="82" y1="394" x2="98" y2="394" stroke="#9CA3AF" stroke-width="0.6"/><line x1="82" y1="398" x2="96" y2="398" stroke="#9CA3AF" stroke-width="0.6"/><text x="97" y="416" text-anchor="middle" font-size="9" font-weight="600" fill="#1F2937">元数据</text><text x="97" y="430" text-anchor="middle" font-size="8" fill="#6B7280">（景区/配置）</text></g>
-  <g filter="url(#sh)"><rect x="150" y="382" width="90" height="58" rx="6" fill="#FFF" stroke="#D1D5DB"/><circle cx="195" cy="396" r="7" fill="none" stroke="#9CA3AF"/><line x1="191" y1="396" x2="199" y2="396" stroke="#9CA3AF" stroke-width="0.6"/><line x1="195" y1="392" x2="195" y2="400" stroke="#9CA3AF" stroke-width="0.6"/><text x="195" y="416" text-anchor="middle" font-size="9" font-weight="600" fill="#1F2937">候选传说</text><text x="195" y="430" text-anchor="middle" font-size="8" fill="#6B7280">title/source</text></g>
-  <g filter="url(#sh)"><rect x="248" y="382" width="90" height="58" rx="6" fill="#FFF" stroke="#D1D5DB"/><rect x="280" y="390" width="28" height="12" fill="none" stroke="#9CA3AF"/><line x1="284" y1="394" x2="304" y2="394" stroke="#9CA3AF" stroke-width="0.5"/><line x1="284" y1="398" x2="302" y2="398" stroke="#9CA3AF" stroke-width="0.5"/><text x="293" y="416" text-anchor="middle" font-size="9" font-weight="600" fill="#1F2937">剧本</text><text x="293" y="430" text-anchor="middle" font-size="8" fill="#6B7280">acts/scenes</text></g>
-  <g filter="url(#sh)"><rect x="346" y="382" width="90" height="58" rx="6" fill="#FFF" stroke="#D1D5DB"/><g transform="translate(378,388)"><rect x="0" y="0" width="6" height="16" fill="none" stroke="#9CA3AF" stroke-width="0.6"/><rect x="8" y="0" width="6" height="16" fill="none" stroke="#9CA3AF" stroke-width="0.6"/><rect x="16" y="0" width="6" height="16" fill="none" stroke="#9CA3AF" stroke-width="0.6"/><rect x="24" y="0" width="6" height="16" fill="none" stroke="#9CA3AF" stroke-width="0.6"/></g><text x="391" y="416" text-anchor="middle" font-size="9" font-weight="600" fill="#1F2937">分镜</text><text x="391" y="430" text-anchor="middle" font-size="8" fill="#6B7280">cells[]</text></g>
-  <g filter="url(#sh)"><rect x="444" y="382" width="90" height="58" rx="6" fill="#FFF" stroke="#D1D5DB"/><circle cx="489" cy="394" r="4" fill="#9CA3AF"/><path d="M481,408 Q489,402 497,408 Z" fill="#9CA3AF"/><text x="489" y="416" text-anchor="middle" font-size="9" font-weight="600" fill="#1F2937">角色卡</text><text x="489" y="430" text-anchor="middle" font-size="8" fill="#6B7280">三视图</text></g>
-  <g filter="url(#sh)"><rect x="542" y="382" width="90" height="58" rx="6" fill="#FFF" stroke="#D1D5DB"/><rect x="568" y="390" width="16" height="12" fill="none" stroke="#9CA3AF"/><circle cx="576" cy="395" r="2" fill="#9CA3AF"/><path d="M572,402 L574,399 L577,401 L580,397" fill="none" stroke="#9CA3AF" stroke-width="0.5"/><text x="587" y="416" text-anchor="middle" font-size="9" font-weight="600" fill="#1F2937">页面产物</text><text x="587" y="430" text-anchor="middle" font-size="8" fill="#6B7280">图片/音频</text></g>
-  <g filter="url(#sh)"><rect x="640" y="382" width="90" height="58" rx="6" fill="#FFF" stroke="#D1D5DB"/><rect x="668" y="390" width="24" height="12" fill="none" stroke="#9CA3AF"/><polygon points="672,394 678,396 678,398 672,400" fill="#9CA3AF"/><text x="685" y="416" text-anchor="middle" font-size="9" font-weight="600" fill="#1F2937">输出信息</text><text x="685" y="430" text-anchor="middle" font-size="8" fill="#6B7280">（MP4）</text></g>
+  <g filter="url(#sh)"><rect x="78" y="573" width="135" height="87" rx="9" fill="#FFF" stroke="#D1D5DB"/><rect x="120" y="585" width="30" height="18" fill="none" stroke="#9CA3AF"/><line x1="123" y1="591" x2="147" y2="591" stroke="#9CA3AF" stroke-width="0.9"/><line x1="123" y1="597" x2="144" y2="597" stroke="#9CA3AF" stroke-width="0.9"/><text x="145.5" y="624" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1F2937">元数据</text><text x="145.5" y="645" text-anchor="middle" font-size="12.0" fill="#6B7280">（景区/配置）</text></g>
+  <g filter="url(#sh)"><rect x="225" y="573" width="135" height="87" rx="9" fill="#FFF" stroke="#D1D5DB"/><circle cx="292.5" cy="594" r="10.5" fill="none" stroke="#9CA3AF"/><line x1="286.5" y1="594" x2="298.5" y2="594" stroke="#9CA3AF" stroke-width="0.9"/><line x1="292.5" y1="588" x2="292.5" y2="600" stroke="#9CA3AF" stroke-width="0.9"/><text x="292.5" y="624" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1F2937">候选传说</text><text x="292.5" y="645" text-anchor="middle" font-size="12.0" fill="#6B7280">title/source</text></g>
+  <g filter="url(#sh)"><rect x="372" y="573" width="135" height="87" rx="9" fill="#FFF" stroke="#D1D5DB"/><rect x="420" y="585" width="42" height="18" fill="none" stroke="#9CA3AF"/><line x1="426" y1="591" x2="456" y2="591" stroke="#9CA3AF" stroke-width="0.75"/><line x1="426" y1="597" x2="453" y2="597" stroke="#9CA3AF" stroke-width="0.75"/><text x="439.5" y="624" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1F2937">剧本</text><text x="439.5" y="645" text-anchor="middle" font-size="12.0" fill="#6B7280">acts/scenes</text></g>
+  <g filter="url(#sh)"><rect x="519" y="573" width="135" height="87" rx="9" fill="#FFF" stroke="#D1D5DB"/><g transform="translate(567,582)"><rect x="0" y="0" width="9" height="24" fill="none" stroke="#9CA3AF" stroke-width="0.9"/><rect x="12" y="0" width="9" height="24" fill="none" stroke="#9CA3AF" stroke-width="0.9"/><rect x="24" y="0" width="9" height="24" fill="none" stroke="#9CA3AF" stroke-width="0.9"/><rect x="36" y="0" width="9" height="24" fill="none" stroke="#9CA3AF" stroke-width="0.9"/></g><text x="586.5" y="624" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1F2937">分镜</text><text x="586.5" y="645" text-anchor="middle" font-size="12.0" fill="#6B7280">cells[]</text></g>
+  <g filter="url(#sh)"><rect x="666" y="573" width="135" height="87" rx="9" fill="#FFF" stroke="#D1D5DB"/><circle cx="733.5" cy="591" r="6" fill="#9CA3AF"/><path d="M481,408 Q489,402 497,408 Z" fill="#9CA3AF"/><text x="733.5" y="624" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1F2937">角色卡</text><text x="733.5" y="645" text-anchor="middle" font-size="12.0" fill="#6B7280">三视图</text></g>
+  <g filter="url(#sh)"><rect x="813" y="573" width="135" height="87" rx="9" fill="#FFF" stroke="#D1D5DB"/><rect x="852" y="585" width="24" height="18" fill="none" stroke="#9CA3AF"/><circle cx="864" cy="592.5" r="3" fill="#9CA3AF"/><path d="M572,402 L574,399 L577,401 L580,397" fill="none" stroke="#9CA3AF" stroke-width="0.75"/><text x="880.5" y="624" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1F2937">页面产物</text><text x="880.5" y="645" text-anchor="middle" font-size="12.0" fill="#6B7280">图片/音频</text></g>
+  <g filter="url(#sh)"><rect x="960" y="573" width="135" height="87" rx="9" fill="#FFF" stroke="#D1D5DB"/><rect x="1002" y="585" width="36" height="18" fill="none" stroke="#9CA3AF"/><polygon points="672,394 678,396 678,398 672,400" fill="#9CA3AF"/><text x="1027.5" y="624" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1F2937">输出信息</text><text x="1027.5" y="645" text-anchor="middle" font-size="12.0" fill="#6B7280">（MP4）</text></g>
 
   <!-- 断点续跑机制: x=738 y=382 width=160 height=58 -->
-  <g filter="url(#sh)"><rect x="738" y="382" width="160" height="58" rx="6" fill="#ECFDF5" stroke="#86EFAC"/><rect x="738" y="382" width="160" height="18" rx="6" fill="#16A34A"/><text x="818" y="394" text-anchor="middle" font-size="10" font-weight="700" fill="#FFF">断点续跑机制</text><text x="744" y="412" font-size="9" fill="#1F2937">· 原子写（tmp + replace）</text><text x="744" y="424" font-size="9" fill="#1F2937">· 步骤产物存在性校验</text><text x="744" y="436" font-size="9" fill="#1F2937">· 任意步骤崩溃后继续</text></g>
+  <g filter="url(#sh)"><rect x="1107" y="573" width="240" height="87" rx="9" fill="#ECFDF5" stroke="#86EFAC"/><rect x="1107" y="573" width="240" height="27" rx="9" fill="#16A34A"/><text x="1227" y="591" text-anchor="middle" font-size="15.0" font-weight="700" fill="#FFF">断点续跑机制</text><text x="1116" y="618" font-size="13.5" fill="#1F2937">· 原子写（tmp + replace）</text><text x="1116" y="636" font-size="13.5" fill="#1F2937">· 步骤产物存在性校验</text><text x="1116" y="654" font-size="13.5" fill="#1F2937">· 任意步骤崩溃后继续</text></g>
 
   <!-- ===== PROVIDER LAYER (y:470-580) ===== -->
-  <rect x="40" y="470" width="870" height="110" rx="10" fill="#F5F3FF" stroke="#C4B5FD"/>
-  <text x="54" y="490" font-size="13" font-weight="700" fill="#4C1D95">Provider 层（能力服务）· OpenAI 兼容协议</text>
+  <rect x="60" y="705" width="1305" height="165" rx="15" fill="#F5F3FF" stroke="#C4B5FD"/>
+  <text x="81" y="735" font-size="19.5" font-weight="700" fill="#4C1D95">Provider 层（能力服务）· OpenAI 兼容协议</text>
 
-  <g filter="url(#sh)"><rect x="52" y="504" width="180" height="68" rx="6" fill="#FFF" stroke="#C4B5FD"/><rect x="52" y="504" width="180" height="18" rx="6" fill="#7C3AED"/><text x="142" y="517" text-anchor="middle" font-size="11" font-weight="700" fill="#FFF">LLM Provider（文本生成）</text><text x="60" y="536" font-size="9" fill="#1F2937">· OpenAI 兼容协议</text><text x="60" y="550" font-size="9" fill="#1F2937">· 多端点可切换</text><text x="60" y="564" font-size="9" fill="#1F2937">· 按环节配置覆盖</text></g>
-  <g filter="url(#sh)"><rect x="242" y="504" width="180" height="68" rx="6" fill="#FFF" stroke="#C4B5FD"/><rect x="242" y="504" width="180" height="18" rx="6" fill="#7C3AED"/><text x="332" y="517" text-anchor="middle" font-size="11" font-weight="700" fill="#FFF">Image Provider（图像生成）</text><text x="250" y="536" font-size="9" fill="#1F2937">· OpenAI 兼容协议</text><text x="250" y="550" font-size="9" fill="#1F2937">· 参考图注入</text><text x="250" y="564" font-size="9" fill="#1F2937">· 三视图一致性</text></g>
-  <g filter="url(#sh)"><rect x="432" y="504" width="180" height="68" rx="6" fill="#FFF" stroke="#C4B5FD"/><rect x="432" y="504" width="180" height="18" rx="6" fill="#7C3AED"/><text x="522" y="517" text-anchor="middle" font-size="11" font-weight="700" fill="#FFF">TTS Provider（语音合成）</text><text x="440" y="536" font-size="9" fill="#1F2937">· OpenAI 兼容协议</text><text x="440" y="550" font-size="9" fill="#1F2937">· 整段优先 + 分句退化</text><text x="440" y="564" font-size="9" fill="#1F2937">· 三试取最长</text></g>
-  <g filter="url(#sh)"><rect x="622" y="504" width="180" height="68" rx="6" fill="#FFF" stroke="#C4B5FD"/><rect x="622" y="504" width="180" height="18" rx="6" fill="#7C3AED"/><text x="712" y="517" text-anchor="middle" font-size="11" font-weight="700" fill="#FFF">Music Provider（音乐生成）</text><text x="630" y="536" font-size="9" fill="#1F2937">· OpenAI 兼容协议</text><text x="630" y="550" font-size="9" fill="#1F2937">· 情绪标签驱动</text><text x="630" y="564" font-size="9" fill="#1F2937">· BGM 生成</text></g>
-  <g filter="url(#sh)"><rect x="812" y="504" width="86" height="68" rx="6" fill="#FFF7ED" stroke="#FDBA74" stroke-dasharray="4,2"/><text x="855" y="522" text-anchor="middle" font-size="10" font-weight="700" fill="#7C2D12">🔒 guard</text><text x="855" y="536" text-anchor="middle" font-size="8" fill="#1F2937">本地后端</text><text x="855" y="550" text-anchor="middle" font-size="8" fill="#1F2937">全局单并发</text><text x="855" y="564" text-anchor="middle" font-size="8" fill="#1F2937">避免抢卡</text></g>
+  <g filter="url(#sh)"><rect x="78" y="756" width="270" height="102" rx="9" fill="#FFF" stroke="#C4B5FD"/><rect x="78" y="756" width="270" height="27" rx="9" fill="#7C3AED"/><text x="213" y="775.5" text-anchor="middle" font-size="16.5" font-weight="700" fill="#FFF">LLM Provider（文本生成）</text><text x="90" y="804" font-size="13.5" fill="#1F2937">· OpenAI 兼容协议</text><text x="90" y="825" font-size="13.5" fill="#1F2937">· 多端点可切换</text><text x="90" y="846" font-size="13.5" fill="#1F2937">· 按环节配置覆盖</text></g>
+  <g filter="url(#sh)"><rect x="363" y="756" width="270" height="102" rx="9" fill="#FFF" stroke="#C4B5FD"/><rect x="363" y="756" width="270" height="27" rx="9" fill="#7C3AED"/><text x="498" y="775.5" text-anchor="middle" font-size="16.5" font-weight="700" fill="#FFF">Image Provider（图像生成）</text><text x="375" y="804" font-size="13.5" fill="#1F2937">· OpenAI 兼容协议</text><text x="375" y="825" font-size="13.5" fill="#1F2937">· 参考图注入</text><text x="375" y="846" font-size="13.5" fill="#1F2937">· 三视图一致性</text></g>
+  <g filter="url(#sh)"><rect x="648" y="756" width="270" height="102" rx="9" fill="#FFF" stroke="#C4B5FD"/><rect x="648" y="756" width="270" height="27" rx="9" fill="#7C3AED"/><text x="783" y="775.5" text-anchor="middle" font-size="16.5" font-weight="700" fill="#FFF">TTS Provider（语音合成）</text><text x="660" y="804" font-size="13.5" fill="#1F2937">· OpenAI 兼容协议</text><text x="660" y="825" font-size="13.5" fill="#1F2937">· 整段优先 + 分句退化</text><text x="660" y="846" font-size="13.5" fill="#1F2937">· 三试取最长</text></g>
+  <g filter="url(#sh)"><rect x="933" y="756" width="270" height="102" rx="9" fill="#FFF" stroke="#C4B5FD"/><rect x="933" y="756" width="270" height="27" rx="9" fill="#7C3AED"/><text x="1068" y="775.5" text-anchor="middle" font-size="16.5" font-weight="700" fill="#FFF">Music Provider（音乐生成）</text><text x="945" y="804" font-size="13.5" fill="#1F2937">· OpenAI 兼容协议</text><text x="945" y="825" font-size="13.5" fill="#1F2937">· 情绪标签驱动</text><text x="945" y="846" font-size="13.5" fill="#1F2937">· BGM 生成</text></g>
+  <g filter="url(#sh)"><rect x="1218" y="756" width="129" height="102" rx="9" fill="#FFF7ED" stroke="#FDBA74" stroke-dasharray="4,2"/><text x="1282.5" y="783" text-anchor="middle" font-size="15.0" font-weight="700" fill="#7C2D12">🔒 guard</text><text x="1282.5" y="804" text-anchor="middle" font-size="12.0" fill="#1F2937">本地后端</text><text x="1282.5" y="825" text-anchor="middle" font-size="12.0" fill="#1F2937">全局单并发</text><text x="1282.5" y="846" text-anchor="middle" font-size="12.0" fill="#1F2937">避免抢卡</text></g>
 
   <!-- ===== MODEL SERVICE LAYER (y:600-710) ===== -->
-  <rect x="40" y="600" width="870" height="110" rx="10" fill="#ECFDF5" stroke="#86EFAC"/>
-  <text x="54" y="620" font-size="13" font-weight="700" fill="#14532D">模型服务层（引擎模型）· DGX Spark 119GB 统一内存 · 分时加载</text>
+  <rect x="60" y="900" width="1305" height="165" rx="15" fill="#ECFDF5" stroke="#86EFAC"/>
+  <text x="81" y="930" font-size="19.5" font-weight="700" fill="#14532D">模型服务层（引擎模型）· DGX Spark 119GB 统一内存 · 分时加载</text>
 
-  <g filter="url(#sh)"><rect x="52" y="634" width="150" height="68" rx="6" fill="#FFF" stroke="#86EFAC"/><rect x="52" y="634" width="150" height="18" rx="6" fill="#16A34A"/><text x="127" y="647" text-anchor="middle" font-size="11" font-weight="700" fill="#FFF">Hermes Agent</text><text x="60" y="666" font-size="9" fill="#1F2937">（编剧/导演 Skill）</text><text x="60" y="680" font-size="9" fill="#1F2937">· 底层：glm5.2</text><text x="60" y="694" font-size="9" fill="#1F2937">· 127.0.0.1:8642</text></g>
-  <g filter="url(#sh)"><rect x="212" y="634" width="150" height="68" rx="6" fill="#FFF" stroke="#86EFAC"/><rect x="212" y="634" width="150" height="18" rx="6" fill="#16A34A"/><text x="287" y="647" text-anchor="middle" font-size="11" font-weight="700" fill="#FFF">tu-zi 云端</text><text x="220" y="666" font-size="9" fill="#1F2937">（gpt-image-2）</text><text x="220" y="680" font-size="9" fill="#1F2937">· 图像云端服务</text><text x="220" y="694" font-size="9" fill="#1F2937">· api.tu-zi.com</text></g>
-  <g filter="url(#sh)"><rect x="372" y="634" width="150" height="68" rx="6" fill="#FFF" stroke="#86EFAC"/><rect x="372" y="634" width="150" height="18" rx="6" fill="#16A34A"/><text x="447" y="647" text-anchor="middle" font-size="11" font-weight="700" fill="#FFF">CosyVoice2-0.5B</text><text x="380" y="666" font-size="9" fill="#1F2937">（TTS）</text><text x="380" y="680" font-size="9" fill="#1F2937">· 127.0.0.1:8090</text><text x="380" y="694" font-size="9" fill="#1F2937">· shanhai-tts</text></g>
-  <g filter="url(#sh)"><rect x="532" y="634" width="150" height="68" rx="6" fill="#FFF" stroke="#86EFAC"/><rect x="532" y="634" width="150" height="18" rx="6" fill="#16A34A"/><text x="607" y="647" text-anchor="middle" font-size="11" font-weight="700" fill="#FFF">ACE-STEP 1.5 XL</text><text x="540" y="666" font-size="9" fill="#1F2937">（Music）</text><text x="540" y="680" font-size="9" fill="#1F2937">· 127.0.0.1:8092</text><text x="540" y="694" font-size="9" fill="#1F2937">· shanhai-music</text></g>
-  <g filter="url(#sh)"><rect x="692" y="634" width="150" height="68" rx="6" fill="#FFF" stroke="#86EFAC"/><rect x="692" y="634" width="150" height="18" rx="6" fill="#16A34A"/><text x="767" y="647" text-anchor="middle" font-size="11" font-weight="700" fill="#FFF">ComfyUI</text><text x="700" y="666" font-size="9" fill="#1F2937">（本地图像备选）</text><text x="700" y="680" font-size="9" fill="#1F2937">· Qwen-Image-Edit</text><text x="700" y="694" font-size="9" fill="#1F2937">· 127.0.0.1:8188</text></g>
-  <g filter="url(#sh)"><rect x="852" y="634" width="46" height="68" rx="6" fill="#FFF" stroke="#86EFAC"/><text x="875" y="655" text-anchor="middle" font-size="9" font-weight="700" fill="#14532D">Stepfun</text><text x="875" y="670" text-anchor="middle" font-size="8" fill="#1F2937">step-3.7</text><text x="875" y="684" text-anchor="middle" font-size="8" fill="#1F2937">文本</text><text x="875" y="694" text-anchor="middle" font-size="8" fill="#1F2937">云端</text></g>
+  <g filter="url(#sh)"><rect x="78" y="951" width="225" height="102" rx="9" fill="#FFF" stroke="#86EFAC"/><rect x="78" y="951" width="225" height="27" rx="9" fill="#16A34A"/><text x="190.5" y="970.5" text-anchor="middle" font-size="16.5" font-weight="700" fill="#FFF">Hermes Agent</text><text x="90" y="999" font-size="13.5" fill="#1F2937">（编剧/导演 Skill）</text><text x="90" y="1020" font-size="13.5" fill="#1F2937">· 底层：glm5.2</text><text x="90" y="1041" font-size="13.5" fill="#1F2937">· 127.0.0.1:8642</text></g>
+  <g filter="url(#sh)"><rect x="318" y="951" width="225" height="102" rx="9" fill="#FFF" stroke="#86EFAC"/><rect x="318" y="951" width="225" height="27" rx="9" fill="#16A34A"/><text x="430.5" y="970.5" text-anchor="middle" font-size="16.5" font-weight="700" fill="#FFF">tu-zi 云端</text><text x="330" y="999" font-size="13.5" fill="#1F2937">（gpt-image-2）</text><text x="330" y="1020" font-size="13.5" fill="#1F2937">· 图像云端服务</text><text x="330" y="1041" font-size="13.5" fill="#1F2937">· api.tu-zi.com</text></g>
+  <g filter="url(#sh)"><rect x="558" y="951" width="225" height="102" rx="9" fill="#FFF" stroke="#86EFAC"/><rect x="558" y="951" width="225" height="27" rx="9" fill="#16A34A"/><text x="670.5" y="970.5" text-anchor="middle" font-size="16.5" font-weight="700" fill="#FFF">CosyVoice2-0.5B</text><text x="570" y="999" font-size="13.5" fill="#1F2937">（TTS）</text><text x="570" y="1020" font-size="13.5" fill="#1F2937">· 127.0.0.1:8090</text><text x="570" y="1041" font-size="13.5" fill="#1F2937">· shanhai-tts</text></g>
+  <g filter="url(#sh)"><rect x="798" y="951" width="225" height="102" rx="9" fill="#FFF" stroke="#86EFAC"/><rect x="798" y="951" width="225" height="27" rx="9" fill="#16A34A"/><text x="910.5" y="970.5" text-anchor="middle" font-size="16.5" font-weight="700" fill="#FFF">ACE-STEP 1.5 XL</text><text x="810" y="999" font-size="13.5" fill="#1F2937">（Music）</text><text x="810" y="1020" font-size="13.5" fill="#1F2937">· 127.0.0.1:8092</text><text x="810" y="1041" font-size="13.5" fill="#1F2937">· shanhai-music</text></g>
+  <g filter="url(#sh)"><rect x="1038" y="951" width="225" height="102" rx="9" fill="#FFF" stroke="#86EFAC"/><rect x="1038" y="951" width="225" height="27" rx="9" fill="#16A34A"/><text x="1150.5" y="970.5" text-anchor="middle" font-size="16.5" font-weight="700" fill="#FFF">ComfyUI</text><text x="1050" y="999" font-size="13.5" fill="#1F2937">（本地图像备选）</text><text x="1050" y="1020" font-size="13.5" fill="#1F2937">· Qwen-Image-Edit</text><text x="1050" y="1041" font-size="13.5" fill="#1F2937">· 127.0.0.1:8188</text></g>
+  <g filter="url(#sh)"><rect x="1278" y="951" width="69" height="102" rx="9" fill="#FFF" stroke="#86EFAC"/><text x="1312.5" y="982.5" text-anchor="middle" font-size="13.5" font-weight="700" fill="#14532D">Stepfun</text><text x="1312.5" y="1005" text-anchor="middle" font-size="12.0" fill="#1F2937">step-3.7</text><text x="1312.5" y="1026" text-anchor="middle" font-size="12.0" fill="#1F2937">文本</text><text x="1312.5" y="1041" text-anchor="middle" font-size="12.0" fill="#1F2937">云端</text></g>
 
   <!-- ===== OUTPUT LAYER (y:730-840) ===== -->
-  <rect x="40" y="730" width="870" height="110" rx="10" fill="#FFF7ED" stroke="#FDBA74"/>
-  <text x="54" y="750" font-size="13" font-weight="700" fill="#7C2D12">输出层 · FFmpeg 合成器（ComposerAgent）</text>
+  <rect x="60" y="1095" width="1305" height="165" rx="15" fill="#FFF7ED" stroke="#FDBA74"/>
+  <text x="81" y="1125" font-size="19.5" font-weight="700" fill="#7C2D12">输出层 · FFmpeg 合成器（ComposerAgent）</text>
 
-  <g filter="url(#sh)"><rect x="52" y="764" width="68" height="60" rx="6" fill="#FFF" stroke="#FDBA74"/><rect x="68" y="774" width="36" height="24" fill="none" stroke="#EA580C" stroke-width="1"/><line x1="74" y1="782" x2="98" y2="782" stroke="#EA580C" stroke-width="0.6"/><line x1="74" y1="788" x2="94" y2="788" stroke="#EA580C" stroke-width="0.6"/><line x1="74" y1="794" x2="90" y2="794" stroke="#EA580C" stroke-width="0.6"/><text x="86" y="828" text-anchor="middle" font-size="8" fill="#7C2D12">片头卡</text></g>
-  <text x="130" y="790" font-size="10" fill="#6B7280">→ 逐页（Ken Burns 缩放 + 转场）</text>
-  <text x="130" y="806" font-size="10" fill="#6B7280">→ 片尾卡 + 字幕/水印叠加</text>
+  <g filter="url(#sh)"><rect x="78" y="1146" width="102" height="90" rx="9" fill="#FFF" stroke="#FDBA74"/><rect x="102" y="1161" width="54" height="36" fill="none" stroke="#EA580C" stroke-width="1.5"/><line x1="111" y1="1173" x2="147" y2="1173" stroke="#EA580C" stroke-width="0.9"/><line x1="111" y1="1182" x2="141" y2="1182" stroke="#EA580C" stroke-width="0.9"/><line x1="111" y1="1191" x2="135" y2="1191" stroke="#EA580C" stroke-width="0.9"/><text x="129" y="1242" text-anchor="middle" font-size="12.0" fill="#7C2D12">片头卡</text></g>
+  <text x="195" y="1185" font-size="15.0" fill="#6B7280">→ 逐页（Ken Burns 缩放 + 转场）</text>
+  <text x="195" y="1209" font-size="15.0" fill="#6B7280">→ 片尾卡 + 字幕/水印叠加</text>
 
-  <g filter="url(#sh)"><rect x="350" y="764" width="170" height="60" rx="6" fill="#FFF" stroke="#FDBA74"/><text x="435" y="786" text-anchor="middle" font-size="10" font-weight="600" fill="#7C2D12">音频混合</text><text x="435" y="804" text-anchor="middle" font-size="9" fill="#1F2937">（解说 + BGM）</text></g>
-  <line x1="520" y1="794" x2="540" y2="794" stroke="#9CA3AF" marker-end="url(#ag)"/>
-  <g filter="url(#sh)"><rect x="540" y="764" width="130" height="60" rx="6" fill="#FFF" stroke="#FDBA74"/><text x="605" y="786" text-anchor="middle" font-size="10" font-weight="600" fill="#7C2D12">响度归一化</text><text x="605" y="804" text-anchor="middle" font-size="9" fill="#1F2937">loudnorm</text></g>
-  <line x1="670" y1="794" x2="690" y2="794" stroke="#9CA3AF" marker-end="url(#ag)"/>
-  <g filter="url(#sh)"><rect x="690" y="764" width="130" height="60" rx="6" fill="#EA580C" stroke="#FB923C"/><text x="755" y="786" text-anchor="middle" font-size="10" font-weight="700" fill="#FFF">MP4 输出</text><text x="755" y="804" text-anchor="middle" font-size="9" fill="#FED7AA">1080p</text></g>
+  <g filter="url(#sh)"><rect x="525" y="1146" width="255" height="90" rx="9" fill="#FFF" stroke="#FDBA74"/><text x="652.5" y="1179" text-anchor="middle" font-size="15.0" font-weight="600" fill="#7C2D12">音频混合</text><text x="652.5" y="1206" text-anchor="middle" font-size="13.5" fill="#1F2937">（解说 + BGM）</text></g>
+  <line x1="780" y1="1191" x2="810" y2="1191" stroke="#9CA3AF" marker-end="url(#ag)"/>
+  <g filter="url(#sh)"><rect x="810" y="1146" width="195" height="90" rx="9" fill="#FFF" stroke="#FDBA74"/><text x="907.5" y="1179" text-anchor="middle" font-size="15.0" font-weight="600" fill="#7C2D12">响度归一化</text><text x="907.5" y="1206" text-anchor="middle" font-size="13.5" fill="#1F2937">loudnorm</text></g>
+  <line x1="1005" y1="1191" x2="1035" y2="1191" stroke="#9CA3AF" marker-end="url(#ag)"/>
+  <g filter="url(#sh)"><rect x="1035" y="1146" width="195" height="90" rx="9" fill="#EA580C" stroke="#FB923C"/><text x="1132.5" y="1179" text-anchor="middle" font-size="15.0" font-weight="700" fill="#FFF">MP4 输出</text><text x="1132.5" y="1206" text-anchor="middle" font-size="13.5" fill="#FED7AA">1080p</text></g>
 
-  <g filter="url(#sh)"><circle cx="870" cy="794" r="20" fill="#EA580C"/><path d="M862,782 L882,794 L862,806 Z" fill="#FFF"/></g>
-  <text x="870" y="836" text-anchor="middle" font-size="9" font-weight="600" fill="#7C2D12">有声连环画 MP4 成片</text>
+  <g filter="url(#sh)"><circle cx="1305" cy="1191" r="30" fill="#EA580C"/><path d="M862,782 L882,794 L862,806 Z" fill="#FFF"/></g>
+  <text x="1305" y="1254" text-anchor="middle" font-size="13.5" font-weight="600" fill="#7C2D12">有声连环画 MP4 成片</text>
 
   <!-- ===== DEPLOYMENT (y:860-970) ===== -->
-  <rect x="40" y="860" width="870" height="110" rx="10" fill="#ECFEFF" stroke="#A5F3FC"/>
-  <text x="54" y="880" font-size="13" font-weight="700" fill="#155E75">部署环境</text>
+  <rect x="60" y="1290" width="1305" height="165" rx="15" fill="#ECFEFF" stroke="#A5F3FC"/>
+  <text x="81" y="1320" font-size="19.5" font-weight="700" fill="#155E75">部署环境</text>
 
-  <g filter="url(#sh)"><rect x="52" y="894" width="420" height="68" rx="6" fill="#FFF" stroke="#86EFAC"/><rect x="52" y="894" width="420" height="18" rx="6" fill="#16A34A"/><text x="62" y="907" font-size="11" font-weight="700" fill="#FFF">NVIDIA DGX Spark（GB10）</text><text x="462" y="907" text-anchor="end" font-size="8" fill="#D1FAE5">（本地）</text><text x="60" y="928" font-size="9" fill="#1F2937">· 119GB 统一内存</text><text x="220" y="928" font-size="9" fill="#1F2937">· 分时加载多模型无法同时驻留</text><text x="60" y="944" font-size="9" fill="#1F2937">· 本地服务 shim + 全局单并发锁</text><text x="280" y="944" font-size="9" fill="#1F2937">· 大统一内存优势 · 本地闭环推理</text></g>
-  <g filter="url(#sh)"><rect x="482" y="894" width="240" height="68" rx="6" fill="#FFF" stroke="#A5F3FC" stroke-dasharray="4,2"/><rect x="482" y="894" width="240" height="18" rx="6" fill="#0891B2"/><text x="492" y="907" font-size="11" font-weight="700" fill="#FFF">云端服务（tu-zi 图像云端）</text><text x="712" y="907" text-anchor="end" font-size="8" fill="#CFFAFE">（可选）</text><text x="490" y="928" font-size="9" fill="#1F2937">· 离线备选 · 弹性扩展</text><text x="490" y="944" font-size="9" fill="#1F2937">· 本地端点不可用时降级到云端</text></g>
-  <g filter="url(#sh)"><rect x="732" y="894" width="166" height="68" rx="6" fill="#FFF" stroke="#A5F3FC"/><text x="815" y="912" text-anchor="middle" font-size="11" font-weight="700" fill="#155E75">系统拓扑速览</text><text x="740" y="930" font-size="8" fill="#1F2937">数据流 ↔ · 控制流 ⇢ · 读写 ⇢</text><text x="740" y="944" font-size="8" fill="#6B7280">主进程：FastAPI+Typer</text><text x="740" y="956" font-size="8" fill="#6B7280">端点：:8080</text></g>
+  <g filter="url(#sh)"><rect x="78" y="1341" width="630" height="102" rx="9" fill="#FFF" stroke="#86EFAC"/><rect x="78" y="1341" width="630" height="27" rx="9" fill="#16A34A"/><text x="93" y="1360.5" font-size="16.5" font-weight="700" fill="#FFF">NVIDIA DGX Spark（GB10）</text><text x="693" y="1360.5" text-anchor="end" font-size="12.0" fill="#D1FAE5">（本地）</text><text x="90" y="1392" font-size="13.5" fill="#1F2937">· 119GB 统一内存</text><text x="330" y="1392" font-size="13.5" fill="#1F2937">· 分时加载多模型无法同时驻留</text><text x="90" y="1416" font-size="13.5" fill="#1F2937">· 本地服务 shim + 全局单并发锁</text><text x="420" y="1416" font-size="13.5" fill="#1F2937">· 大统一内存优势 · 本地闭环推理</text></g>
+  <g filter="url(#sh)"><rect x="723" y="1341" width="360" height="102" rx="9" fill="#FFF" stroke="#A5F3FC" stroke-dasharray="4,2"/><rect x="723" y="1341" width="360" height="27" rx="9" fill="#0891B2"/><text x="738" y="1360.5" font-size="16.5" font-weight="700" fill="#FFF">云端服务（tu-zi 图像云端）</text><text x="1068" y="1360.5" text-anchor="end" font-size="12.0" fill="#CFFAFE">（可选）</text><text x="735" y="1392" font-size="13.5" fill="#1F2937">· 离线备选 · 弹性扩展</text><text x="735" y="1416" font-size="13.5" fill="#1F2937">· 本地端点不可用时降级到云端</text></g>
+  <g filter="url(#sh)"><rect x="1098" y="1341" width="249" height="102" rx="9" fill="#FFF" stroke="#A5F3FC"/><text x="1222.5" y="1368" text-anchor="middle" font-size="16.5" font-weight="700" fill="#155E75">系统拓扑速览</text><text x="1110" y="1395" font-size="12.0" fill="#1F2937">数据流 ↔ · 控制流 ⇢ · 读写 ⇢</text><text x="1110" y="1416" font-size="12.0" fill="#6B7280">主进程：FastAPI+Typer</text><text x="1110" y="1434" font-size="12.0" fill="#6B7280">端点：:8080</text></g>
 
   <!-- ===== INTER-LAYER CONNECTIONS ===== -->
-  <line x1="230" y1="182" x2="230" y2="244" stroke="#9CA3AF" stroke-width="1" marker-end="url(#ag)"/>
-  <line x1="429" y1="182" x2="348" y2="244" stroke="#9CA3AF" stroke-width="1" stroke-dasharray="3,2"/>
-  <line x1="628" y1="182" x2="468" y2="244" stroke="#9CA3AF" stroke-width="1" stroke-dasharray="3,2"/>
-  <line x1="827" y1="182" x2="588" y2="244" stroke="#9CA3AF" stroke-width="1" stroke-dasharray="3,2"/>
+  <line x1="345" y1="273" x2="345" y2="366" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#ag)"/>
+  <line x1="643.5" y1="273" x2="522" y2="366" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <line x1="942" y1="273" x2="702" y2="366" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <line x1="1240.5" y1="273" x2="882" y2="366" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="3,2"/>
 
-  <line x1="228" y1="312" x2="195" y2="382" stroke="#9CA3AF" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ag)"/>
-  <line x1="468" y1="312" x2="489" y2="382" stroke="#9CA3AF" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ag)"/>
-  <line x1="836" y1="312" x2="685" y2="382" stroke="#9CA3AF" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ag)"/>
+  <line x1="342" y1="468" x2="292.5" y2="573" stroke="#9CA3AF" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ag)"/>
+  <line x1="702" y1="468" x2="733.5" y2="573" stroke="#9CA3AF" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ag)"/>
+  <line x1="1254" y1="468" x2="1027.5" y2="573" stroke="#9CA3AF" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ag)"/>
 
-  <line x1="142" y1="580" x2="142" y2="504" stroke="#7C3AED" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ap)"/>
-  <line x1="332" y1="580" x2="332" y2="504" stroke="#7C3AED" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ap)"/>
-  <line x1="522" y1="580" x2="522" y2="504" stroke="#7C3AED" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ap)"/>
-  <line x1="712" y1="580" x2="712" y2="504" stroke="#7C3AED" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ap)"/>
+  <line x1="213" y1="870" x2="213" y2="756" stroke="#7C3AED" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ap)"/>
+  <line x1="498" y1="870" x2="498" y2="756" stroke="#7C3AED" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ap)"/>
+  <line x1="783" y1="870" x2="783" y2="756" stroke="#7C3AED" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ap)"/>
+  <line x1="1068" y1="870" x2="1068" y2="756" stroke="#7C3AED" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ap)"/>
 
-  <line x1="127" y1="710" x2="127" y2="634" stroke="#16A34A" stroke-width="0.8" marker-end="url(#ag2)"/>
-  <line x1="332" y1="710" x2="287" y2="634" stroke="#16A34A" stroke-width="0.8" marker-end="url(#ag2)"/>
-  <line x1="522" y1="710" x2="447" y2="634" stroke="#16A34A" stroke-width="0.8" marker-end="url(#ag2)"/>
-  <line x1="712" y1="710" x2="607" y2="634" stroke="#16A34A" stroke-width="0.8" marker-end="url(#ag2)"/>
+  <line x1="190.5" y1="1065" x2="190.5" y2="951" stroke="#16A34A" stroke-width="1.2" marker-end="url(#ag2)"/>
+  <line x1="498" y1="1065" x2="430.5" y2="951" stroke="#16A34A" stroke-width="1.2" marker-end="url(#ag2)"/>
+  <line x1="783" y1="1065" x2="670.5" y2="951" stroke="#16A34A" stroke-width="1.2" marker-end="url(#ag2)"/>
+  <line x1="1068" y1="1065" x2="910.5" y2="951" stroke="#16A34A" stroke-width="1.2" marker-end="url(#ag2)"/>
 
-  <line x1="836" y1="312" x2="836" y2="764" stroke="#EA580C" stroke-width="1.2" marker-end="url(#ao)"/>
+  <line x1="1254" y1="468" x2="1254" y2="1146" stroke="#EA580C" stroke-width="1.8" marker-end="url(#ao)"/>
 
-  <line x1="127" y1="710" x2="127" y2="894" stroke="#0891B2" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ag)"/>
-  <line x1="447" y1="710" x2="447" y2="894" stroke="#0891B2" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ag)"/>
-  <line x1="607" y1="710" x2="607" y2="894" stroke="#0891B2" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ag)"/>
-  <line x1="767" y1="710" x2="767" y2="894" stroke="#0891B2" stroke-width="0.8" stroke-dasharray="3,2" marker-end="url(#ag)"/>
+  <line x1="190.5" y1="1065" x2="190.5" y2="1341" stroke="#0891B2" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ag)"/>
+  <line x1="670.5" y1="1065" x2="670.5" y2="1341" stroke="#0891B2" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ag)"/>
+  <line x1="910.5" y1="1065" x2="910.5" y2="1341" stroke="#0891B2" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ag)"/>
+  <line x1="1150.5" y1="1065" x2="1150.5" y2="1341" stroke="#0891B2" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#ag)"/>
 
   <!-- ===== LEGEND ===== -->
-  <g transform="translate(920, 470)">
-    <rect x="0" y="0" width="220" height="330" rx="8" fill="#FAFAFA" stroke="#E5E7EB"/>
-    <text x="10" y="20" font-size="13" font-weight="700" fill="#1F2937">图例 Legend</text>
+  <g transform="translate(1380,705)">
+    <rect x="0" y="0" width="330" height="495" rx="12" fill="#FAFAFA" stroke="#E5E7EB"/>
+    <text x="15" y="30" font-size="19.5" font-weight="700" fill="#1F2937">图例 Legend</text>
 
-    <text x="10" y="44" font-size="11" font-weight="600" fill="#1F2937">分层颜色</text>
-    <rect x="10" y="52" width="16" height="12" fill="#DBEAFE" stroke="#93C5FD"/><text x="32" y="62" font-size="10" fill="#1F2937">用户层（前端）</text>
-    <rect x="10" y="70" width="16" height="12" fill="#FEF9C3" stroke="#FDE68A"/><text x="32" y="80" font-size="10" fill="#1F2937">编排层（流水线）</text>
-    <rect x="10" y="88" width="16" height="12" fill="#F3F4F6" stroke="#D1D5DB"/><text x="32" y="98" font-size="10" fill="#1F2937">Project 数据层</text>
-    <rect x="10" y="106" width="16" height="12" fill="#F5F3FF" stroke="#C4B5FD"/><text x="32" y="116" font-size="10" fill="#1F2937">Provider 层（能力服务）</text>
-    <rect x="10" y="124" width="16" height="12" fill="#ECFDF5" stroke="#86EFAC"/><text x="32" y="134" font-size="10" fill="#1F2937">模型服务层（引擎模型）</text>
-    <rect x="10" y="142" width="16" height="12" fill="#FFF7ED" stroke="#FDBA74"/><text x="32" y="152" font-size="10" fill="#1F2937">输出层（合成输出）</text>
-    <rect x="10" y="160" width="16" height="12" fill="#ECFEFF" stroke="#A5F3FC"/><text x="32" y="170" font-size="10" fill="#1F2937">部署环境</text>
+    <text x="15" y="66" font-size="16.5" font-weight="600" fill="#1F2937">分层颜色</text>
+    <rect x="15" y="78" width="24" height="18" fill="#DBEAFE" stroke="#93C5FD"/><text x="48" y="93" font-size="15.0" fill="#1F2937">用户层（前端）</text>
+    <rect x="15" y="105" width="24" height="18" fill="#FEF9C3" stroke="#FDE68A"/><text x="48" y="120" font-size="15.0" fill="#1F2937">编排层（流水线）</text>
+    <rect x="15" y="132" width="24" height="18" fill="#F3F4F6" stroke="#D1D5DB"/><text x="48" y="147" font-size="15.0" fill="#1F2937">Project 数据层</text>
+    <rect x="15" y="159" width="24" height="18" fill="#F5F3FF" stroke="#C4B5FD"/><text x="48" y="174" font-size="15.0" fill="#1F2937">Provider 层（能力服务）</text>
+    <rect x="15" y="186" width="24" height="18" fill="#ECFDF5" stroke="#86EFAC"/><text x="48" y="201" font-size="15.0" fill="#1F2937">模型服务层（引擎模型）</text>
+    <rect x="15" y="213" width="24" height="18" fill="#FFF7ED" stroke="#FDBA74"/><text x="48" y="228" font-size="15.0" fill="#1F2937">输出层（合成输出）</text>
+    <rect x="15" y="240" width="24" height="18" fill="#ECFEFF" stroke="#A5F3FC"/><text x="48" y="255" font-size="15.0" fill="#1F2937">部署环境</text>
 
-    <text x="10" y="194" font-size="11" font-weight="600" fill="#1F2937">连线类型</text>
-    <line x1="10" y1="208" x2="30" y2="208" stroke="#9CA3AF" stroke-width="1" marker-end="url(#ag)"/><text x="36" y="212" font-size="10" fill="#1F2937">数据流</text>
-    <line x1="10" y1="226" x2="30" y2="226" stroke="#9CA3AF" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#ag)"/><text x="36" y="230" font-size="10" fill="#1F2937">控制流 / 配置覆盖</text>
-    <line x1="10" y1="244" x2="30" y2="244" stroke="#7C3AED" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#ap)"/><text x="36" y="248" font-size="10" fill="#1F2937">Provider 调用</text>
-    <line x1="10" y1="262" x2="30" y2="262" stroke="#16A34A" stroke-width="1" marker-end="url(#ag2)"/><text x="36" y="266" font-size="10" fill="#1F2937">模型服务调用</text>
-    <line x1="10" y1="280" x2="30" y2="280" stroke="#EA580C" stroke-width="1.2" marker-end="url(#ao)"/><text x="36" y="284" font-size="10" fill="#1F2937">S6 合成输出</text>
-    <line x1="10" y1="298" x2="30" y2="298" stroke="#0891B2" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#ag)"/><text x="36" y="302" font-size="10" fill="#1F2937">部署运行时</text>
+    <text x="15" y="291" font-size="16.5" font-weight="600" fill="#1F2937">连线类型</text>
+    <line x1="15" y1="312" x2="45" y2="312" stroke="#9CA3AF" stroke-width="1.5" marker-end="url(#ag)"/><text x="54" y="318" font-size="15.0" fill="#1F2937">数据流</text>
+    <line x1="15" y1="339" x2="45" y2="339" stroke="#9CA3AF" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#ag)"/><text x="54" y="345" font-size="15.0" fill="#1F2937">控制流 / 配置覆盖</text>
+    <line x1="15" y1="366" x2="45" y2="366" stroke="#7C3AED" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#ap)"/><text x="54" y="372" font-size="15.0" fill="#1F2937">Provider 调用</text>
+    <line x1="15" y1="393" x2="45" y2="393" stroke="#16A34A" stroke-width="1.5" marker-end="url(#ag2)"/><text x="54" y="399" font-size="15.0" fill="#1F2937">模型服务调用</text>
+    <line x1="15" y1="420" x2="45" y2="420" stroke="#EA580C" stroke-width="1.8" marker-end="url(#ao)"/><text x="54" y="426" font-size="15.0" fill="#1F2937">S6 合成输出</text>
+    <line x1="15" y1="447" x2="45" y2="447" stroke="#0891B2" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#ag)"/><text x="54" y="453" font-size="15.0" fill="#1F2937">部署运行时</text>
 
-    <text x="10" y="322" font-size="9" fill="#6B7280" font-style="italic">每层之间无重叠 · 卡片均在容器内</text>
+    <text x="15" y="483" font-size="13.5" fill="#6B7280" font-style="italic">每层之间无重叠 · 卡片均在容器内</text>
   </g>
 
-  <text x="590" y="968" text-anchor="middle" font-size="10" fill="#9CA3AF">WanderInk · 漫游墨绘 · 第二届 NVIDIA DGX Spark 黑客松 · 2026</text>
+  <text x="885" y="1452" text-anchor="middle" font-size="15.0" fill="#9CA3AF">WanderInk · 漫游墨绘 · 第二届 NVIDIA DGX Spark 黑客松 · 2026</text>
 </svg>
