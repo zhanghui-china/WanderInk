@@ -9,6 +9,7 @@
 import json
 import os
 import secrets
+import shutil
 import sys
 import threading
 import time
@@ -24,7 +25,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from shanhai import editing, export, runtime_config, store
-from shanhai.auth import current_user, verify_login
+from shanhai.auth import current_user, is_admin, verify_login
 from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _clients,
                          resolve_stage_clients)
 from shanhai.config import Settings, load_env
@@ -352,8 +353,8 @@ def logout(request: Request) -> dict:
 
 @app.get("/api/me")
 def me(user: str = Depends(current_user)) -> dict:
-    """已登录返回用户名;未登录经 current_user 抛 401(前端靠状态码判断登录态)。"""
-    return {"username": user}
+    """已登录返回用户名+管理员标记;未登录经 current_user 抛 401(前端靠状态码判断登录态)。"""
+    return {"username": user, "is_admin": is_admin(user)}
 
 
 # ---------- 接口 ----------
@@ -529,6 +530,26 @@ def get_project(project_id: str, user: str = Depends(current_user)) -> dict:
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
     return _serialize(p)
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str, user: str = Depends(current_user)) -> dict:
+    """管理员专用:彻底删除作品目录(project.json + 全部生成产物),不可恢复。
+    与其它编辑端点不同,不复用 _editable 的"owner 为空即可编辑"规则——删除权限只看
+    is_admin,与作品归属无关(避免无主项目被任意登录用户删除)。"""
+    if not is_admin(user):
+        raise HTTPException(403, "仅管理员可删除作品")
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止删除")
+    with _project_lock(project_id):
+        f = _job_of(project_id)
+        if f is not None and not f.done():
+            raise HTTPException(409, "有生成任务正在进行,无法删除")
+        workdir = store.project_dir(project_id)
+        if not workdir.is_dir():
+            raise HTTPException(404, f"项目不存在: {project_id}")
+        shutil.rmtree(workdir)
+    return {"deleted": True}
 
 
 @app.post("/api/projects/{project_id}/export")

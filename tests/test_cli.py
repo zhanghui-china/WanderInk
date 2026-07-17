@@ -258,6 +258,15 @@ def test_adduser_writes_account(tmp_path, monkeypatch):
     assert auth.verify_login("wuzi", "pw1") is True
 
 
+def test_adduser_admin_flag_sets_role(tmp_path, monkeypatch):
+    from shanhai import auth
+    monkeypatch.setattr(auth, "USERS_PATH", tmp_path / "users.json")
+    result = runner.invoke(app, ["adduser", "--admin"], input="boss\npw1\n")
+    assert result.exit_code == 0
+    assert auth.is_admin("boss") is True
+    assert "管理员" in result.output
+
+
 def test_adduser_long_password_exits_with_friendly_message(tmp_path, monkeypatch):
     # bcrypt 上限 72 字节:CLI 应友好报错退出,而不是甩一个裸 ValueError 堆栈。
     from shanhai import auth

@@ -41,8 +41,11 @@ def _load_users(path: Path | None = None) -> dict:
         return {"users": []}
 
 
-def add_user(username: str, password: str, path: Path | None = None) -> None:
-    """bcrypt 哈希后追加到 users.json;同名用户则覆盖其口令(不建重复账号)。"""
+def add_user(username: str, password: str, admin: bool | None = None,
+             path: Path | None = None) -> None:
+    """bcrypt 哈希后追加到 users.json;同名用户则覆盖其口令(不建重复账号)。
+    admin 为 None 时保留该用户原有管理员标记(新建账号则默认 False),不因重置口令而
+    静默降级已有管理员。"""
     p = path if path is not None else USERS_PATH
     data = _load_users(p)
     users = data.setdefault("users", [])
@@ -50,10 +53,20 @@ def add_user(username: str, password: str, path: Path | None = None) -> None:
     for u in users:
         if u.get("username") == username:
             u["password_hash"] = ph
+            if admin is not None:
+                u["is_admin"] = admin
             break
     else:
-        users.append({"username": username, "password_hash": ph})
+        users.append({"username": username, "password_hash": ph, "is_admin": bool(admin)})
     store.atomic_write_text(p, json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def is_admin(username: str, path: Path | None = None) -> bool:
+    """该用户是否管理员(读 users.json 的 is_admin 字段;历史账号无该字段视为 False)。"""
+    for u in _load_users(path).get("users", []):
+        if u.get("username") == username:
+            return bool(u.get("is_admin", False))
+    return False
 
 
 def verify_login(username: str, password: str, path: Path | None = None) -> bool:

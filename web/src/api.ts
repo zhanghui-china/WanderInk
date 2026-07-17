@@ -53,13 +53,18 @@ export const api = {
 
   logout: () => fetch('/api/logout', { ...CREDS, method: 'POST' }).then((r) => j<unknown>(r)),
 
-  me: () => fetch('/api/me', CREDS).then((r) => j<{ username: string }>(r)),
+  me: () => fetch('/api/me', CREDS).then((r) => j<{ username: string; is_admin: boolean }>(r)),
 
   meta: () => fetch('/api/meta', CREDS).then((r) => j<Meta>(r)),
 
   list: () => fetch('/api/projects', CREDS).then((r) => j<ProjectSummary[]>(r)),
 
   get: (id: string) => fetch(`/api/projects/${id}`, CREDS).then((r) => j<ProjectDetail>(r)),
+
+  deleteProject: (id: string) =>
+    fetch(`/api/projects/${id}`, { ...CREDS, method: 'DELETE' }).then((r) =>
+      j<{ deleted: boolean }>(r)
+    ),
 
   create: (body: NewProjectInput) =>
     fetch('/api/projects', {

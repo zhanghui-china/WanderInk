@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { api } from '../api'
 import { CardHead } from './decor'
 import type { ProjectSummary } from '../types'
 
@@ -19,11 +21,31 @@ export function ProjectList({
   items,
   selectedId,
   onSelect,
+  isAdmin,
+  onDeleted,
 }: {
   items: ProjectSummary[]
   selectedId: string | null
   onSelect: (id: string) => void
+  isAdmin?: boolean
+  onDeleted?: (id: string) => void
 }) {
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  async function handleDelete(e: React.MouseEvent, id: string, label: string) {
+    e.stopPropagation()
+    if (!window.confirm(`确定删除作品「${label}」?生成产物会一并清除,不可恢复。`)) return
+    setDeletingId(id)
+    try {
+      await api.deleteProject(id)
+      onDeleted?.(id)
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   return (
     <div className="rounded-2xl border border-band bg-paper p-5 shadow-paper">
       <CardHead glyph="集" title="作品列表" />
@@ -37,10 +59,10 @@ export function ProjectList({
           const b = badge(p.pipeline)
           const on = selectedId === p.project_id
           return (
-            <li key={p.project_id}>
+            <li key={p.project_id} className="flex items-stretch gap-1.5">
               <button
                 onClick={() => onSelect(p.project_id)}
-                className={`flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2.5 text-left transition ${
+                className={`flex min-w-0 flex-1 items-center justify-between gap-2 rounded-lg border px-3 py-2.5 text-left transition ${
                   on
                     ? 'border-cinnabar bg-white shadow-paper'
                     : 'border-transparent hover:border-line hover:bg-white/50'
@@ -59,6 +81,17 @@ export function ProjectList({
                   {b.text}
                 </span>
               </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={(e) => handleDelete(e, p.project_id, p.scenic_spot)}
+                  disabled={deletingId === p.project_id}
+                  title="删除作品"
+                  className="shrink-0 rounded-lg border border-line px-2.5 text-sm text-muted transition hover:border-alarm hover:text-alarm disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {deletingId === p.project_id ? '…' : '×'}
+                </button>
+              )}
             </li>
           )
         })}
