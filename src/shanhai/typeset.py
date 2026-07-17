@@ -7,7 +7,7 @@ FONT_PATH = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "NotoSans
 FRAME = (1920, 1080)
 CAPTION_GRAD_H = 240  # 底部渐变字幕高度
 CAPTION_ANCHOR_Y = 0.4  # cover-crop 垂直锚点:偏上,优先保住人物头部
-WATERMARK = "本视频由 AI 辅助生成"
+WATERMARK = "@WanderInk AI辅助生成"
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont:
@@ -46,7 +46,7 @@ def compose_page(art: bytes, out: Path) -> None:
 
 
 def overlay_image(caption: str) -> Image.Image:
-    # 1920×1080 透明画布:仅底部渐变遮罩 + 白色字幕 + 右上"本视频由 AI 辅助生成"水印。
+    # 1920×1080 透明画布:仅底部渐变遮罩 + 白色字幕 + 右上"@WanderInk AI辅助生成"水印。
     # 上部完全透明,合成时不遮画面;整层静态,不随 Ken Burns 推拉。
     layer = Image.new("RGBA", FRAME, (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer, "RGBA")
