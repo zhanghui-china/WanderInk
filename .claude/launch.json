@@ -10,8 +10,8 @@
     {
       "name": "shanhai-web-verify",
       "runtimeExecutable": "env",
-      "runtimeArgs": ["SHANHAI_PORT=8099", "uv", "run", "shanhai-web"],
-      "port": 8099
+      "runtimeArgs": ["SHANHAI_PORT=8098", "uv", "run", "shanhai-web"],
+      "port": 8098
     }
   ]
 }
