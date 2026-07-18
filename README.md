@@ -14,15 +14,15 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 
 - **行业痛点**：景区文化 IP 开发严重依赖人工创作团队（编剧、画师、配音、配乐），制作周期长、成本高，中小景区难以负担
 - **现有 AI 方案不足**：通用 LLM 只能生成文本，图片生成模型缺乏角色一致性，TTS/音乐生成与画面脱节，没有端到端的全链路自动化方案
-- **机会**：DGX Spark 119GB 统一内存使得多模型协同推理成为可能，将故事生成、图像生成、语音合成、音乐生成压缩到单机流水线中，实现"景区名称进、有声连环画出"的全自动化
+- **机会**：Nvidia DGX Spark 128GB 统一内存使得多模型协同推理成为可能，将故事生成、图像生成、语音合成、音乐生成压缩到单机流水线中，实现"景区名称进、有声连环画出"的全自动化
 
 本仓库包含基于 ComfyUI 的图像生成管线和 API 服务，实现从文本到图像、音频的全链路自动化生成。
 
-- **端到端全链路自动化**：从景区名称到最终有声连环画，12 个功能模块全自动串联，无需人工干预
+- **端到端全链路自动化**：从景区名称到最终有声连环画，功能模块全自动串联，无需人工干预
 - **角色一致性保障**：通过 Qwen-Image-Edit-2511 + LoRA 微调，在分镜漫画生成阶段保持人物外观一致性（三视图 → 分镜复用）
-- **多模型分时编排**：DGX Spark 统一内存约束下，LLM、图像生成模型、TTS 模型、音乐生成模型通过 Supervisor 分时加载，峰值不超内存上限
+- **多模型分时编排**：DGX Spark 统一内存约束下，LLM、图像编辑模型、TTS 模型、音乐生成模型分时加载，峰值不超内存上限
 - **NVIDIA 全栈落地**：DGX Spark 统一内存 + Stepfun系列（LLM/TTS）+ ACE-STEP 音乐生成 + ComfyUI 图像管线，展示完整创意 AI 生命周期
-- **Skill 模块化设计**：每个功能模块抽象为独立 Skill（编剧 skill、导演 skill等），支持灵活扩展新场景。
+- **Skill 模块化设计**：部分功能模块抽象为独立 Skill（剧本：编剧 skill、分镜：导演 skill等），支持灵活扩展新场景。
 
 > 详细产品方案见 [docs/product/](docs/product/景区有声连环画%20Agent%20—%20产品方案（优化版）.md)
 
@@ -47,18 +47,18 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 
 ```
 输入景区名
-  → [S0] 传说检索与甄别
-  → [S1] 剧本改编
-  → [S2] 分镜设计
-  → [S3] 角色设定（三视图，锁定外观一致性）
-  → [S4] 连环画页生成
-  → [S5] 配音 + 配乐
-  → [S6] 合成输出 MP4
+  → [S0] LEGEND 传说检索与甄别
+  → [S1] SCRIPT 剧本改编
+  → [S2] BOARD 分镜设计
+  → [S3] ROLE 角色设定（三视图，锁定外观一致性）
+  → [S4] PAGES 连环画页生成
+  → [S5] VOICE 配音 + MUSIC 配乐
+  → [S6] FILM 合成输出 MP4
 ```
 
 ## 🗺️技术架构
 
-本项目专为 **NVIDIA DGX Spark (GB10 128G 共享显存)** 量身定制。采用 **"多模型分时编排" (Multi-Model Time-Slice Scheduling)** 架构。
+本项目专为 **NVIDIA DGX Spark (GB10 128G 统一内存)** 量身定制。采用 **"多模型分时编排" (Multi-Model Time-Slice Scheduling)** 架构。
 
 ### Agent 角色定义
 
@@ -74,48 +74,50 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 
 ### 技术栈
 
-- **图像生成**：Qwen-Image-Edit-2511、Flux、Z-Image-Turbo、Ideogram v4
-- **图像编辑**：Qwen-Image-Edit、Flux Kontext、Omnigen 2
-- **语音合成**：Qwen3-TTS（支持声音设计、声音克隆、自定义声音）
-- **音乐生成**：ACE-STEP XL Turbo
+- **文本模型**：Sehyo-Qwen3.5-35B-A3B-NVFP4（本地）：<https://modelscope.cn/models/hf/Sehyo-Qwen3.5-35B-A3B-NVFP4、Step-3.7-Flash（云端）：https://modelscope.cn/models/stepfun-ai/Step-3.7-Flash>
+- **图像编辑**：Qwen-Image-Edit-2511（本地）：<https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2511>   、openAI GPT Image2（云端）
+- **语音合成**：Qwen3-TTS：<https://modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base>
+- **音乐生成**：ACE-STEP XL Turbo（ACE Studio 与 StepFun）：<https://modelscope.cn/models/ACE-Step/acestep-v15-xl-turbo>
 - **框架**：ComfyUI、FastAPI、WebSocket
 
 ## 🚀 快速开始
 
 ### 1. 环境要求
 
-- **硬件**：NVIDIA DGX Spark (GB10 128G 共享显存) 或等效 GPU
+- **硬件**：NVIDIA DGX Spark (GB10 128G 统一内存) 或等效 GPU
 - **操作系统**：Ubuntu 24.04
 - **Python**：3.12+（Anaconda）
 
-### 2. 安装ComfyUI依赖环境
+### 2. 系统安装
+
+#### 2.1 安装ComfyUI环境
 
 ```bash
+#使用wuzi用户登录
+source ~/.bashrc
+
+#安装依赖
 sudo apt-get install -y sox libsox-fmt-all
 
+#下载代码仓
+git lfs install
 git clone https://github.com/zhanghui-china/WanderInk
 
-source ~/.bashrc
+#创建conda环境
 conda create -n comfyui python=3.12 -y
 conda activate comfyui
-
 cd ~/WanderInk/ComfyUI
+
 #需补充配置systemctl的过程
 
 ```
 
-### 3. 启动 ComfyUI服务
+#### 2.2 安装Web服务环境
 
-```bash
-systemctl --user restart comfyui
-systemctl --user status comfyui
 ```
+#使用huntun用户登录
+source ~/.bashrc
 
-服务将在 `http://127.0.0.1:8188` 启动。
-
-### 4. 安装Web服务依赖环境
-
-```bash
 cd ~/WanderInk/web
 cp .env.example .env   # 按环境填写端点与模型
 uv sync
@@ -125,20 +127,11 @@ cd web/web
 bun install && bun run dev   # 前端 :5173
 ```
 
-### 5. 启动Web服务
+#### 2.3 安装Hermes环境
 
-```bash
-# 启动 Web、TTS、图像和音乐服务
-systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music
-
-# 查看服务状态
-systemctl --user status shanhai-web shanhai-tts shanhai-image shanhai-music
-```
-
-### 6.安装Hermes
+参考 <https://zhuanlan.zhihu.com/p/2056830749530142643>
 
 ```
-#参考 https://zhuanlan.zhihu.com/p/2056830749530142643
 sudo apt install ripgrep
 sudo su -
 useradd hermes -b /home1 -m
@@ -151,9 +144,114 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 hermes setup
 ```
 
+### 3.系统启动
+
+#### 3.1 启动 ComfyUI服务
+
+```bash
+systemctl --user restart comfyui
+systemctl --user status comfyui
+```
+
+服务将在 `8188`端口 启动。
+
+```
+(comfyui) wuzi@gx10-8e22:~$ systemctl --user status comfyui
+● comfyui.service - ComfyUI User Service
+     Loaded: loaded (/home1/wuzi/.config/systemd/user/comfyui.service; enabled; preset: enabled)
+     Active: active (running) since Sat 2026-07-18 05:08:30 UTC; 11h ago
+   Main PID: 86108 (conda)
+      Tasks: 88 (limit: 153553)
+     Memory: 8.6G (peak: 38.6G swap: 2.4G swap peak: 2.8G)
+        CPU: 1h 37min 33.782s
+     CGroup: /user.slice/user-1002.slice/user@1002.service/app.slice/comfyui.service
+             ├─86108 /home1/wuzi/anaconda3/bin/python /home1/wuzi/anaconda3/bin/conda run --no-capture-output -n comfyui python main.py --listen 0.0.0.0 --por
+             ├─86109 /usr/bin/bash /tmp/tmptj92d21u
+             └─86116 python main.py --listen 0.0.0.0 --port 8188 --use-flash-attention --gpu-only
+
+Jul 18 16:24:42 gx10-8e22 conda[86116]: [INFO] Prompt executed in 57.45 seconds
+Jul 18 16:24:44 gx10-8e22 conda[86116]: [INFO] got prompt
+Jul 18 16:25:38 gx10-8e22 conda[86116]: [394B blob data]
+Jul 18 16:25:41 gx10-8e22 conda[86116]: [INFO] Prompt executed in 57.30 seconds
+Jul 18 16:25:42 gx10-8e22 conda[86116]: [INFO] got prompt
+Jul 18 16:26:37 gx10-8e22 conda[86116]: [394B blob data]
+Jul 18 16:26:40 gx10-8e22 conda[86116]: [INFO] Prompt executed in 57.44 seconds
+Jul 18 16:26:41 gx10-8e22 conda[86116]: [INFO] got prompt
+Jul 18 16:27:07 gx10-8e22 conda[86116]: [394B blob data]
+Jul 18 16:27:09 gx10-8e22 conda[86116]: [INFO] Prompt executed in 28.26 seconds
+```
+
+#### 3.2 启动Web服务
+
+```bash
+# 启动 Web、TTS、图像和音乐服务
+systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music
+
+# 查看服务状态
+systemctl --user status shanhai-web shanhai-tts shanhai-image shanhai-music
+```
+
+服务将在 `8090、8091、8092`端口 启动。
+
+```
+(base) huntun@gx10-8e22:~$ systemctl --user status shanhai-web shanhai-tts shanhai-image shanhai-music
+● shanhai-web.service - shanhai web (FastAPI + SPA)
+     Loaded: loaded (/home1/huntun/.config/systemd/user/shanhai-web.service; enabled; preset: enabled)
+     Active: active (running) since Sat 2026-07-18 08:45:35 UTC; 7h ago
+   Main PID: 98952 (uv)
+      Tasks: 11 (limit: 153553)
+     Memory: 320.9M (peak: 7.4G swap: 33.3M swap peak: 33.3M)
+        CPU: 16min 18.501s
+     CGroup: /user.slice/user-1007.slice/user@1007.service/app.slice/shanhai-web.service
+             ├─98952 /home1/huntun/.local/bin/uv run shanhai-web
+             └─98963 /home1/huntun/shanhai/.venv/bin/python3 /home1/huntun/shanhai/.venv/bin/shanhai-web
+
+Jul 18 16:20:40 gx10-8e22 uv[98963]: INFO:     192.168.199.160:12451 - "GET /api/queue HTTP/1.1" 200 OK
+
+● shanhai-tts.service - shanhai TTS shim (Qwen3-TTS VoiceDesign via ComfyUI, OpenAI-compatible)
+     Loaded: loaded (/home1/huntun/.config/systemd/user/shanhai-tts.service; enabled; preset: enabled)
+     Active: active (running) since Sat 2026-07-18 08:45:35 UTC; 7h ago
+   Main PID: 98953 (uvicorn)
+      Tasks: 1 (limit: 153553)
+     Memory: 38.5M (peak: 42.1M swap: 16.6M swap peak: 16.6M)
+        CPU: 42.400s
+     CGroup: /user.slice/user-1007.slice/user@1007.service/app.slice/shanhai-tts.service
+             └─98953 /home1/huntun/qwentts-shim/.venv/bin/python3 /home1/huntun/qwentts-shim/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8090
+
+Jul 18 09:30:16 gx10-8e22 uvicorn[98953]: INFO:     127.0.0.1:57484 - "POST /v1/audio/speech HTTP/1.1" 200 OK
 
 
-### 7.启动Hermes服务
+● shanhai-image.service - shanhai image shim (ComfyUI, OpenAI-compatible)
+     Loaded: loaded (/home1/huntun/.config/systemd/user/shanhai-image.service; enabled; preset: enabled)
+     Active: active (running) since Sat 2026-07-18 08:45:35 UTC; 7h ago
+   Main PID: 98954 (uvicorn)
+      Tasks: 6 (limit: 153553)
+     Memory: 42.3M (peak: 60.3M swap: 9.4M swap peak: 10.5M)
+        CPU: 41.412s
+     CGroup: /user.slice/user-1007.slice/user@1007.service/app.slice/shanhai-image.service
+             └─98954 /home1/huntun/image-shim/.venv/bin/python3 /home1/huntun/image-shim/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8091
+
+Jul 18 16:21:49 gx10-8e22 uvicorn[98954]: INFO:     127.0.0.1:51546 - "POST /v1/images/edits HTTP/1.1" 200 OK
+
+● shanhai-music.service - shanhai music shim (ACE-Step via ComfyUI, OpenAI-compatible)
+     Loaded: loaded (/home1/huntun/.config/systemd/user/shanhai-music.service; enabled; preset: enabled)
+     Active: active (running) since Sat 2026-07-18 08:45:35 UTC; 7h ago
+   Main PID: 98955 (uvicorn)
+      Tasks: 1 (limit: 153553)
+     Memory: 15.7M (peak: 37.7M swap: 21.3M swap peak: 21.3M)
+        CPU: 40.654s
+     CGroup: /user.slice/user-1007.slice/user@1007.service/app.slice/shanhai-music.service
+             └─98955 /home1/huntun/music-shim/.venv/bin/python /home1/huntun/music-shim/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8092
+
+Jul 18 08:45:35 gx10-8e22 systemd[2249]: Started shanhai-music.service - shanhai music shim (ACE-Step via ComfyUI, OpenAI-compatible).
+Jul 18 08:45:35 gx10-8e22 uvicorn[98955]: INFO:     Started server process [98955]
+Jul 18 08:45:35 gx10-8e22 uvicorn[98955]: INFO:     Waiting for application startup.
+Jul 18 08:45:35 gx10-8e22 uvicorn[98955]: INFO:     Application startup complete.
+Jul 18 08:45:35 gx10-8e22 uvicorn[98955]: INFO:     Uvicorn running on http://127.0.0.1:8092 (Press CTRL+C to quit)
+(base) huntun@gx10-8e22:~$
+```
+
+#### 3.3 启动Hermes服务
 
 ```bash
 #使用hermes用户登录
@@ -196,6 +294,8 @@ WanderInk/
 
 ## 📆更新说明及团队动态
 
+\[2026.7.18]  项目组成员对项目进行一系列测试验证，**馄饨**对Web端BUG进行修复后，Web端代码封版。
+
 \[2026.7.15]  项目组成员对 WanderInk产品进行密集测试。项目团队测试中发现Spark设备突然远程连不上了，**张小白**发现Spark自动熄火了。**馄饨**在**轻踏**的支持下，将LLM生成剧本和分镜，改为通过调用Hermes skill生成。
 
 \[2026.7.14]  **张小白**对项目组成员进行任务分工，**般度五子**和**馄饨**把重点放在BugFix和代码优化上，其他人重点是对项目代码进行测试，争取7.18文档和代码能出一版。文本模型开始使用赞助方提供的step-3.7-flash模型。各开发者提交代码到本代码仓。
@@ -232,13 +332,13 @@ WanderInk/
 
 ## 📆项目团队
 
-| 成员                                        | 职责                                         |
-| ------------------------------------------- | -------------------------------------------- |
-| [张小白](https://github.com/zhanghui-china) | 队长、项目策划、环境部署、项目测试、文档编写 |
-| [Nancy](https://github.com/nancysxy000)     | 队员、文档编制                               |
-| [轻踏](https://github.com/DoubleCore)       | 队员、Skill开发、Hermes对接                  |
-| [般度五子](https://github.com/Bandukids)    | 队员、ComfyUI服务部署和开发                  |
-| [馄饨](https://github.com/nativeas)         | 队员、Web前后台开发                          |
+| 成员                                       | 职责                                   |
+| ---------------------------------------- | ------------------------------------ |
+| [张小白](https://github.com/zhanghui-china) | 队长、项目策划、环境部署、项目测试、文档编写               |
+| [Nancy](https://github.com/nancysxy000)  | 队员、文档编制、景区故事生成、DEMO视频制作              |
+| [轻踏](https://github.com/DoubleCore)      | 队员、Skill 开发、Hermes 对接、编剧/导演 skill 迭代 |
+| [般度五子](https://github.com/Bandukids)     | 队员、ComfyUI 服务部署与开发、图像/音频管线           |
+| [馄饨](https://github.com/nativeas)        | 队员、Web 前后台开发、前端交互与多用户设计              |
 
 ## 💖特别鸣谢
 
