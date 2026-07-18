@@ -67,6 +67,7 @@ class StoryboardCell(BaseModel):
     image: str = ""
     audio: str = ""
     duration_ms: int = 0
+    image_gen_ms: int = 0  # 最近一次成功生成该页图片所花的时间(重绘直接覆盖,不累计)
     # silent=True 表示该页音频是静音兜底(非真人解说);用于状态诚实化与重跑重合成。
     silent: bool = False
     status: Literal["draft", "confirmed", "failed"] = "draft"

@@ -268,3 +268,45 @@ def test_s4_single_page_mode_unaffected(tmp_path: Path):
     assert image.generate.call_count == 1
     assert p.storyboard[0].status == "confirmed"
     assert not (tmp_path / "pages" / "page_01_panel1.png").exists()
+
+
+def test_s4_records_image_gen_ms_on_success(tmp_path: Path):
+    image = MagicMock(); image.timeout = 600
+
+    def side_effect(*a, **kw):
+        time.sleep(0.02)
+        return _png()
+
+    image.generate.side_effect = side_effect
+    p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
+    assert p.storyboard[0].image_gen_ms >= 20            # 计时覆盖实际生成调用耗时
+
+
+def test_s4_multi_panel_image_gen_ms_sums_each_panel(tmp_path: Path):
+    image = MagicMock(); image.timeout = 600
+
+    def side_effect(*a, **kw):
+        time.sleep(0.02)
+        return _png()
+
+    image.generate.side_effect = side_effect
+    p = s4_pages.run(_multi_panel_project(tmp_path, 3), image, tmp_path, "1536x1024")
+    assert p.storyboard[0].image_gen_ms >= 60             # 3 格各自 >=20ms 之和
+
+
+def test_s4_image_gen_ms_overwritten_not_accumulated_on_regenerate(tmp_path: Path):
+    # 重绘场景:第二次生成耗时应直接覆盖第一次的值,不是两次相加。
+    proj = _project(tmp_path)
+    image = MagicMock(); image.timeout = 600
+
+    image.generate.side_effect = lambda *a, **kw: (time.sleep(0.05), _png())[1]
+    s4_pages.run(proj, image, tmp_path, "1536x1024")
+    first_ms = proj.storyboard[0].image_gen_ms
+    assert first_ms >= 50
+
+    proj.storyboard[0].status = "draft"                    # 模拟 mark_redraw 后重新生成
+    proj.storyboard[0].image = ""
+    image.generate.side_effect = lambda *a, **kw: (time.sleep(0.01), _png())[1]
+    s4_pages.run(proj, image, tmp_path, "1536x1024")
+    second_ms = proj.storyboard[0].image_gen_ms
+    assert second_ms < first_ms                             # 被更快的第二次覆盖,不是累加变大

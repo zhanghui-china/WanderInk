@@ -107,11 +107,13 @@ def update_cell(project: Project, index: int, *, caption: str | None = None,
         cell.visual_desc = visual_desc
         cell.status = "draft"
         cell.image = ""
+        cell.image_gen_ms = 0
         cell.panels = []   # 分格页作废分格:改整页构图后回退成单图整页重生成(s4 单图分支)
     if characters is not None:
         cell.characters = characters
         cell.status = "draft"
         cell.image = ""
+        cell.image_gen_ms = 0
         cell.panels = []   # 同上:出场角色变了,分格构图已过期,回退单图整页重生成
     if emotion is not None:
         cell.emotion = emotion
@@ -123,6 +125,7 @@ def mark_redraw(project: Project, index: int) -> None:
     cell = _cell_at(project, index)
     cell.status = "draft"
     cell.image = ""
+    cell.image_gen_ms = 0
     _invalidate_downstream(project, "s4")
 
 

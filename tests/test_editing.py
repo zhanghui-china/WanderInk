@@ -27,7 +27,8 @@ def _project(tmp_path: Path, n: int = 4) -> Project:
         p.storyboard.append(StoryboardCell(
             index=i, scene_ref=f"1-{i}", visual_desc=f"v{i}", characters=[f"c{i}"],
             caption=f"cap{i}", emotion="宁静", image=f"pages/page_{i:02d}.png",
-            audio=f"audio/page_{i:02d}.mp3", duration_ms=1000 + i, status="confirmed"))
+            audio=f"audio/page_{i:02d}.mp3", duration_ms=1000 + i,
+            image_gen_ms=500 + i, status="confirmed"))
     p.output = {"mp4": "output/final.mp4", "zip": "output/x.zip"}
     return p
 
@@ -49,6 +50,7 @@ def test_update_visual_desc_cascades_image(tmp_path: Path):
     cell = p.storyboard[2]
     assert cell.visual_desc == "新画面"
     assert cell.status == "draft" and cell.image == ""    # 画面描述变 → 重画
+    assert cell.image_gen_ms == 0                          # 旧图作废,旧生成耗时也一并失效
     assert cell.audio == "audio/page_03.mp3"              # 配音不受影响
     assert cell.duration_ms == 1003
 
@@ -76,6 +78,7 @@ def test_mark_redraw_and_revoice(tmp_path: Path):
     p = _project(tmp_path)
     editing.mark_redraw(p, 2)
     assert p.storyboard[1].status == "draft" and p.storyboard[1].image == ""
+    assert p.storyboard[1].image_gen_ms == 0                # 标记重绘后旧生成耗时一并失效
     editing.mark_revoice(p, 3)
     assert p.storyboard[2].audio == "" and p.storyboard[2].duration_ms == 0
     assert p.output == {}

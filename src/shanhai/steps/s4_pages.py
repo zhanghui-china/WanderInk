@@ -63,6 +63,7 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
                        image_size: str, workdir: Path, pages_dir: Path, ref_cache: Path) -> None:
     imgs: list[bytes] = []
     kept_panels: list[Panel] = []
+    gen_ms_total = 0
     for i, panel in enumerate(cell.panels, 1):
         prompt, present = _panel_prompt(panel, style, cards)
         t0 = time.monotonic()
@@ -72,7 +73,9 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
             try:
                 refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
                         for c in present if c.turnaround_image]
+                gen_t0 = time.monotonic()
                 art = image.generate(prompt, size=image_size, references=refs or None)
+                gen_ms_total += round((time.monotonic() - gen_t0) * 1000)
                 out = pages_dir / f"page_{cell.index:02d}_panel{i}.png"
                 out.write_bytes(art)
                 panel.image = str(out.relative_to(workdir))
@@ -88,6 +91,7 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
     out = pages_dir / f"page_{cell.index:02d}.png"
     typeset.compose_page(composed, out)
     cell.image = str(out.relative_to(workdir))
+    cell.image_gen_ms = gen_ms_total
     cell.status = "confirmed"
 
 
@@ -107,7 +111,9 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
         try:
             refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
                     for c in present if c.turnaround_image]
+            gen_t0 = time.monotonic()
             art = image.generate(prompt, size=image_size, references=refs or None)
+            cell.image_gen_ms = round((time.monotonic() - gen_t0) * 1000)
             typeset.compose_page(art, out)
             cell.image = str(out.relative_to(workdir))
             cell.status = "confirmed"
