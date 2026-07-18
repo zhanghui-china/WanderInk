@@ -113,9 +113,27 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 #安装ComfyUI依赖
 cd ~/ComfyUI
 pip install -r requirements.txt
+```
 
-#需补充配置systemctl的过程
+编辑\~/.config/systemd/user/comfyui.service文件，配置systemctl常驻服务
 
+```
+[Unit]
+Description=ComfyUI User Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home1/wuzi/ComfyUI
+Environment="HF_ENDPOINT=https://hf-mirror.com"
+ExecStart=/home1/wuzi/anaconda3/bin/conda run --no-capture-output -n comfyui python main.py --listen 0.0.0.0 --port 8188 --use-flash-attention --gpu-only
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
 ```
 
 #### 2.2 安装Web服务环境
@@ -124,13 +142,101 @@ pip install -r requirements.txt
 #使用huntun用户登录
 source ~/.bashrc
 
+#下载代码仓
+git clone https://github.com/zhanghui-china/WanderInk 
 cd ~/WanderInk/web
-cp .env.example .env   # 按环境填写端点与模型
-uv sync
-uv run shanhai-web     # 后端 :8080
 
+#按环境填写端点与模型
+cp .env.example .env   
+
+#创建uv环境
+uv sync
+uv run shanhai-web
+
+#安装web环境
 cd web/web
-bun install && bun run dev   # 前端 :5173
+bun install && bun run dev
+```
+
+编辑\~/.config/systemd/user/shanhai-web.service文件，配置systemctl常驻服务
+
+```
+[Unit]
+Description=shanhai web (FastAPI + SPA)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=%h/shanhai
+
+[Service]
+WorkingDirectory=%h/shanhai
+EnvironmentFile=%h/shanhai/.env
+Environment="PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"
+ExecStart=%h/.local/bin/uv run shanhai-web
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+```
+
+编辑\~/.config/systemd/user/shanhai-image.service文件，配置systemctl常驻服务
+
+```
+[Unit]
+Description=shanhai image shim (ComfyUI, OpenAI-compatible)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=%h/image-shim
+
+[Service]
+WorkingDirectory=%h/image-shim
+Environment="PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=%h/image-shim/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8091
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+编辑\~/.config/systemd/user/shanhai-tts.service文件，配置systemctl常驻服务
+
+```
+[Unit]
+Description=shanhai TTS shim (Qwen3-TTS VoiceDesign via ComfyUI, OpenAI-compatible)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=%h/qwentts-shim
+
+[Service]
+WorkingDirectory=%h/qwentts-shim
+Environment="PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=%h/qwentts-shim/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8090
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+编辑\~/.config/systemd/user/shanhai-music.service文件，配置systemctl常驻服务
+
+```
+[Unit]
+Description=shanhai music shim (ACE-Step via ComfyUI, OpenAI-compatible)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=%h/music-shim
+
+[Service]
+WorkingDirectory=%h/music-shim
+Environment="PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=%h/music-shim/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8092
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
 ```
 
 #### 2.3 安装Hermes环境
@@ -138,23 +244,68 @@ bun install && bun run dev   # 前端 :5173
 参考 <https://zhuanlan.zhihu.com/p/2056830749530142643>
 
 ```
+#使用hermes用户登录
+source ~/.bashrc
+
+#安装依赖
 sudo apt install ripgrep
-sudo su -
-useradd hermes -b /home1 -m
-passwd hermes 
-cd /home1
-chown -R hermes hermes
-chgrp -R hermes hermes
-su - hermes
+
+#安装hermes
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+
+#配置hermes
 hermes setup
 ```
 
+#### 2.4 模型下载
+
+##### 2.4.1 下载LLM模型：Sehyo-Qwen3.5-35B-A3B-NVFP4
+
+编辑download\_model\_by\_modelscope\_Sehyo-Qwen3.5-35B-A3B-NVFP4.py文件：
+
+```
+from modelscope import snapshot_download
+import os
+
+model_id = "hf/Sehyo-Qwen3.5-35B-A3B-NVFP4"
+local_dir = "/home1/wuzi/models/"
+
+model_dir = snapshot_download(
+    model_id,
+    local_dir=local_dir,
+    revision='master'
+)
+
+print(f"下载完成，文件保存在: {model_dir}")
+```
+
+下载模型：
+
+```
+python download_model_by_modelscope_Sehyo-Qwen3.5-35B-A3B-NVFP4.py
+```
+
+下载vllm docker镜像：
+
+```
+docker pull vllm/vllm-openai:cu130-nightly
+```
+
+##### 2.4.2 下载ComfyUI图像编辑模型：Qwen-Image-Edit-2511
+
+##### 2.4.3 下载ComfyUI语音合成模型：Qwen3-TTS
+
+##### 2.4.4 下载ComfyUI音乐生成模型：ACE-STEP XL Turbo
+
 ### 3.系统启动
 
-#### 3.1 启动 ComfyUI服务
+#### 3.1 启动ComfyUI服务
 
 ```bash
+#使用wuzi用户登录
+source ~/.bashrc
+
+#启动ComfyUI常驻服务
 systemctl --user restart comfyui
 systemctl --user status comfyui
 ```
@@ -190,6 +341,9 @@ Jul 18 16:27:09 gx10-8e22 conda[86116]: [INFO] Prompt executed in 28.26 seconds
 #### 3.2 启动Web服务
 
 ```bash
+#使用huntun用户登录
+source ~/.bashrc
+
 # 启动 Web、TTS、图像和音乐服务
 systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music
 
@@ -262,12 +416,15 @@ Jul 18 08:45:35 gx10-8e22 uvicorn[98955]: INFO:     Uvicorn running on http://12
 ```bash
 #使用hermes用户登录
 source ~/.bashrc
+
 hermes gateway restart
 ```
 
+#### 3.4 LLM模型启动
+
 ## ✨项目报告
 
-【项目技术文档】 \`待补充
+【项目技术文档】 待补充
 
 ## 📋项目代码结构
 
