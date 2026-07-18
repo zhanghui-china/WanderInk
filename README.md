@@ -99,14 +99,20 @@ source ~/.bashrc
 #安装依赖
 sudo apt-get install -y sox libsox-fmt-all
 
-#下载代码仓
-git lfs install
-git clone https://github.com/zhanghui-china/WanderInk
-
 #创建conda环境
 conda create -n comfyui python=3.12 -y
 conda activate comfyui
-cd ~/WanderInk/ComfyUI
+
+#下载ComfyUI代码仓
+cd ~
+git clone https://github.com/comfyanonymous/ComfyUI.git
+
+#根据显卡 CUDA 版本安装对应的 PyTorch（建议 CUDA 12.1+）
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+#安装ComfyUI依赖
+cd ~/ComfyUI
+pip install -r requirements.txt
 
 #需补充配置systemctl的过程
 
