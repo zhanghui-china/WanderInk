@@ -74,10 +74,10 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 
 ### 技术栈
 
-- **文本模型**：Sehyo-Qwen3.5-35B-A3B-NVFP4（本地）：<https://modelscope.cn/models/hf/Sehyo-Qwen3.5-35B-A3B-NVFP4、Step-3.7-Flash（云端）：https://modelscope.cn/models/stepfun-ai/Step-3.7-Flash>
-- **图像编辑**：Qwen-Image-Edit-2511（本地）：<https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2511>   、openAI GPT Image2（云端）
-- **语音合成**：Qwen3-TTS：<https://modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base>
-- **音乐生成**：ACE-STEP XL Turbo（ACE Studio 与 StepFun）：<https://modelscope.cn/models/ACE-Step/acestep-v15-xl-turbo>
+- **文本模型**：Sehyo-Qwen3.5-35B-A3B-NVFP4（本地）、Step-3.7-Flash（云端）：<https://modelscope.cn/models/hf/Sehyo-Qwen3.5-35B-A3B-NVFP4>
+- **图像编辑模型**：Qwen-Image-Edit-2511（本地） 、openAI GPT Image2（云端）：<https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2511>
+- **语音合成模型**：Qwen3-TTS：<https://modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base>
+- **音乐生成模型**：ACE-STEP XL Turbo（ACE Studio 与 StepFun）：<https://modelscope.cn/models/ACE-Step/acestep-v15-xl-turbo>
 - **框架**：ComfyUI、FastAPI、WebSocket
 
 ## 🚀 快速开始
