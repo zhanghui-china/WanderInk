@@ -34,11 +34,13 @@ class ImageClient:
     """OpenAI 兼容图像客户端,双上游形态。未来本地 ComfyUI 实现同签名 generate() 即可整体替换。"""
 
     def __init__(self, base_url: str, api_key: str, model: str, mode: str = "images_api",
-                 timeout: float = 600, lora_model: str | None = None):
+                 timeout: float = 1200, lora_model: str | None = None):
         self.model = model
         self.mode = mode
         self.lora_model = lora_model  # 实际 safetensors 文件名(已由调用方从短名翻译好),
         # 仅本地 ComfyUI 后端有意义;非空时随请求体一并发送,远程后端多半直接忽略这个字段。
+        self.timeout = timeout  # 暴露为可读属性,供 s4_pages.py 的重试循环读取同一个
+        # "单张图总耗时预算"上限(S3 单角色只生成一次、无重试循环,不需要读这个属性)。
         self._base_url = base_url
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),

@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     image_model: str = "gemini-2.5-flash-image"
     image_api_mode: str = "chat_api"
     image_size: str = "1536x1024"
-    image_timeout: float = 600  # 秒;本地 ComfyUI 扩散生成 + 队列可达数分钟,与 llm_timeout 解耦
+    image_timeout: float = 1200  # 秒(20分钟);既是单次 HTTP 请求超时,也是"一张图(含内部重试)"
+    # 的总耗时预算上限——见 s4_pages.py 的 MAX_ATTEMPTS 重试循环,避免重试次数把超时乘倍到数十分钟
     tts_model: str = "gpt-4o-mini-tts"
     tts_voice: str = "alloy"
     tts_voices: str = ""  # 逗号分隔的可选音色列表;空则回退 [tts_voice]
