@@ -95,8 +95,8 @@ export function ProjectDetailView({
     }
   }
 
-  async function handleStep(name: string, label: string, destructive?: boolean) {
-    if (destructive && !window.confirm(`确定重新执行「${label}」?这会清空之后各步骤的产物。`)) return
+  async function handleStep(name: string, label: string) {
+    if (!window.confirm(`确定重新执行「${label}」?这会清空之后各步骤的产物。`)) return
     setStepBusy(name)
     try {
       await api.runStep(project.project_id, name)
@@ -149,7 +149,7 @@ export function ProjectDetailView({
                 <button
                   key={s.name}
                   type="button"
-                  onClick={() => handleStep(s.name, s.label, s.destructive)}
+                  onClick={() => handleStep(s.name, s.label)}
                   disabled={generating || stepBusy !== null || !ready}
                   title={ready ? undefined : '前置步骤尚未完成,暂不可执行'}
                   className={`${toolBtn} ${s.destructive ? 'text-alarm hover:border-alarm' : ''}`}
