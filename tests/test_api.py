@@ -695,6 +695,16 @@ def test_check_cancelled_consumes_flag_once():
         api._CANCELLED.discard("consumeid")
 
 
+def test_is_cancelled_does_not_consume_flag():
+    api._CANCELLED.add("peekid")
+    try:
+        assert api._is_cancelled("peekid") is True
+        assert api._is_cancelled("peekid") is True   # 非消费型 peek,不会移除标记
+        assert "peekid" in api._CANCELLED
+    finally:
+        api._CANCELLED.discard("peekid")
+
+
 def test_cancel_queued_persists_fresh_reload_not_stale_snapshot():
     # 批次4 finding-2 回归:直接取消(排队未开始)写 cancelled 必须在 _project_lock 内重新
     # store.load 最新快照,而非复用锁外拿到的陈旧 p —— 否则会覆盖窗口期内并发编辑端点的改动(丢更新)。
@@ -888,6 +898,35 @@ def test_run_step_records_step_timing(_settings):
     float(p.status["s6_elapsed_s"])
     assert p.status["pipeline_started_at"]
     assert p.status["pipeline_finished_at"]
+
+
+def test_run_step_marks_cancelled_when_flag_set_during_step():
+    # 用户在环节执行期间点了取消(s3/s4/s5 内部 cancel_check 提前收尾,但用的是非消费型
+    # _is_cancelled,标记仍留在 _CANCELLED 里),_run_step 跑完该环节后须在此消费掉标记、
+    # 把 pipeline 标成 cancelled——否则会被 _deliverable_status 误判成普通 partial/done,
+    # 用户看不到"这是我自己取消的"这个诚实反馈。
+    from unittest.mock import MagicMock
+
+    from shanhai.config import Settings
+    p = Project(project_id="cancelmidstep", scenic_spot="雷峰塔")
+    fake = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+
+    def _run_s4(*_args, **_kwargs):
+        # 模拟 s4_pages.run 内部 cancel_check 命中、提前收尾:留下取消标记(不消费)再返回
+        api._CANCELLED.add("cancelmidstep")
+        return p
+
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s4_pages") as s4:
+        s4.run.side_effect = _run_s4
+        api._run_step("cancelmidstep", "s4", runtime_config.AppConfig())
+
+    assert p.status["pipeline"] == "cancelled"
+    assert "cancelmidstep" not in api._CANCELLED   # 标记已被消费,不残留污染下次重跑
 
 
 def test_run_step_cascades_clears_downstream_status():

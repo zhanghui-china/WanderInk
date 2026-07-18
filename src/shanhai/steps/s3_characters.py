@@ -1,4 +1,5 @@
 import concurrent.futures as cf
+from collections.abc import Callable
 from pathlib import Path
 
 from shanhai.providers.image import ImageClient
@@ -50,7 +51,8 @@ def _process_character(i: int, c: CharacterCard, llm: LLMClient, image: ImageCli
 
 
 def run(project: Project, llm: LLMClient, image: ImageClient,
-        workdir: Path, image_size: str, concurrency: int = CONCURRENCY) -> Project:
+        workdir: Path, image_size: str, concurrency: int = CONCURRENCY,
+        cancel_check: Callable[[], bool] | None = None) -> Project:
     if project.script is None:
         raise ValueError("先完成 S1")
     style = STYLE_PRESETS[project.style_preset]
@@ -62,6 +64,10 @@ def run(project: Project, llm: LLMClient, image: ImageClient,
                              image_size)
                    for i, c in enumerate(project.script.characters)]
         for f in cf.as_completed(futures):
+            if cancel_check and cancel_check():
+                for pending in futures:
+                    pending.cancel()  # 已开始的取消不了(Python 线程池物理限制),但能拦掉还没排上的
+                break
             f.result()   # 传播非预期错误(生图失败已在 _process_character 内吞掉并退化)
     # 诚实状态:所有需绘三视图的角色(前 MAX_TURNAROUND 个)都成功产出并锁定才算 done;
     # 任一失败(未锁定、无三视图)则 partial。MAX_TURNAROUND 之外的次要角色本不绘三视图,不参与判定。

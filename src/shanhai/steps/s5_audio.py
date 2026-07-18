@@ -3,6 +3,7 @@ TTS 不可用时按文案字数估算时长、生成静音音轨兜底,成片完
 import concurrent.futures as cf
 import json
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 from shanhai import ffmpeg
@@ -239,7 +240,8 @@ def _resolve_bgm(project: Project, music: MusicClient | None, workdir: Path,
 
 
 def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
-        music: MusicClient | None = None, manifest_path: Path = DEFAULT_MANIFEST) -> Project:
+        music: MusicClient | None = None, manifest_path: Path = DEFAULT_MANIFEST,
+        cancel_check: Callable[[], bool] | None = None) -> Project:
     effective_voice = project.params.voice or voice
     speed = project.params.speed
     audio_dir = workdir / "audio"
@@ -253,9 +255,20 @@ def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
         bgm_future = ex.submit(_resolve_bgm, project, music, workdir, manifest_path)
         futures = [ex.submit(_process_cell, cell, tts, effective_voice, speed,
                              audio_dir, workdir) for cell in project.storyboard]
+        cancelled = False
         for f in cf.as_completed(futures):
+            if cancel_check and cancel_check():
+                cancelled = True
+                for pending_f in futures:
+                    pending_f.cancel()  # 已开始的取消不了(Python 线程池物理限制),但能拦掉还没排上的
+                break
             f.result()
-        project.bgm = bgm_future.result()
+        if cancelled:
+            bgm_future.cancel()  # 已开始的 BGM 生成取消不了,但至少不再无条件等它(BGM 非关键,允许缺失)
+            if not bgm_future.cancelled():
+                project.bgm = bgm_future.result()  # 已经在跑,只能等它跑完;_resolve_bgm 内部自兜底不会抛
+        else:
+            project.bgm = bgm_future.result()
     # 诚实状态:仅当每页都有真人解说(有音频且非静音兜底)才算 done;否则 partial
     narrated = bool(project.storyboard) and all(
         c.audio and not c.silent for c in project.storyboard)

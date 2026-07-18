@@ -422,6 +422,30 @@ def test_s5_parallel_pages_no_crosstalk(mock_probe, mock_sh, tmp_path: Path):
     assert p.status["s5"] == "done"
 
 
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_cancel_check_stops_early(mock_probe, mock_sh, tmp_path: Path):
+    # cancel_check 恒真 → 首个 future 一完成就停,S5_CONCURRENCY 之外排队的页不再启动
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.storyboard = [
+        StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc="v", characters=[],
+                       caption=f"第{i}页解说词。", emotion="宁静")
+        for i in range(1, 15)
+    ]
+    import time
+    tts = MagicMock()
+    def _slow_synth(text, voice, out, **kw):                # 加点耗时,确保排队页赶在完成前被取消
+        time.sleep(0.05)
+        Path(out).write_bytes(b"\xff\xf3mp3")
+    tts.synthesize.side_effect = _slow_synth
+    p = s5_audio.run(p, tts, "alloy", tmp_path, music=_writing_music(),
+                     manifest_path=manifest, cancel_check=lambda: True)
+    assert not all(c.audio and not c.silent for c in p.storyboard)  # 未全部配完就停了
+    assert p.status["s5"] == "partial"
+
+
 # ---------- AI BGM 三级降级(AI 生成 → 静态曲库 → 无 BGM) ----------
 
 def _writing_music() -> MagicMock:
