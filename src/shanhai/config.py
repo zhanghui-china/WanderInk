@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     image_base_url: str | None = None
     image_api_key: str | None = None
+    image_lora_model: str | None = None  # 仅本地 ComfyUI 有意义,值为 loras.LORA_PRESETS 的短 key
     tts_base_url: str | None = None
     tts_api_key: str | None = None
     music_base_url: str | None = None

@@ -64,6 +64,7 @@ class ConfigOverride(BaseModel):
     image_model: str | None = None
     image_api_mode: str | None = None
     image_size: str | None = None
+    image_lora_model: str | None = None
     tts_base_url: str | None = None
     tts_api_key: str | None = None
     tts_model: str | None = None

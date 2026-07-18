@@ -34,9 +34,11 @@ class ImageClient:
     """OpenAI 兼容图像客户端,双上游形态。未来本地 ComfyUI 实现同签名 generate() 即可整体替换。"""
 
     def __init__(self, base_url: str, api_key: str, model: str, mode: str = "images_api",
-                 timeout: float = 600):
+                 timeout: float = 600, lora_model: str | None = None):
         self.model = model
         self.mode = mode
+        self.lora_model = lora_model  # 实际 safetensors 文件名(已由调用方从短名翻译好),
+        # 仅本地 ComfyUI 后端有意义;非空时随请求体一并发送,远程后端多半直接忽略这个字段。
         self._base_url = base_url
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
@@ -61,10 +63,14 @@ class ImageClient:
             return self._via_edits(prompt, references, size, retries)
         return self._via_generations(prompt, size, retries)
 
+    def _lora_extra(self) -> dict:
+        return {"lora_model_name": self.lora_model} if self.lora_model else {}
+
     def _via_generations(self, prompt: str, size: str, retries: int) -> bytes:
         r = request_with_retry(lambda: self._client.post(
             "/images/generations",
-            json={"model": self.model, "prompt": prompt, "size": size, "n": 1}),
+            json={"model": self.model, "prompt": prompt, "size": size, "n": 1,
+                  **self._lora_extra()}),
             retries, idempotent=False, base_url=self._base_url)
         r.raise_for_status()
         return _decode(_first(r.json()))
@@ -73,7 +79,8 @@ class ImageClient:
         files = [("image[]", (p.name, p.read_bytes(), "image/png")) for p in references]
         r = request_with_retry(lambda: self._client.post(
             "/images/edits",
-            data={"model": self.model, "prompt": prompt, "size": size}, files=files),
+            data={"model": self.model, "prompt": prompt, "size": size, **self._lora_extra()},
+            files=files),
             retries, idempotent=False, base_url=self._base_url)
         r.raise_for_status()
         return _decode(_first(r.json()))
@@ -87,6 +94,7 @@ class ImageClient:
         r = request_with_retry(lambda: self._client.post("/chat/completions", json={
             "model": self.model,
             "messages": [{"role": "user", "content": content}],
+            **self._lora_extra(),
         }), retries, idempotent=False, base_url=self._base_url)
         r.raise_for_status()
         msg = r.json()["choices"][0]["message"]

@@ -36,6 +36,12 @@ def test_meta_includes_voices():
     assert isinstance(j["voices"], list) and j["voices"]   # 至少回退 [tts_voice]
 
 
+def test_meta_includes_loras():
+    # loras 列表来自 loras.LORA_PRESETS 的 key,不是文件名——前端下拉框只需要短名。
+    j = client.get("/api/meta").json()
+    assert set(j["loras"]) == {"Real_Ani", "figurine"}
+
+
 def test_meta_voices_follow_s5_override(_isolated_config_path):
     """meta 音色列表须跟随 S5 实际生效的 TTS 后端(resolve_settings("s5")),而非仅全局层——
     否则用户把 s5 覆盖成别的 TTS 端点后,表单仍列全局音色、选中即令 S5 请求全失败降级静音。"""

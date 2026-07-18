@@ -6,6 +6,7 @@ export interface Meta {
   tones: string[]
   styles: string[]
   voices?: string[]
+  loras?: string[]
   readonly?: boolean
 }
 
@@ -116,6 +117,7 @@ export interface ConfigOverrideView {
   image_model: string | null
   image_api_mode: string | null
   image_size: string | null
+  image_lora_model: string | null
   tts_base_url: string | null
   tts_api_key: string | null
   tts_model: string | null
@@ -140,6 +142,7 @@ export interface ConfigDefaults {
   image_model: string
   image_api_mode: string
   image_size: string
+  image_lora_model: string | null
   tts_base_url: string | null
   tts_api_key: boolean
   tts_model: string

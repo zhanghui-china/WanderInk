@@ -36,6 +36,7 @@ from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig, apply_put,
 from shanhai.schema import Project
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s6_compose)
+from shanhai.loras import LORA_PRESETS
 from shanhai.styles import STYLE_PRESETS
 
 app = FastAPI(title="WanderInk · 有声连环画生成器")
@@ -816,6 +817,7 @@ def meta(user: str = Depends(current_user)) -> dict:
         # 音色列表须跟随 S5 实际生效的 TTS 后端:S5 用 resolve_settings("s5") 的端点合成,
         # 若这里只解析全局层,用户把 s5 覆盖成本地 CosyVoice 后表单仍列全局音色、选中即令 S5 请求全失败降级静音。
         "voices": resolve_settings("s5").tts_voices_list,
+        "loras": list(LORA_PRESETS),
         "readonly": _READONLY,
     }
 
