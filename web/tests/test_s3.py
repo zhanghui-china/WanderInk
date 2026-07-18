@@ -139,6 +139,21 @@ def test_s3_parallel_all_success_marks_done(tmp_path: Path):
         assert (tmp_path / "characters" / f"角色{i}.png").exists()
 
 
+def test_s3_cancel_check_stops_early(tmp_path: Path):
+    # cancel_check 每次都返回 True:第 1 个角色处理完成后即触发取消,
+    # 尚未排上的角色被 pending.cancel() 拦掉,不应全部锁定,status 应为 partial。
+    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance="白衣")
+             for i in range(3)]
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子,黑色长发,银簪"
+    image = MagicMock(); image.generate.return_value = b"png"
+    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024", concurrency=1,
+                           cancel_check=lambda: True)
+    assert not all(c.locked for c in p.script.characters)
+    assert p.status["s3"] == "partial"
+
+
 def test_feature_system_handles_non_human_characters():
     """FEATURE_SYSTEM 需要求先判断人类/非人类,非人类角色需先点出物种/形体。"""
     system = s3_characters.FEATURE_SYSTEM

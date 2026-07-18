@@ -36,6 +36,7 @@ from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig, apply_put,
 from shanhai.schema import Project
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s6_compose)
+from shanhai.loras import LORA_PRESETS
 from shanhai.styles import STYLE_PRESETS
 
 app = FastAPI(title="WanderInk · 有声连环画生成器")
@@ -115,6 +116,13 @@ def _check_cancelled(project_id: str) -> bool:
         return False
 
 
+def _is_cancelled(project_id: str) -> bool:
+    """非消费性查询,供并发 worker 快速探测是否应尽快收尾;真正消费(讨掉标记)
+    仍由 _check_cancelled 在环节边界统一做一次,不在这里重复消费。"""
+    with _JOBS_LOCK:
+        return project_id in _CANCELLED
+
+
 def _locked_save(p: Project) -> None:
     """后台管线/单步在 per-project 锁内落盘,与编辑/导出端点的读改写互斥,不与它们交错写盘。
     锁序恒为 project→jobs:调用方(后台线程)不持 _JOBS_LOCK,故此处只取 project 锁,无嵌套倒置。
@@ -184,13 +192,21 @@ def _now_iso() -> str:
 
 
 def _mark_step_started(p: Project, name: str) -> float:
-    """记录某环节开始的墙上时间(展示用)与单调时钟(算耗时用),返回后者供结束时算差。"""
-    p.status[f"{name}_started_at"] = _now_iso()
+    """记录该环节开始的墙上时间——只在第一次启动时记录,续跑不覆盖(开始时间应该是
+    这个环节第一次被启动的时刻,不是每次续跑都前移);单调时钟仍每次都取,用于算这一次
+    续跑自己的耗时增量。"""
+    p.status.setdefault(f"{name}_started_at", _now_iso())
     return time.monotonic()
 
 
 def _mark_step_elapsed(p: Project, name: str, t0: float) -> None:
-    p.status[f"{name}_elapsed_s"] = f"{time.monotonic() - t0:.1f}"
+    """该环节耗时:S3/S4/S5 这类"只处理剩余子项"的环节,续跑几次就该把每次的耗时
+    加起来,而不是拿最后一次续跑的耗时覆盖掉之前几轮已经花掉的时间。"""
+    prev = float(p.status.get(f"{name}_elapsed_s") or 0)
+    p.status[f"{name}_elapsed_s"] = f"{prev + (time.monotonic() - t0):.1f}"
+    p.status[f"{name}_finished_at"] = _now_iso()   # 每次真实完成/暂停的墙钟时刻,前端
+    # 直接读这个字段展示"结束"时间,不再用 开始时间+elapsed 现算(那样在开始时间不变、
+    # elapsed 累加之后会算出一个虚假的、远晚于实际完成时刻的"结束"时间)。
 
 
 def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
@@ -234,13 +250,16 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
                                              use_skill=_use_master_skill(p, settings["s2"], "S2"))),
             ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
                                              settings["s3"].image_size,
-                                             concurrency=image_concurrency(settings["s3"]))),
+                                             concurrency=image_concurrency(settings["s3"]),
+                                             cancel_check=lambda: _is_cancelled(project_id))),
             ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
                                         strict=settings["s4"].strict_consistency,
                                         on_progress=lambda: _locked_save(p),
-                                        concurrency=image_concurrency(settings["s4"]))),
+                                        concurrency=image_concurrency(settings["s4"]),
+                                        cancel_check=lambda: _is_cancelled(project_id))),
             ("s5", lambda: s5_audio.run(p, clients["s5"][2], settings["s5"].tts_voice, workdir,
-                                        clients["s5"][3])),
+                                        clients["s5"][3],
+                                        cancel_check=lambda: _is_cancelled(project_id))),
             ("s6", lambda: s6_compose.run(p, workdir)),
         ]
         for _name, fn in stages:
@@ -720,16 +739,25 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
             p = s2_storyboard.run(p, llm, use_skill=_use_master_skill(p, s, "S2"))
         elif name == "s3":
             p = s3_characters.run(p, llm, image, workdir, s.image_size,
-                                  concurrency=image_concurrency(s))
+                                  concurrency=image_concurrency(s),
+                                  cancel_check=lambda: _is_cancelled(project_id))
         elif name == "s4":
             p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
                               on_progress=lambda: _locked_save(p),
-                              concurrency=image_concurrency(s))
+                              concurrency=image_concurrency(s),
+                              cancel_check=lambda: _is_cancelled(project_id))
         elif name == "s5":
-            p = s5_audio.run(p, tts, s.tts_voice, workdir, music)
+            p = s5_audio.run(p, tts, s.tts_voice, workdir, music,
+                              cancel_check=lambda: _is_cancelled(project_id))
         elif name == "s6":
             p = s6_compose.run(p, workdir)
         _mark_step_elapsed(p, name, step_t0)
+        if _check_cancelled(project_id):  # 协作式取消:s3/s4/s5 环节内部提前收尾后在此消费标记,
+            # 避免明明是用户主动取消却被 _deliverable_status 判成普通 partial/error,状态失真。
+            p.status["pipeline"] = "cancelled"
+            p.status["pipeline_finished_at"] = _now_iso()
+            _locked_save(p)
+            return
         if name != "s6":
             p.output.clear()   # 重跑上游步骤使已合成的 mp4/zip/pdf 失效,清掉避免残留"假成片"
             # 级联:重跑上游环节使其下游环节产物过期,清掉下游 status 键避免残留"假完成"标记。
@@ -789,6 +817,7 @@ def meta(user: str = Depends(current_user)) -> dict:
         # 音色列表须跟随 S5 实际生效的 TTS 后端:S5 用 resolve_settings("s5") 的端点合成,
         # 若这里只解析全局层,用户把 s5 覆盖成本地 CosyVoice 后表单仍列全局音色、选中即令 S5 请求全失败降级静音。
         "voices": resolve_settings("s5").tts_voices_list,
+        "loras": list(LORA_PRESETS),
         "readonly": _READONLY,
     }
 

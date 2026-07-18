@@ -137,6 +137,19 @@ def test_s4_on_progress_called_once_per_completed_cell(tmp_path: Path):
     assert all(c.status == "confirmed" for c in p.storyboard)
 
 
+def test_s4_cancel_check_stops_early(tmp_path: Path):
+    # cancel_check 每次都返回 True:首页渲染完成后应立即停止,后续页不再渲染。
+    p = _project(tmp_path)
+    p.storyboard = [StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc="v",
+                                   characters=["白素贞"], caption=f"第{i}页。", emotion="宁静")
+                    for i in range(1, 4)]                # 3 页,全部待确认
+    image = MagicMock(); image.generate.return_value = _png()
+    p = s4_pages.run(p, image, tmp_path, "1536x1024", concurrency=1,
+                      cancel_check=lambda: True)
+    assert not all(c.status == "confirmed" for c in p.storyboard)   # 未全部完成,提前停止
+    assert p.status["s4"] == "partial"
+
+
 def test_s4_downscaled_ref_rebuilds_on_newer_source(tmp_path: Path):
     src = tmp_path / "白素贞.png"
     Image.new("RGB", (100, 100), "red").save(src, "PNG")

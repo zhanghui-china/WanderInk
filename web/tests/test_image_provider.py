@@ -1,6 +1,7 @@
 # tests/test_image_provider.py
 import base64
 import io
+import json
 from pathlib import Path
 from unittest.mock import patch
 import respx, httpx, pytest
@@ -145,6 +146,50 @@ def test_timeout_is_configurable():
     assert default._client.timeout.read == 600
     custom = ImageClient(BASE, "sk", "gpt-image-1", timeout=120)
     assert custom._client.timeout.read == 120
+
+
+@respx.mock
+def test_generations_includes_lora_model_name_when_set():
+    route = respx.post(f"{BASE}/images/generations").mock(
+        return_value=httpx.Response(200, json={"data": [{"b64_json": PNG}]}))
+    c = ImageClient(BASE, "sk", "comfyui-local", mode="images_api",
+                    lora_model="Real_Ani-Qwen_000001250.safetensors")
+    c.generate("a cat")
+    assert json.loads(route.calls[0].request.content)["lora_model_name"] == \
+        "Real_Ani-Qwen_000001250.safetensors"
+
+
+@respx.mock
+def test_generations_omits_lora_model_name_when_unset():
+    route = respx.post(f"{BASE}/images/generations").mock(
+        return_value=httpx.Response(200, json={"data": [{"b64_json": PNG}]}))
+    c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
+    c.generate("a cat")
+    assert "lora_model_name" not in json.loads(route.calls[0].request.content)
+
+
+@respx.mock
+def test_edits_includes_lora_model_name_when_set(tmp_path: Path):
+    ref = tmp_path / "ref.png"; ref.write_bytes(b"refpng")
+    route = respx.post(f"{BASE}/images/edits").mock(
+        return_value=httpx.Response(200, json={"data": [{"b64_json": PNG}]}))
+    c = ImageClient(BASE, "sk", "comfyui-local", mode="images_api",
+                    lora_model="figurine_qwen.safetensors")
+    c.generate("a cat", references=[ref])
+    body = route.calls[0].request.content.decode("utf-8", errors="ignore")
+    assert "figurine_qwen.safetensors" in body
+
+
+@respx.mock
+def test_chat_mode_includes_lora_model_name_when_set():
+    route = respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": "",
+            "images": [{"image_url": {"url": f"data:image/png;base64,{PNG}"}}]}}]}))
+    c = ImageClient(BASE, "sk", "nano-banana", mode="chat_api",
+                    lora_model="Real_Ani-Qwen_000001250.safetensors")
+    c.generate("a cat")
+    assert json.loads(route.calls[0].request.content)["lora_model_name"] == \
+        "Real_Ani-Qwen_000001250.safetensors"
 
 
 @respx.mock

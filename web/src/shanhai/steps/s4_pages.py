@@ -112,7 +112,8 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
 
 def run(project: Project, image: ImageClient, workdir: Path, image_size: str,
         strict: bool = False, on_progress: Callable[[], None] | None = None,
-        concurrency: int = CONCURRENCY) -> Project:
+        concurrency: int = CONCURRENCY,
+        cancel_check: Callable[[], bool] | None = None) -> Project:
     if project.script is None or not project.storyboard:
         raise ValueError("先完成 S2/S3")
     if not any(c.turnaround_image for c in project.script.characters):
@@ -131,6 +132,10 @@ def run(project: Project, image: ImageClient, workdir: Path, image_size: str,
         futures = [ex.submit(_render_cell, cell, style, cards, image,
                              image_size, workdir, pages_dir, ref_cache) for cell in pending]
         for f in cf.as_completed(futures):
+            if cancel_check and cancel_check():
+                for pending_f in futures:
+                    pending_f.cancel()  # 已开始的取消不了(Python 线程池物理限制),但能拦掉还没排上的
+                break
             f.result()   # 传播非预期错误(生成失败已在 _render_cell 内吞掉并标 failed)
             if on_progress:
                 on_progress()

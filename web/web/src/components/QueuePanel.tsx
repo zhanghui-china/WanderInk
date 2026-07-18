@@ -15,10 +15,13 @@ export function QueuePanel({
 }) {
   const [items, setItems] = useState<QueueItem[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set())
 
   const refresh = useCallback(async () => {
     try {
-      setItems(await api.getQueue())
+      const fresh = await api.getQueue()
+      setItems(fresh)
+      setCancellingIds((prev) => new Set([...prev].filter((id) => fresh.some((it) => it.project_id === id))))
     } catch {
       /* 后端未启动时静默 */
     }
@@ -33,7 +36,10 @@ export function QueuePanel({
   async function cancel(id: string) {
     setBusyId(id)
     try {
-      await api.cancelProject(id)
+      const res = await api.cancelProject(id)
+      if (res.cancelling === true) {
+        setCancellingIds((prev) => new Set(prev).add(id))
+      }
       await refresh()
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e))
@@ -65,17 +71,27 @@ export function QueuePanel({
               </span>
             </span>
             {it.owner === user && (it.pipeline === 'queued' || it.pipeline === 'running') && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  cancel(it.project_id)
-                }}
-                disabled={busyId === it.project_id}
-                className="shrink-0 rounded-lg border border-line px-3 py-1.5 text-xs text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {busyId === it.project_id ? '取消中…' : '取消'}
-              </button>
+              cancellingIds.has(it.project_id) ? (
+                <button
+                  type="button"
+                  disabled
+                  className="shrink-0 rounded-lg border border-line px-3 py-1.5 text-xs text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  取消中…
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    cancel(it.project_id)
+                  }}
+                  disabled={busyId === it.project_id}
+                  className="shrink-0 rounded-lg border border-line px-3 py-1.5 text-xs text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {busyId === it.project_id ? '取消中…' : '取消'}
+                </button>
+              )
             )}
           </li>
         ))}

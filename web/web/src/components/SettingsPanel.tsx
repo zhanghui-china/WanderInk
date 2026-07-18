@@ -13,7 +13,7 @@ type FieldKey = keyof ConfigOverrideView
 interface FieldDef {
   key: FieldKey
   label: string
-  kind: 'text' | 'number' | 'select' | 'secret'
+  kind: 'text' | 'number' | 'select' | 'secret' | 'lora'
 }
 
 const LLM_FIELDS: FieldDef[] = [
@@ -29,6 +29,7 @@ const IMAGE_FIELDS: FieldDef[] = [
   { key: 'image_model', label: '模型', kind: 'text' },
   { key: 'image_api_mode', label: 'API 模式', kind: 'text' },
   { key: 'image_size', label: '图片尺寸', kind: 'text' },
+  { key: 'image_lora_model', label: 'LoRA 模型', kind: 'lora' },
 ]
 const TTS_FIELDS: FieldDef[] = [
   { key: 'tts_base_url', label: '端点 Base URL', kind: 'text' },
@@ -69,6 +70,7 @@ const EMPTY_OVERRIDE_VIEW: ConfigOverrideView = {
   image_model: null,
   image_api_mode: null,
   image_size: null,
+  image_lora_model: null,
   tts_base_url: null,
   tts_api_key: null,
   tts_model: null,
@@ -152,6 +154,21 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
     return g != null ? g : fallback
   }
 
+  // LoRA 只对本地 ComfyUI 后端有意义:判定标准与后端 runtime_config.image_concurrency()
+  // 一致(hostname 是 127.0.0.1/localhost),避免用户在远程后端(如 tu-zi)误设一个不会生效的字段。
+  // 优先用当前输入框里的值(用户刚填但还没保存也该立刻生效),没填时才退回继承链的有效值——
+  // effectiveNonSecret 在 scope==='global' 时只返回 .env 基线,不含用户正在编辑但未保存的值。
+  function isLocalImageBackend(scope: string): boolean {
+    const base = getValue(scope, 'image_base_url') || effectiveNonSecret(scope, 'image_base_url')
+    if (!base) return false
+    try {
+      const host = new URL(String(base)).hostname
+      return host === '127.0.0.1' || host === 'localhost'
+    } catch {
+      return false
+    }
+  }
+
   // 该 scope 的密钥字段是否"已配置"(继承链上任一层有值即算,决定 placeholder 文案)
   function isSecretConfigured(scope: string, key: FieldKey): boolean {
     if (!cfg) return false
@@ -231,6 +248,31 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
 
   function renderField(scope: string, field: FieldDef) {
     const value = getValue(scope, field.key)
+    if (field.kind === 'lora') {
+      if (!isLocalImageBackend(scope)) return null   // 非本地 ComfyUI 后端不显示这个控件
+      const eff = effectiveNonSecret(scope, field.key)
+      return (
+        <div key={field.key}>
+          <label className={label}>{field.label}</label>
+          <select
+            className={fieldCls}
+            value={value}
+            disabled={ro}
+            onChange={(e) => {
+              setFieldValue(scope, field.key, e.target.value)
+              markTouched(scope, field.key)
+            }}
+          >
+            <option value="">不使用{eff ? `(继承:${eff})` : ''}</option>
+            {(meta?.loras ?? []).map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )
+    }
     if (field.kind === 'select') {
       const eff = effectiveNonSecret(scope, field.key)
       return (

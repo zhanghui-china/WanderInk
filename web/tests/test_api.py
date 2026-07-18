@@ -36,6 +36,12 @@ def test_meta_includes_voices():
     assert isinstance(j["voices"], list) and j["voices"]   # 至少回退 [tts_voice]
 
 
+def test_meta_includes_loras():
+    # loras 列表来自 loras.LORA_PRESETS 的 key,不是文件名——前端下拉框只需要短名。
+    j = client.get("/api/meta").json()
+    assert set(j["loras"]) == {"Real_Ani", "figurine"}
+
+
 def test_meta_voices_follow_s5_override(_isolated_config_path):
     """meta 音色列表须跟随 S5 实际生效的 TTS 后端(resolve_settings("s5")),而非仅全局层——
     否则用户把 s5 覆盖成别的 TTS 端点后,表单仍列全局音色、选中即令 S5 请求全失败降级静音。"""
@@ -695,6 +701,16 @@ def test_check_cancelled_consumes_flag_once():
         api._CANCELLED.discard("consumeid")
 
 
+def test_is_cancelled_does_not_consume_flag():
+    api._CANCELLED.add("peekid")
+    try:
+        assert api._is_cancelled("peekid") is True
+        assert api._is_cancelled("peekid") is True   # 非消费型 peek,不会移除标记
+        assert "peekid" in api._CANCELLED
+    finally:
+        api._CANCELLED.discard("peekid")
+
+
 def test_cancel_queued_persists_fresh_reload_not_stale_snapshot():
     # 批次4 finding-2 回归:直接取消(排队未开始)写 cancelled 必须在 _project_lock 内重新
     # store.load 最新快照,而非复用锁外拿到的陈旧 p —— 否则会覆盖窗口期内并发编辑端点的改动(丢更新)。
@@ -888,6 +904,63 @@ def test_run_step_records_step_timing(_settings):
     float(p.status["s6_elapsed_s"])
     assert p.status["pipeline_started_at"]
     assert p.status["pipeline_finished_at"]
+
+
+@patch("shanhai.api.Settings")
+def test_run_step_accumulates_elapsed_across_reruns(_settings):
+    # 回归:S3/S4/S5 这类"只处理剩余子项"的环节续跑多次时,elapsed_s 须是每轮耗时之和
+    # (如 17s + 7s = 24s),不能被最后一轮的耗时覆盖掉;started_at 须保持第一轮的时间不
+    # 前移,新增的 finished_at 才是每轮真实完成的墙钟时刻。
+    from unittest.mock import MagicMock
+    p = Project(project_id="accumTimingId", scenic_spot="雷峰塔")
+    # 第一轮:t0=100 → 结束时 monotonic()=117,耗时 17s;第二轮:t0=200 → 结束时 207,耗时 7s。
+    monotonic_values = iter([100.0, 117.0, 200.0, 207.0])
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s4_pages") as s4, \
+         patch("shanhai.api.time.monotonic", side_effect=monotonic_values):
+        s4.run.return_value = p
+        api._run_step("accumTimingId", "s4", runtime_config.AppConfig())
+        first_started_at = p.status["s4_started_at"]
+        assert p.status["s4_elapsed_s"] == "17.0"
+        first_finished_at = p.status["s4_finished_at"]
+
+        api._run_step("accumTimingId", "s4", runtime_config.AppConfig())
+
+    assert p.status["s4_started_at"] == first_started_at   # 开始时间不因续跑前移
+    assert p.status["s4_elapsed_s"] == "24.0"               # 17 + 7 累加,不是被 7 覆盖
+    assert p.status["s4_finished_at"] != first_finished_at  # 结束时间随每轮真实完成更新
+
+
+def test_run_step_marks_cancelled_when_flag_set_during_step():
+    # 用户在环节执行期间点了取消(s3/s4/s5 内部 cancel_check 提前收尾,但用的是非消费型
+    # _is_cancelled,标记仍留在 _CANCELLED 里),_run_step 跑完该环节后须在此消费掉标记、
+    # 把 pipeline 标成 cancelled——否则会被 _deliverable_status 误判成普通 partial/done,
+    # 用户看不到"这是我自己取消的"这个诚实反馈。
+    from unittest.mock import MagicMock
+
+    from shanhai.config import Settings
+    p = Project(project_id="cancelmidstep", scenic_spot="雷峰塔")
+    fake = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+
+    def _run_s4(*_args, **_kwargs):
+        # 模拟 s4_pages.run 内部 cancel_check 命中、提前收尾:留下取消标记(不消费)再返回
+        api._CANCELLED.add("cancelmidstep")
+        return p
+
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s4_pages") as s4:
+        s4.run.side_effect = _run_s4
+        api._run_step("cancelmidstep", "s4", runtime_config.AppConfig())
+
+    assert p.status["pipeline"] == "cancelled"
+    assert "cancelmidstep" not in api._CANCELLED   # 标记已被消费,不残留污染下次重跑
 
 
 def test_run_step_cascades_clears_downstream_status():

@@ -120,13 +120,13 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
             if (secs !== null) timeText = `进行中 · 约 ${formatElapsed(secs)}`
           }
 
-          // 悬停提示:该环节的起止时刻(本地时区)。结束时刻由 started_at + elapsed_s 推算,
-          // 未存独立的 finished_at 字段;尚未结束(仅有 started_at)则只显示"开始"。
+          // 悬停提示:该环节的起止时刻(本地时区)。结束时刻直接读后端记的 finished_at
+          // (每次续跑真实完成的墙钟时刻),不再用 started_at+elapsed_s 现算——续跑场景下
+          // started_at 是"第一次"开始时间、elapsed_s 是"累计"耗时,两者相加不等于任何一次
+          // 真实的结束时刻。尚未结束(没有 finished_at)则只显示"开始"。
+          const finishedAt = project.status[`${s.key}_finished_at`]
           const startedDate = startedAt ? new Date(startedAt) : null
-          const finishedDate =
-            startedDate && !Number.isNaN(elapsedNum)
-              ? new Date(startedDate.getTime() + elapsedNum * 1000)
-              : null
+          const finishedDate = finishedAt ? new Date(finishedAt) : null
           const timeTooltip = startedDate
             ? `开始:${startedDate.toLocaleTimeString()}` +
               (finishedDate ? ` · 结束:${finishedDate.toLocaleTimeString()}` : ' · 进行中')
