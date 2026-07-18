@@ -762,6 +762,9 @@ function PageCard({
             {pg.duration_ms > 0 && (
               <span className="text-muted">{(pg.duration_ms / 1000).toFixed(1)}s</span>
             )}
+            {pg.image_gen_ms > 0 && (
+              <span className="text-muted">生成 {(pg.image_gen_ms / 1000).toFixed(1)}s</span>
+            )}
             {pg.silent && pg.audio && (
               <span className="rounded-full bg-kraft px-2 py-0.5 text-muted">静音兜底</span>
             )}

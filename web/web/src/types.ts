@@ -31,6 +31,7 @@ export interface Page {
   emotion: string
   status: 'draft' | 'confirmed' | 'failed'
   duration_ms: number
+  image_gen_ms: number
   silent: boolean
   scene_ref: string
   visual_desc: string
