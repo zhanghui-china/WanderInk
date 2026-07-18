@@ -191,13 +191,21 @@ def _now_iso() -> str:
 
 
 def _mark_step_started(p: Project, name: str) -> float:
-    """记录某环节开始的墙上时间(展示用)与单调时钟(算耗时用),返回后者供结束时算差。"""
-    p.status[f"{name}_started_at"] = _now_iso()
+    """记录该环节开始的墙上时间——只在第一次启动时记录,续跑不覆盖(开始时间应该是
+    这个环节第一次被启动的时刻,不是每次续跑都前移);单调时钟仍每次都取,用于算这一次
+    续跑自己的耗时增量。"""
+    p.status.setdefault(f"{name}_started_at", _now_iso())
     return time.monotonic()
 
 
 def _mark_step_elapsed(p: Project, name: str, t0: float) -> None:
-    p.status[f"{name}_elapsed_s"] = f"{time.monotonic() - t0:.1f}"
+    """该环节耗时:S3/S4/S5 这类"只处理剩余子项"的环节,续跑几次就该把每次的耗时
+    加起来,而不是拿最后一次续跑的耗时覆盖掉之前几轮已经花掉的时间。"""
+    prev = float(p.status.get(f"{name}_elapsed_s") or 0)
+    p.status[f"{name}_elapsed_s"] = f"{prev + (time.monotonic() - t0):.1f}"
+    p.status[f"{name}_finished_at"] = _now_iso()   # 每次真实完成/暂停的墙钟时刻,前端
+    # 直接读这个字段展示"结束"时间,不再用 开始时间+elapsed 现算(那样在开始时间不变、
+    # elapsed 累加之后会算出一个虚假的、远晚于实际完成时刻的"结束"时间)。
 
 
 def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:

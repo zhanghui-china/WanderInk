@@ -900,6 +900,34 @@ def test_run_step_records_step_timing(_settings):
     assert p.status["pipeline_finished_at"]
 
 
+@patch("shanhai.api.Settings")
+def test_run_step_accumulates_elapsed_across_reruns(_settings):
+    # 回归:S3/S4/S5 这类"只处理剩余子项"的环节续跑多次时,elapsed_s 须是每轮耗时之和
+    # (如 17s + 7s = 24s),不能被最后一轮的耗时覆盖掉;started_at 须保持第一轮的时间不
+    # 前移,新增的 finished_at 才是每轮真实完成的墙钟时刻。
+    from unittest.mock import MagicMock
+    p = Project(project_id="accumTimingId", scenic_spot="雷峰塔")
+    # 第一轮:t0=100 → 结束时 monotonic()=117,耗时 17s;第二轮:t0=200 → 结束时 207,耗时 7s。
+    monotonic_values = iter([100.0, 117.0, 200.0, 207.0])
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s4_pages") as s4, \
+         patch("shanhai.api.time.monotonic", side_effect=monotonic_values):
+        s4.run.return_value = p
+        api._run_step("accumTimingId", "s4", runtime_config.AppConfig())
+        first_started_at = p.status["s4_started_at"]
+        assert p.status["s4_elapsed_s"] == "17.0"
+        first_finished_at = p.status["s4_finished_at"]
+
+        api._run_step("accumTimingId", "s4", runtime_config.AppConfig())
+
+    assert p.status["s4_started_at"] == first_started_at   # 开始时间不因续跑前移
+    assert p.status["s4_elapsed_s"] == "24.0"               # 17 + 7 累加,不是被 7 覆盖
+    assert p.status["s4_finished_at"] != first_finished_at  # 结束时间随每轮真实完成更新
+
+
 def test_run_step_marks_cancelled_when_flag_set_during_step():
     # 用户在环节执行期间点了取消(s3/s4/s5 内部 cancel_check 提前收尾,但用的是非消费型
     # _is_cancelled,标记仍留在 _CANCELLED 里),_run_step 跑完该环节后须在此消费掉标记、
