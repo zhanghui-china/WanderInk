@@ -1,5 +1,6 @@
 import io
 import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
@@ -7,6 +8,7 @@ from PIL import Image
 from shanhai.providers.image import ImageGenError
 from shanhai.schema import CharacterCard, Panel, Project, Script, StoryboardCell
 from shanhai.steps import s4_pages
+from shanhai.steps.s4_pages import MAX_ATTEMPTS
 
 def _png() -> bytes:
     buf = io.BytesIO(); Image.new("RGB", (64, 64), "blue").save(buf, "PNG")
@@ -33,7 +35,7 @@ def _multi_panel_project(tmp_path: Path, n_panels: int = 2) -> Project:
     return p
 
 def test_s4_generates_and_composes(tmp_path: Path):
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
     assert p.storyboard[0].status == "confirmed"
     assert (tmp_path / "pages" / "page_01.png").exists()
@@ -43,10 +45,55 @@ def test_s4_generates_and_composes(tmp_path: Path):
     assert "白衣女子" in prompt and "不要出现任何文字" in prompt
 
 def test_s4_retries_then_fails(tmp_path: Path):
-    image = MagicMock(); image.generate.side_effect = ImageGenError("boom")
+    image = MagicMock(); image.timeout = 600; image.generate.side_effect = ImageGenError("boom")
     p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
     assert image.generate.call_count == 3            # 1 + 重试 2(PRD F4)
     assert p.storyboard[0].status == "failed"
+
+def test_s4_budget_exhausted_after_one_slow_attempt_stops_retrying(tmp_path: Path):
+    # 单次尝试就耗光时间预算(0.06s 睡眠 > 0.05s 预算)→ 不再发起第二次尝试
+    image = MagicMock()
+    image.timeout = 0.05
+
+    def side_effect(*a, **kw):
+        time.sleep(0.06)
+        raise ImageGenError("boom")
+
+    image.generate.side_effect = side_effect
+    p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 1             # 预算耗尽,不再重试
+    assert p.storyboard[0].status == "failed"
+
+
+def test_s4_fast_failures_retried_up_to_max_attempts_when_budget_remains(tmp_path: Path):
+    # 每次失败都很快,时间预算充裕 → 仍按 MAX_ATTEMPTS 次全部重试完
+    image = MagicMock()
+    image.timeout = 600
+    image.generate.side_effect = ImageGenError("boom")
+    p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
+    assert image.generate.call_count == MAX_ATTEMPTS
+    assert p.storyboard[0].status == "failed"
+
+
+def test_s4_multi_panel_each_panel_gets_independent_budget(tmp_path: Path):
+    # 第 1 格拖到预算耗尽(仅 1 次尝试即失败),不应挤占第 2 格的计时——
+    # 第 2 格应独享全新的预算,能正常快速成功。
+    image = MagicMock()
+    image.timeout = 0.05
+
+    def side_effect(prompt, *a, **kw):
+        if "格1" in prompt:
+            time.sleep(0.06)
+            raise ImageGenError("boom")
+        return _png()
+
+    image.generate.side_effect = side_effect
+    p = s4_pages.run(_multi_panel_project(tmp_path, 2), image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 2              # 格1 耗尽预算(1次)+ 格2 立即成功(1次)
+    assert p.storyboard[0].status == "confirmed"        # 格2 顶上,整页仍成功合成
+    assert not (tmp_path / "pages" / "page_01_panel1.png").exists()
+    assert (tmp_path / "pages" / "page_01_panel2.png").exists()
+
 
 def test_s4_skips_confirmed(tmp_path: Path):
     proj = _project(tmp_path)
@@ -54,7 +101,7 @@ def test_s4_skips_confirmed(tmp_path: Path):
     proj.storyboard[0].image = "pages/page_01.png"
     (tmp_path / "pages").mkdir(parents=True)
     (tmp_path / "pages" / "page_01.png").write_bytes(_png())
-    image = MagicMock()
+    image = MagicMock(); image.timeout = 600
     s4_pages.run(proj, image, tmp_path, "1536x1024")
     image.generate.assert_not_called()               # 断点续跑:已确认且文件在则跳过
 
@@ -63,7 +110,7 @@ def test_s4_regenerates_confirmed_when_file_missing(tmp_path: Path):
     proj = _project(tmp_path)
     proj.storyboard[0].status = "confirmed"
     proj.storyboard[0].image = "pages/page_01.png"   # 引用的文件并不存在
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     s4_pages.run(proj, image, tmp_path, "1536x1024")
     image.generate.assert_called_once()              # 产物丢失则重新生成
 
@@ -82,7 +129,7 @@ def test_s4_bad_turnaround_fails_only_that_cell(tmp_path: Path):
         StoryboardCell(index=2, scene_ref="1-2", visual_desc="西湖",
                        characters=[], caption="c2", emotion="宁静"),
     ]
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     p = s4_pages.run(p, image, tmp_path, "1536x1024")
     assert p.storyboard[0].status == "failed"        # 坏参考图只拖垮该页
     assert p.storyboard[1].status == "confirmed"     # 其它页照常生成
@@ -95,7 +142,7 @@ def test_s4_warns_when_no_turnaround(tmp_path: Path, capsys):
     p.script = Script(title="t", theme="th", acts=[], characters=[card])
     p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="断桥",
                                    characters=["白素贞"], caption="c", emotion="宁静")]
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     s4_pages.run(p, image, tmp_path, "1536x1024")
     assert "一致性" in capsys.readouterr().out         # S3 未产出三视图时告警(M0 被绕过)
 
@@ -106,7 +153,7 @@ def test_s4_strict_raises_when_no_turnaround(tmp_path: Path):
     p.script = Script(title="t", theme="th", acts=[], characters=[card])
     p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="断桥",
                                    characters=["白素贞"], caption="c", emotion="宁静")]
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     with pytest.raises(ValueError):                    # strict=True 时无三视图直接失败,堵 M0 绕过
         s4_pages.run(p, image, tmp_path, "1536x1024", strict=True)
 
@@ -116,7 +163,7 @@ def test_s4_parallel_all_cells_confirmed(tmp_path: Path):
     p.storyboard = [StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc="v",
                                    characters=["白素贞"], caption=f"第{i}页。", emotion="宁静")
                     for i in range(1, 7)]                # 6 页并发生成
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     p = s4_pages.run(p, image, tmp_path, "1536x1024")
     assert all(c.status == "confirmed" for c in p.storyboard)   # 全部成功
     assert p.status["s4"] == "done"
@@ -130,7 +177,7 @@ def test_s4_on_progress_called_once_per_completed_cell(tmp_path: Path):
     p.storyboard = [StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc="v",
                                    characters=["白素贞"], caption=f"第{i}页。", emotion="宁静")
                     for i in range(1, 7)]                # 6 页并发生成
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     calls = []
     p = s4_pages.run(p, image, tmp_path, "1536x1024", on_progress=lambda: calls.append(1))
     assert len(calls) == 6                               # 每页完成各回调一次,不多不少
@@ -143,7 +190,7 @@ def test_s4_cancel_check_stops_early(tmp_path: Path):
     p.storyboard = [StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc="v",
                                    characters=["白素贞"], caption=f"第{i}页。", emotion="宁静")
                     for i in range(1, 4)]                # 3 页,全部待确认
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     p = s4_pages.run(p, image, tmp_path, "1536x1024", concurrency=1,
                       cancel_check=lambda: True)
     assert not all(c.status == "confirmed" for c in p.storyboard)   # 未全部完成,提前停止
@@ -169,7 +216,7 @@ def test_page_tmpl_uses_species_neutral_wording():
 
 
 def test_s4_multi_panel_generates_one_call_per_panel_and_composes(tmp_path: Path):
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     p = s4_pages.run(_multi_panel_project(tmp_path, 3), image, tmp_path, "1536x1024")
     assert image.generate.call_count == 3
     assert p.storyboard[0].status == "confirmed"
@@ -181,7 +228,7 @@ def test_s4_multi_panel_generates_one_call_per_panel_and_composes(tmp_path: Path
 def test_s4_multi_panel_partial_failure_still_composes(tmp_path: Path):
     # 3 格,第 2 格全部 3 次尝试都失败,第 1/3 格各一次成功——整页仍应 confirmed,
     # 排版按实际拿到的 2 格算(不拿占位图硬凑)。
-    image = MagicMock()
+    image = MagicMock(); image.timeout = 600
     calls = {"n": 0}
 
     def side_effect(*a, **kw):
@@ -199,7 +246,7 @@ def test_s4_multi_panel_partial_failure_still_composes(tmp_path: Path):
 
 
 def test_s4_multi_panel_all_fail_marks_cell_failed(tmp_path: Path):
-    image = MagicMock(); image.generate.side_effect = ImageGenError("boom")
+    image = MagicMock(); image.timeout = 600; image.generate.side_effect = ImageGenError("boom")
     p = s4_pages.run(_multi_panel_project(tmp_path, 2), image, tmp_path, "1536x1024")
     assert p.storyboard[0].status == "failed"
     assert not (tmp_path / "pages" / "page_01.png").exists()
@@ -208,7 +255,7 @@ def test_s4_multi_panel_all_fail_marks_cell_failed(tmp_path: Path):
 def test_s4_multi_panel_prompt_includes_shot_hint(tmp_path: Path):
     p = _multi_panel_project(tmp_path, 1)
     p.storyboard[0].panels[0].shot_type = "closeup"
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     s4_pages.run(p, image, tmp_path, "1536x1024")
     prompt = image.generate.call_args.args[0]
     assert "特写" in prompt
@@ -216,7 +263,7 @@ def test_s4_multi_panel_prompt_includes_shot_hint(tmp_path: Path):
 
 def test_s4_single_page_mode_unaffected(tmp_path: Path):
     # 回归:panels 为空时必须走原有单图路径,字节级行为不变
-    image = MagicMock(); image.generate.return_value = _png()
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
     p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
     assert image.generate.call_count == 1
     assert p.storyboard[0].status == "confirmed"

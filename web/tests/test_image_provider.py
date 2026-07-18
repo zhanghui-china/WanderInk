@@ -141,9 +141,10 @@ def test_chat_mode_http_url_downloaded():
 
 
 def test_timeout_is_configurable():
-    # 超时可配(方案A):默认 600,构造传入的值应落到底层 httpx.Client
+    # 超时可配(方案A):默认 1200(20分钟,与 Settings.image_timeout 一致),
+    # 构造传入的值应落到底层 httpx.Client
     default = ImageClient(BASE, "sk", "gpt-image-1")
-    assert default._client.timeout.read == 600
+    assert default._client.timeout.read == 1200
     custom = ImageClient(BASE, "sk", "gpt-image-1", timeout=120)
     assert custom._client.timeout.read == 120
 
@@ -190,6 +191,12 @@ def test_chat_mode_includes_lora_model_name_when_set():
     c.generate("a cat")
     assert json.loads(route.calls[0].request.content)["lora_model_name"] == \
         "Real_Ani-Qwen_000001250.safetensors"
+
+
+def test_timeout_attribute_reflects_constructor_arg():
+    # image.timeout 暴露给 S4 的重试预算计时逻辑读取,须原样落到实例属性上
+    c = ImageClient(BASE, "sk", "gpt-image-1", timeout=123)
+    assert c.timeout == 123
 
 
 @respx.mock

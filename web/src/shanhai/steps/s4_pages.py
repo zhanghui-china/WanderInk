@@ -1,6 +1,7 @@
 import concurrent.futures as cf
 import os
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -64,7 +65,10 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
     kept_panels: list[Panel] = []
     for i, panel in enumerate(cell.panels, 1):
         prompt, present = _panel_prompt(panel, style, cards)
+        t0 = time.monotonic()
         for attempt in range(MAX_ATTEMPTS):
+            if attempt > 0 and time.monotonic() - t0 >= image.timeout:
+                break  # 这一格的时间预算已耗尽,不再重试这一格(不影响其它格各自的预算)
             try:
                 refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
                         for c in present if c.turnaround_image]
@@ -75,7 +79,7 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
                 imgs.append(art)
                 kept_panels.append(panel)
                 break
-            except Exception:  # noqa: BLE001 单格失败不拖垮整页,重试后放弃该格(不占位符硬凑)
+            except Exception:  # noqa: BLE001 单格失败不拖垮整页,重试/预算耗尽后放弃该格(不占位符硬凑)
                 continue
     if not imgs:
         cell.status = "failed"
@@ -96,7 +100,10 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
     features = ";".join(f"{c.name}({c.feature_prompt})" for c in present) or "无固定角色"
     prompt = PAGE_TMPL.format(style=style, scene=cell.visual_desc, features=features)
     out = pages_dir / f"page_{cell.index:02d}.png"
+    t0 = time.monotonic()
     for attempt in range(MAX_ATTEMPTS):
+        if attempt > 0 and time.monotonic() - t0 >= image.timeout:
+            break  # 上一次尝试已经把这张图的时间预算耗尽(大概率真的卡住了),不再重试
         try:
             refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
                     for c in present if c.turnaround_image]
@@ -105,9 +112,9 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
             cell.image = str(out.relative_to(workdir))
             cell.status = "confirmed"
             return
-        except Exception:  # noqa: BLE001 单页失败不拖垮整轮,重试后标 failed
-            if attempt == MAX_ATTEMPTS - 1:
-                cell.status = "failed"
+        except Exception:  # noqa: BLE001 单页失败不拖垮整轮,重试/预算耗尽后标 failed
+            pass
+    cell.status = "failed"
 
 
 def run(project: Project, image: ImageClient, workdir: Path, image_size: str,
