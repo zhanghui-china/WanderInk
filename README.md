@@ -75,7 +75,7 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 ### 技术栈
 
 - **文本模型**：Sehyo-Qwen3.5-35B-A3B-NVFP4（本地）、Step-3.7-Flash（云端）：<https://modelscope.cn/models/hf/Sehyo-Qwen3.5-35B-A3B-NVFP4>
-- **图像编辑模型**：Qwen-Image-Edit-2511（本地） 、openAI GPT Image2（云端）：<https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2511>
+- **图像编辑模型**：Qwen-Image-Edit-2511/ Krea2（本地） 、openAI GPT Image2（云端）：<https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2511>
 - **语音合成模型**：Qwen3-TTS：<https://modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base>
 - **音乐生成模型**：ACE-STEP XL Turbo（ACE Studio 与 StepFun）：<https://modelscope.cn/models/ACE-Step/acestep-v15-xl-turbo>
 - **框架**：ComfyUI、FastAPI、WebSocket
@@ -107,8 +107,8 @@ conda activate comfyui
 cd ~
 git clone https://github.com/comfyanonymous/ComfyUI.git
 
-#根据显卡 CUDA 版本安装对应的 PyTorch（建议 CUDA 12.1+）
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#根据显卡 CUDA 版本安装对应的 PyTorch
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 
 #安装ComfyUI依赖
 cd ~/ComfyUI
@@ -243,6 +243,8 @@ WantedBy=default.target
 
 参考 <https://zhuanlan.zhihu.com/p/2056830749530142643>
 
+为安全起见，hermes环境跟wanderink的运行环境隔离，避免出现hermes获取高权限后删除项目代码和文档的情况。
+
 ```
 #使用hermes用户登录
 source ~/.bashrc
@@ -285,17 +287,165 @@ print(f"下载完成，文件保存在: {model_dir}")
 python download_model_by_modelscope_Sehyo-Qwen3.5-35B-A3B-NVFP4.py
 ```
 
-下载vllm docker镜像：
+##### 2.4.2 下载ComfyUI图像编辑模型：Qwen-Image-Edit-2511
+
+> \[!NOTE]
+> 系统的 `~/ComfyUI/models` 目录是一个软链接，实际指向真实存储目录 `~/models/comfyui_models`。以下操作将模型文件直接下载保存到真实目录中。
+
+下载 `qwen_image_edit_2511_fp8mixed.safetensors` 并保存到 `~/models/comfyui_models/diffusion_models/` 目录下。
+
+可以通过以下几种方式之一进行下载：
+
+- **使用 wget（推荐，使用国内镜像加速）**：
+  ```bash
+  export HF_ENDPOINT=https://hf-mirror.com # 国内镜像源加速
+  huggingface-cli download Comfy-Org/Qwen-Image-Edit_ComfyUI split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors --local-dir ~/models/comfyui_models/diffusion_models --local-dir-use-symlinks False
+
+  # 下载完成后将文件移动至正确根目录并清理多余空目录
+  mv ~/models/comfyui_models/diffusion_models/split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors ~/models/comfyui_models/diffusion_models/
+  rm -rf ~/models/comfyui_models/diffusion_models/split_files
+  ```
+- **使用 huggingface-cli**：
+  ```
+  # 创建目录（若不存在）
+  mkdir -p ~/models/comfyui_models/diffusion_models
+
+  # 下载模型文件
+  wget -O ~/models/comfyui_models/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors \
+    https://hf-mirror.com/Comfy-Org/Qwen-Image-Edit_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors
+  ```
+
+##### 2.4.3 下载ComfyUI语音合成模型：Qwen3-TTS
+
+需要下载完整的 `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` 仓库，并保存到 `~/models/comfyui_models/qwen-tts/Qwen3-TTS-12Hz-1.7B-VoiceDesign` 目录下。
+
+可以通过以下几种方式之一进行下载：
+
+- **使用 huggingface-cli（推荐，国内镜像加速）**：
+  ```
+  # 创建目录（若不存在）
+  mkdir -p ~/models/comfyui_models/qwen-tts/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+
+  # 下载完整的模型仓库
+  export HF_ENDPOINT=https://hf-mirror.com # 国内镜像源加速
+  huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+    --local-dir ~/models/comfyui_models/qwen-tts/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+    --local-dir-use-symlinks False
+  ```
+
+* **使用 git clone（需要已安装 git-lfs）**：
+  ```bash
+  # 克隆仓库到指定位置
+  git clone https://hf-mirror.com/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign ~/models/comfyui_models/qwen-tts/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+  ```
+* **官方 Hugging Face 链接**：
+  [Qwen3-TTS-12Hz-1.7B-VoiceDesign](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/tree/main)
+
+##### 2.4.4 下载ComfyUI音乐生成模型：ACE-STEP XL Turbo
+
+下载音乐生成模型 `acestep1.5XL_ComfyUI_aio-marduk191.safetensors` 并保存到 `~/models/comfyui_models/checkpoints/` 目录下。
+
+可以通过以下几种方式之一进行下载：
+
+- **使用 wget（推荐，使用国内镜像加速）**：
+  ```bash
+  export HF_ENDPOINT=https://hf-mirror.com # 国内镜像源加速
+  huggingface-cli download marduk191/acestep1.5XL_ComfyUI_aio-marduk191 acestep1.5XL_ComfyUI_aio-marduk191.safetensors --local-dir ~/models/comfyui_models/checkpoints --local-dir-use-symlinks False
+  ```
+- **使用 huggingface-cli**：
+  ```bash
+  # 创建目录（若不存在）
+  mkdir -p ~/models/comfyui_models/vae
+
+  # 下载模型文件
+  wget -O ~/models/comfyui_models/vae/qwen_image_vae.safetensors \
+    https://hf-mirror.com/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors
+  ```
+- **官方 Hugging Face 链接**：
+  [acestep1.5XL\_ComfyUI\_aio-marduk191.safetensors](https://huggingface.co/marduk191/acestep1.5XL_ComfyUI_aio-marduk191/tree/main)
+
+##### 2.4.5 下载ComfyUI VAE模型
+
+下载 `qwen_image_vae.safetensors` 并保存到 `~/models/comfyui_models/vae/` 目录下。
+
+可以通过以下几种方式之一进行下载：
+
+- **使用 wget（推荐，使用国内镜像加速）**：
+  ```
+  export HF_ENDPOINT=https://hf-mirror.com # 国内镜像源加速
+  huggingface-cli download marduk191/acestep1.5XL_ComfyUI_aio-marduk191 acestep1.5XL_ComfyUI_aio-marduk191.safetensors --local-dir ~/models/comfyui_models/checkpoints --local-dir-use-symlinks False
+  ```
+- **官方 Hugging Face 链接**：
+  [qwen\_image\_vae.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/blob/main/split_files/vae/qwen_image_vae.safetensors)
+
+##### 2.4.6 下载ComfyUI CLIP/Text Encoder模型
+
+需要下载 `qwen_2.5_vl_7b.safetensors` 和 `qwen3vl_4b_bf16.safetensors` 并保存到 `~/models/comfyui_models/text_encoders/` 目录下。
+
+可以通过以下几种方式之一进行下载：
+
+- **使用 wget（推荐，使用国内镜像加速）**：
+
+```
+# 创建目录（若不存在）
+mkdir -p ~/models/comfyui_models/text_encoders
+
+# 下载 qwen_2.5_vl_7b
+wget -O ~/models/comfyui_models/text_encoders/qwen_2.5_vl_7b.safetensors \
+  https://hf-mirror.com/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b.safetensors
+
+# 下载 qwen3vl_4b_bf16
+wget -O ~/models/comfyui_models/text_encoders/qwen3vl_4b_bf16.safetensors \
+  https://hf-mirror.com/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_bf16.safetensors
+```
+
+- **使用 huggingface-cli**：
+  ```bash
+  # 创建目录（若不存在）
+  mkdir -p ~/models/comfyui_models/checkpoints
+
+  # 下载模型文件
+  wget -O ~/models/comfyui_models/checkpoints/acestep1.5XL_ComfyUI_aio-marduk191.safetensors \
+    https://hf-mirror.com/marduk191/acestep1.5XL_ComfyUI_aio-marduk191/resolve/main/acestep1.5XL_ComfyUI_aio-marduk191.safetensors
+  ```
+- **官方 Hugging Face 链接**：
+  - [qwen\_2.5\_vl\_7b.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/blob/main/split_files/text_encoders/qwen_2.5_vl_7b.safetensors)
+  - [qwen3vl\_4b\_bf16.safetensors](https://huggingface.co/Comfy-Org/Krea-2/blob/main/text_encoders/qwen3vl_4b_bf16.safetensors)
+
+##### 2.4.7 下载ComfyUI LoRA模型
+
+###### 2.4.7.1 Qwen-Image-Edit-2511
+
+需要下载 `Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors` 并保存到 `~/models/comfyui_models/loras/` 目录下。
+
+可以通过以下几种方式之一进行下载：
+
+- **使用 wget（推荐，使用国内镜像加速）**：
+  ```
+  # 创建目录（若不存在）
+  mkdir -p ~/models/comfyui_models/loras
+
+  # 下载 LoRA 模型文件
+  wget -O ~/models/comfyui_models/loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors \
+    https://hf-mirror.com/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/main/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors
+  ```
+- **官方 Hugging Face 链接**：
+  [Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors](https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/blob/main/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors)
+
+###### 2.4.7.2 其他Lora模型
+
+其他Lora模型可到 civital.com 进行下载，下载完毕后，保存到 `~/models/comfyui_models/loras/` 目录下。
+
+- **Lora模型链接**：
+  - [Real\_ani\_qwen](https://civitai.com/models/2164588/gen-ani-art-style-qwen-lora)
+  - [Qwen-image\_2511\_Edit\_Ball-jointed\_Doll V2.0](https://civitai.com/models/2303022/qwen-image2511editball-jointeddoll-v20)
+  - [Nano banana figurine style](https://civitai.com/models/1900696/nano-banana-figurine-style-qwen-image-edit)
+
+#### 2.5 下载vllm docker镜像
 
 ```
 docker pull vllm/vllm-openai:cu130-nightly
 ```
-
-##### 2.4.2 下载ComfyUI图像编辑模型：Qwen-Image-Edit-2511
-
-##### 2.4.3 下载ComfyUI语音合成模型：Qwen3-TTS
-
-##### 2.4.4 下载ComfyUI音乐生成模型：ACE-STEP XL Turbo
 
 ### 3.系统启动
 
@@ -422,9 +572,49 @@ hermes gateway restart
 
 #### 3.4 LLM模型启动
 
+编辑文件：/home1/wuzi/models/Sehyo/Qwen3.5-35B-A3B-NVFP4/model\_qwen35\_p8000.yaml
+
+```
+host: "0.0.0.0"
+port: 8000
+reasoning-parser: "qwen3"
+enable-auto-tool-choice: true
+tool-call-parser: "qwen3_xml"
+dtype: auto
+max-model-len: 128K
+api-key: "sk-my-api-key"
+disable-custom-all-reduce: true
+generation-config: "vllm"
+gpu-memory-utilization: 0.3
+language-model-only: true
+```
+
+编辑文件：/home1/wuzi/docker/docker\_start\_Sehyo-Qwen3.5-35B-A3B-NVFP4.sh文件：
+
+```
+docker run -d --gpus all --rm \
+       -v /home1/wuzi/models/Sehyo/:/mnt/ \
+       -p 0.0.0.0:8000:8000/tcp \
+       --name qwen35_35b_a3b vllm/vllm-openai:cu130-nightly /mnt/Qwen3.5-35B-A3B-NVFP4 \
+       --served-model-name DGX-Qwen3.5-35B-A3B \
+       --api_key "sk-my-api-key" \
+       --config /mnt/Qwen3.5-35B-A3B-NVFP4/model_qwen35_p8000.yaml \
+       --speculative-config '{"method": "mtp", "num_speculative_tokens": 1}'
+```
+
+使用docker方式启动Sehyo-Qwen3.5-35B-A3B-NVFP4：
+
+```
+cd /home1/wuzi/docker
+chmod +x docker_start_Sehyo-Qwen3.5-35B-A3B-NVFP4.sh
+sh ./docker_start_Sehyo-Qwen3.5-35B-A3B-NVFP4.sh
+docker ps
+docker logs [containerid]
+```
+
 ## ✨项目报告
 
-【项目技术文档】 待补充
+[项目报告](https://github.com/zhanghui-china/WanderInk/blob/main/docs/%E9%A1%B9%E7%9B%AE%E8%AF%B4%E6%98%8E%E6%96%87%E6%A1%A3.md)
 
 ## 📋项目代码结构
 
@@ -440,8 +630,15 @@ WanderInk/
 │   ├── assets/           # 字体、BGM 等
 │   └── docs/             # PRD、部署与决策记录
 └── comfyui-bridge/       # ComfyUI HTTP 桥接
-    ├── workflows/        # 图像 / TTS / 音乐 JSON 模板
-    └── test/             # CLI 测试脚本
+│   ├── workflows/        # 图像 / TTS / 音乐 JSON 模板
+│   └── test/             # CLI 测试脚本
+└── models                # 模型
+│   └── comfyui_models/   # ComfyUI使用的模型
+│   └── ├── diffusion_models/   # 图像编辑模型所在目录
+│   └── ├── checkpoints/  # 音乐生成模型所在目录
+│   └── ├── qwen-tts/     # 语音合成模型所在目录
+│   └── ├── loras/        # 图像编辑Qwen Image Edit 2511的Lora模型所在目录
+
 ```
 
 ## 文档索引
