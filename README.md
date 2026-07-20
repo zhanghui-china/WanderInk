@@ -654,6 +654,8 @@ WanderInk/
 
 ## 📆更新说明及团队动态
 
+[2026.7.20] **Nancy**完成项目演示材料编制。
+
 \[2026.7.19] **张小白**、**般度五子**完善部署文档、项目介绍文档等。
 
 \[2026.7.18]  项目组成员对项目进行一系列测试验证，**馄饨**对Web端BUG进行修复后，Web端代码封版。
@@ -715,6 +717,10 @@ WanderInk/
 感谢 阶跃星辰 提供模型和在线算力支持
 
 ![stepfun-logo](stepfun-logo.png)
+
+感谢  [@山音](https://github.com/Shanyin-ai)  提供专业化开源skill支持
+
+![shanyin-logo](shanyin-logo.png)
 
 ## 开源协议
 
