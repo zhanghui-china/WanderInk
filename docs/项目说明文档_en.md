@@ -173,10 +173,10 @@ The following features have been implemented:
 
 - **Multi-user login and queue visibility**: Cookie session + `users.json`, supports team sharing, only see own cancellation permissions;
 - **National 5A scenic spot information entry**: Extracted 359 5A scenic spots from cultural and tourism bureau official website, allowing users to quickly input;
-- **Multi-panel comic layout per page**: Supports Japanese-style multi-panel storyboards;
 
 The following features are planned:
 
+- **Multi-panel comic layout per page**: Japanese-style multi-panel storyboards for stronger pacing and visual hierarchy;
 - **Character library cross-project reuse**: Store locked characters in global library, reduce redundant generation;
 - **PDF refined layout and multi-language output**: Targeting B-end scenic spot operators;
 - **Cost cap and redraw budget control**: Prevent remote API quota runaway;
