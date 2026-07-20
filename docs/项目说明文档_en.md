@@ -1,7 +1,7 @@
 # WanderInk (Mànyóu Mòhuì) Project Documentation
 
-> Version: v2.2 (Competition Review Edition)  
-> Updated: 2026-07-19  
+> Version: v2.3 (Competition Review Edition)  
+> Updated: 2026-07-20  
 > Competition: 2nd NVIDIA DGX Spark Hackathon
 
 ---
@@ -742,6 +742,108 @@ As one of the important generative AI capabilities in the StepFun ecosystem, ACE
 
 **Overall, ACE-Step 1.5 XL achieves a good balance between music quality, generation efficiency, and creative freedom, providing professional-level AI music creation capability for this project, making it an important part of building a multimodal content generation system.**
 
+### 7.4 Common Tools and NVIDIA SDK
+
+#### 7.4.1 vLLM: Text Large Model Inference Service Framework Selection
+
+In this project, we regard large model inference capability as the core infrastructure of the entire system, rather than just simple model calls. Therefore, during the inference framework selection phase, we focused on multiple dimensions including inference performance, GPU utilization, long context support, multi-model compatibility, and future expansion capabilities. We ultimately chose **vLLM** as the unified large model inference engine, and adopted **Docker containerized deployment** to build the model service layer.
+
+Common large model deployment solutions in the current open-source ecosystem mainly include **Ollama, llama.cpp, SGLang, and vLLM**. Among them, Ollama is more suitable for individual developers to quickly experience and deploy models locally, with advantages such as simple installation and low usage threshold. However, its positioning is more biased towards Model Runtime, and its capabilities are relatively limited in high-concurrency inference, GPU resource scheduling, and production-level service-oriented deployment. llama.cpp is known for its extreme lightweight and cross-platform capabilities, especially suitable for CPU, Mac, and edge device deployment scenarios. However, it is mainly built around the GGUF quantization ecosystem, with relatively limited support for high-end GPUs, ultra-large-scale models, and new-generation quantization formats.
+
+SGLang and vLLM represent the development direction of large model inference frameworks for production environments in the current open-source community. SGLang has strong advantages in Structured Generation, Function Calling, and Agent workflow scenarios, while vLLM, with its mature engineering ecosystem, broader industry application verification, and deep adaptation to NVIDIA GPU ecosystem, has become one of the most widely used inference engines in enterprise-level private deployment and AI Agent platforms.
+
+Considering project requirements and hardware environment, this project ultimately chose vLLM as the unified inference service framework. Firstly, vLLM provides an interface specification fully compatible with OpenAI API, enabling easy integration with Gateway, Agent Orchestrator, and business application layers, achieving unified encapsulation and management of model capabilities. Secondly, vLLM's core technology **PagedAttention** can significantly improve KV Cache utilization, effectively reducing memory fragmentation and memory waste, and fully releasing GPU computing resources in long context and multi-user concurrency scenarios. At the same time, vLLM supports **Continuous Batching**, which can dynamically merge inference requests from different users, improving GPU utilization and overall system throughput.
+
+The core text model adopted in this project, **Sehyo/Qwen3.5-35B-A3B-NVFP4**, retains **MTP (Multi-Token Prediction)** weights, and vLLM already supports advanced inference optimization technologies such as **Speculative Decoding**, which can further improve Token generation speed and inference throughput. In addition, vLLM has good compatibility with NVIDIA Blackwell architecture and new-generation quantization technologies such as FP8 and FP4, enabling it to fully leverage the hardware performance advantages of the DGX Spark platform.
+
+In terms of deployment, this project adopted the official **vLLM Docker image** for containerized deployment, rather than directly installing and running through Python environment. The main reason for this is that the large model inference environment involves many underlying dependencies such as CUDA, PyTorch, NCCL, FlashAttention, and Transformer Engine, and there are often complex compatibility relationships between different versions. Through Docker images, the entire inference environment can be standardized and encapsulated, ensuring that development, testing, and production environments remain consistent, significantly reducing deployment and operation complexity.
+
+At the same time, the NVIDIA Blackwell GPU platform equipped in DGX Spark has high requirements for CUDA Runtime, driver version, and NVFP4 and other new features. The official image has already completed the adaptation and optimization of relevant dependency components, which can reduce environment configuration risks and improve system stability. Containerized deployment also provides good compatibility and scalability for subsequent migration to other NVIDIA GPU platforms, cloud GPU clusters, or Kubernetes environments.
+
+In summary, the **vLLM + Docker** technical solution adopted in this project not only fully leverages the hardware performance advantages of DGX Spark and Blackwell GPU, but also achieves high-throughput, low-latency, and long-context large model inference services through core technologies such as PagedAttention, Continuous Batching, and Speculative Decoding. At the same time, this solution has good engineering capabilities, maintainability, and scalability, providing solid infrastructure support for future multi-model collaboration, multi-Agent workflows, and large-scale concurrent access scenarios.
+
+#### 7.4.2 CUDA 13.0: GPU Computing Platform and CUDA Technology
+
+To fully leverage the hardware performance of the NVIDIA DGX Spark platform, this project adopts **CUDA 13.0** as the underlying GPU computing runtime environment, providing unified high-performance computing infrastructure support for large model inference, multimodal content generation, and AI Agent workflows.
+
+CUDA (Compute Unified Device Architecture) is a general-purpose parallel computing platform and programming model launched by NVIDIA, and is also the de facto standard GPU computing ecosystem in the current artificial intelligence field. Modern large model training and inference frameworks, including core components such as PyTorch, TensorRT, vLLM, FlashAttention, and Transformer Engine, are all built on the CUDA ecosystem. CUDA not only manages GPU resource scheduling and computing task execution, but also provides high-performance math libraries, communication libraries, and Tensor Core acceleration capabilities optimized for AI scenarios, serving as the foundational runtime platform for the entire AI technology stack.
+
+Compared with early CUDA versions, CUDA 13.0 has been deeply optimized for NVIDIA's new-generation **Blackwell architecture GPU**, better supporting high-throughput computing requirements in large model inference scenarios. Especially in terms of support for low-precision computing formats such as FP8 and FP4, CUDA 13.0 provides complete software stack support, enabling new-generation quantization models to fully utilize Blackwell Tensor Core computing capabilities, significantly improving inference efficiency while ensuring model accuracy.
+
+The core text model adopted in this project, **Sehyo/Qwen3.5-35B-A3B-NVFP4**, uses NVIDIA's proprietary NVFP4 quantization format, which achieves high compression ratio and high computing efficiency through the combination of FP4 weights and FP8 Scale. CUDA 13.0 can directly call the FP4 Tensor Core instruction set natively supported by Blackwell GPU, enabling the model inference process to complete large-scale inference tasks with lower memory footprint and higher computing throughput, thereby fully releasing the hardware potential of DGX Spark.
+
+In terms of multi-GPU communication and inference services, CUDA 13.0 is deeply integrated with NCCL (NVIDIA Collective Communications Library), providing efficient data exchange capabilities for Tensor Parallel, Pipeline Parallel, and distributed inference scenarios. Although this project currently mainly runs in a single-node environment, when expanding to multi-GPU or GPU clusters in the future, it can still build larger-scale model service capabilities based on CUDA and NCCL, reserving sufficient space for system expansion.
+
+In addition, CUDA 13.0 maintains high compatibility with the current mainstream AI software ecosystem. Key components including PyTorch, vLLM, TensorRT-LLM, FlashAttention, and Transformer Engine have all completed adaptation. Through a unified software stack, the project can obtain a more stable runtime environment and continuous performance optimization support, reducing compatibility risks between different components.
+
+From an engineering practice perspective, CUDA 13.0 not only provides underlying GPU computing capabilities, but also undertakes the runtime infrastructure role of the entire AI inference platform. Tasks such as text generation, image generation, music generation, and multi-Agent collaborative inference in the project are all completed through CUDA scheduling GPU resources. With the high-performance parallel computing capabilities provided by CUDA, the system can achieve higher model throughput, lower inference latency, and better resource utilization under limited hardware resources.
+
+In summary, CUDA 13.0, as an important software infrastructure of the NVIDIA Blackwell platform, not only provides a stable and efficient GPU computing environment for this project, but also provides key support for the high-performance operation of NVFP4 quantization models, vLLM inference engines, and multimodal generation models. Through the collaborative optimization of CUDA 13.0 and the DGX Spark platform, the project can fully leverage the advantages of the new-generation GPU architecture, providing powerful computing power guarantee for complex AI application scenarios.
+
+#### 7.4.3 Image Generation Service Architecture Optimization — Qwen-Image-Edit-2511 Inference Solution Based on ComfyUI
+
+In the visual content generation module of this project, we adopt **ComfyUI** as the image generation and editing workflow engine, driving the **Qwen-Image-Edit-2511** image editing model to complete core tasks such as character illustration generation, character three-view generation, comic page rendering, and visual consistency optimization.
+
+In the first-generation hackathon project SparkScroll, the image generation service was mainly deployed based on **vLLM-Omni** and its official Docker image, calling the Qwen image model through a unified large model service framework to complete visual content generation. This solution has the advantages of simple deployment and unified interface, enabling rapid verification of product prototypes and generation pipelines. However, in actual production, we found that vLLM-Omni is more biased towards a unified inference service framework for multimodal large models, and its design goals mainly focus on model serviceization and interface standardization, rather than specialized optimization for Diffusion Models or image generation workflows. Therefore, in scenarios such as high-resolution comic page generation, complex character consistency control, and batch image processing, there is room for further optimization in GPU resource utilization and inference efficiency.
+
+To solve this problem, this project introduces ComfyUI as a new-generation image generation execution framework. ComfyUI adopts a Node-Based visual workflow architecture, decomposing steps such as model loading, Prompt processing, sampler scheduling, LoRA loading, image editing, and post-processing into independent nodes, and organizing the execution flow through a computation graph. Compared with the traditional integrated inference call mode, ComfyUI can more flexibly manage model resources and computation processes, thereby effectively improving image generation efficiency.
+
+In the actual deployment process, we built a dedicated image generation workflow for Qwen-Image-Edit-2511, standardizing and encapsulating links such as character setting, reference image input, style control, comic page generation, and image enhancement. At the same time, combined with ComfyUI's optimization capabilities for model caching, memory management, and inference flow, we significantly reduced performance losses caused by repeated model loading and repeated computation.
+
+After actual testing, under the same hardware environment, the image generation solution based on vLLM-Omni in the first-generation SparkScroll project had an average generation time of approximately **5~7 minutes** for a single character three-view or comic page; after upgrading to the ComfyUI workflow, the single image generation time was stably reduced to **1~2 minutes**, with an overall inference efficiency improvement of approximately **3~5 times**. This optimization significantly shortened the waiting time from plot generation to visual output, improving the execution efficiency and user interaction experience of the entire multi-Agent creative process.
+
+In addition to performance improvement, ComfyUI also brings stronger workflow orchestration capabilities. The character design Agent, storyboard Agent, comic generation Agent, and post-processing Agent in the project can all be called through standardized workflows, achieving modular management of the image generation process. If new diffusion models, ControlNet, LoRA, IP-Adapter, or video generation models are introduced in the future, extensions can be completed only by adjusting workflow nodes without large-scale modification of business logic code, significantly improving system maintainability and scalability.
+
+From an architectural perspective, this upgrade reflects the project's evolution from "model call-driven" to "workflow-driven". The first-generation SparkScroll focused more on model capability verification, while this project pays more attention to the engineering efficiency of the content production pipeline. Through the introduction of ComfyUI, we not only achieved significant performance improvement, but also established a standardized generation system suitable for large-scale visual content production.
+
+**Overall, the combination of ComfyUI and Qwen-Image-Edit-2511, while ensuring image quality and character consistency, significantly improves image generation efficiency and system expansion capabilities, providing important support for the project to achieve efficient and stable visual content production, and also laying a good technical foundation for subsequent integration of more multimodal generation models.**
+
+#### 7.4.4 Script and Storyboard Generation Service — Multi-Agent Creative Architecture Based on Hermes Agent Framework and Shanyin Skill Service
+
+In the content creation stage, this project adopts **Hermes Agent Framework** as the multi-Agent collaborative orchestration framework, and encapsulates **Shanyin Super Screenwriter Master** and **Shanyin Super Director Master** as professional Skill services under the Hermes system. Through HTTP API, it provides script generation and storyboard generation capabilities to upper-layer Agents, building an intelligent creative workflow for AI content production scenarios.
+
+**Hermes** is a lightweight orchestration framework for building Agent applications in the era of large models. Its core concept is to decompose complex tasks into multiple service modules with professional capabilities through a **Agent + Skill + Tool** modular architecture, and achieve collaborative work among multiple Agents through unified task scheduling, context management, and capability calling mechanisms.
+
+With the continuous enhancement of large language model capabilities, a single LLM can no longer meet the needs of complex business scenarios. Especially in content production fields such as film, comics, and short dramas, a complete creative process usually involves multiple professional links such as story planning, script writing, director storyboarding, art design, and music production. If only relying on a single model for end-to-end generation, problems such as unstable plot logic, drifting character settings, and insufficient camera language are likely to occur. Therefore, this project adopts Hermes as the intelligent orchestration layer, dynamically calling professional skills of screenwriters and directors through Agents to complete complex creative tasks.
+
+[Shanyin Super Screenwriter Master]: https://github.com/Shanyin-ai/shanyin-screenwriting-master
+
+As a script creation Skill for Hermes, it is mainly responsible for tasks such as story planning, worldview construction, character setting, and script generation.
+
+This Skill provides standardized calling interfaces to Hermes through HTTP API, enabling Agents to call screenwriting capabilities to complete:
+
+- Story background design;
+- Character relationship construction;
+- Plot structure planning;
+- Plot development design;
+- Complete script generation.
+
+By encapsulating screenwriting capabilities as independent Skills, the system does not need to solidify complex creative logic in the main Agent, but can dynamically call professional capabilities according to task requirements, achieving modularization and serviceization of creative capabilities.
+
+[Shanyin Super Director Master]: https://github.com/Shanyin-ai/shanyin-director-master
+
+After script generation, Hermes Agent will further call the **Shanyin Super Director Master** Skill to convert literary scripts into director-level storyboard data suitable for visual generation.
+
+This Skill is mainly responsible for:
+
+- Plot scene decomposition;
+- Camera planning;
+- Shot design;
+- Character action description;
+- Emotion expression analysis;
+- Visual composition design;
+- Storyboard script generation.
+
+Output structured scripts and storyboard content through HTTP service interfaces, providing precise Prompt and scene control information for the subsequent Qwen-Image-Edit-2511 image generation model.
+
+Compared with directly generating image descriptions through large language models, this solution adds a professional conversion layer of "screenwriter → director → visual generation", making AI-generated content more in line with film production processes, improving plot consistency, camera continuity, and character performance capabilities.
+
+The **Shanyin Super Screenwriter Master** and **Shanyin Super Director Master** adopted in this project are both open-source software projects. The project author [Shanyin](https://github.com/Shanyin-ai) is a well-known AIGC art creator, independent director, and screenwriter in China, with rich practical experience in AI content creation. He has won honors such as **2025 Chuxin Award Top 10 AIGC Figures of the Year, Vaca Award Top Chinese AI Visual Creative Author, and Extraordinary Award Annual AI CREATOR 100 Creator**, and participated in the construction of innovation ecosystems such as Shenzhen AIGC Super Creation Laboratory and Langyuan AI Super Creation Ecological Matrix.
+
+He has long focused on AIGC art creation, intelligent content production processes, and AI creative tool research and development, and as a creator representative of multiple mainstream AI creation platforms, continues to promote the application of AI technology in film, visual art, and content production fields.
+
+*The project team would like to thank **@Shanyin** for open-sourcing and contributing professional creative tools, which have provided important technical support for this project in intelligent script generation, director storyboard planning, and AI content production process optimization. With the help of these excellent open-source capability components, this project can further improve the multi-Agent collaborative creative system and accelerate the exploration and practice of AI-native content production applications.*
+
 ---
 
 ## VIII. Project Completeness
@@ -804,7 +906,7 @@ In one sentence: **The team leader remains the same, but the product form, techn
 
 | Evaluation Dimension | Weight | Corresponding Content in This Project |
 |---|---|---|
-| Practicality, Industry Implementation Value & Technical Innovation | 25% | Solves pain points of中小景区 IP development "long cycle, high cost"; end-to-end audio comic solution has industry pioneering nature; fully utilizes DGX Spark unified memory to achieve single-machine closed loop |
+| Practicality, Industry Implementation Value & Technical Innovation | 25% | Solves pain points of small and medium scenic spot IP development "long cycle, high cost"; end-to-end audio comic solution has industry pioneering nature; fully utilizes DGX Spark unified memory to achieve single-machine closed loop |
 | Agent Integration & Model Optimization Technical Depth | 25% | Multi-Agent collaboration (Story/Script/Director/Character/Image/Voice/Music/Composer); Hermes "Screenwriter Master/Director Master" skill injection; three-view consistency approach; TTS truncation detection and silent fallback |
 | Project Completeness | 20% | S0–S6 functionally complete; FastAPI + React frontend-backend complete; 300+ test cases; PRD/deployment manual/user manual/decision records complete; live demo ready |
 | Platform Adaptability | 15% | DGX Spark 128GB unified memory time-slice loading; vllm local LLM; ComfyUI image pipeline; Qwen3-TTS speech; ACE-STEP music; Stepfun step-3.7-flash text model |
@@ -826,6 +928,8 @@ In one sentence: **The team leader remains the same, but the product form, techn
 ---
 
 ## XIV. Team and Project Updates
+
+[2026.7.20] **Nancy** completed project demonstration materials preparation.
 
 [2026.7.19] **Zhang Xiaobai** (张小白) and **Bandukids** (般度五子) improved deployment documentation and project introduction documents.
 

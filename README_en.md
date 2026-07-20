@@ -653,6 +653,8 @@ WanderInk/
 
 ## 📆 Updates & Team Activities
 
+[2026.7.20] **Nancy** completed project demonstration materials preparation.
+
 \[2026.7.19] **Zhang Xiaobai** (张小白) and **Bandukids** (般度五子) improved deployment documentation and project introduction documents.
 
 \[2026.7.18] Project team members conducted a series of tests and verifications. **Huntun** (馄饨) fixed Web bugs, and the Web code was finalized.
