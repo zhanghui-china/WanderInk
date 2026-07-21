@@ -12,16 +12,16 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 
 **项目背景与动机：**
 
-- **行业痛点**：景区文化 IP 开发严重依赖人工创作团队（编剧、画师、配音、配乐），制作周期长、成本高，中小景区难以负担
-- **现有 AI 方案不足**：通用 LLM 只能生成文本，图片生成模型缺乏角色一致性，TTS/音乐生成与画面脱节，没有端到端的全链路自动化方案
-- **机会**：Nvidia DGX Spark 128GB 统一内存使得多模型协同推理成为可能，将故事生成、图像生成、语音合成、音乐生成压缩到单机流水线中，实现"景区名称进、有声连环画出"的全自动化
+- **行业痛点**：景区文化 IP 开发严重依赖人工创作团队（编剧、画师、配音、配乐），制作周期长、成本高，中小景区难以负担；
+- **现有 AI 方案不足**：通用 LLM 只能生成文本，图片生成模型缺乏角色一致性，TTS/音乐生成与画面脱节，没有端到端的全链路自动化方案；
+- **机会**：Nvidia DGX Spark 128GB 统一内存使得多模型协同推理成为可能，将故事生成、图像生成、语音合成、音乐生成压缩到单机流水线中，实现"景区名称进、有声连环画出"的全自动化。
 
 本仓库包含基于 ComfyUI 的图像生成管线和 API 服务，实现从文本到图像、音频的全链路自动化生成。
 
-- **端到端全链路自动化**：从景区名称到最终有声连环画，功能模块全自动串联，无需人工干预
-- **角色一致性保障**：通过 Qwen-Image-Edit-2511 + LoRA 微调，在分镜漫画生成阶段保持人物外观一致性（三视图 → 分镜复用）
-- **多模型分时编排**：DGX Spark 统一内存约束下，LLM、图像编辑模型、TTS 模型、音乐生成模型分时加载，峰值不超内存上限
-- **NVIDIA 全栈落地**：DGX Spark 统一内存 + Stepfun系列（LLM/TTS）+ ACE-STEP 音乐生成 + ComfyUI 图像管线，展示完整创意 AI 生命周期
+- **端到端全链路自动化**：从景区名称到最终有声连环画，功能模块全自动串联，无需人工干预；
+- **角色一致性保障**：通过 Qwen-Image-Edit-2511 + LoRA 微调，在分镜漫画生成阶段保持人物外观一致性（三视图 → 分镜复用）；
+- **多模型分时编排**：DGX Spark 统一内存约束下，LLM、图像编辑模型、TTS 模型、音乐生成模型分时加载，峰值不超内存上限；
+- **NVIDIA 全栈落地**：DGX Spark 统一内存 + Stepfun系列（LLM/TTS）+ ACE-STEP 音乐生成 + ComfyUI 图像管线，展示完整创意 AI 生命周期；
 - **Skill 模块化设计**：部分功能模块抽象为独立 Skill（剧本：编剧 skill、分镜：导演 skill等），支持灵活扩展新场景。
 
 > 详细产品方案见 [docs/product/](docs/product/景区有声连环画%20Agent%20—%20产品方案（优化版）.md)
@@ -75,10 +75,10 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 ### 技术栈
 
 - **文本模型**：Sehyo-Qwen3.5-35B-A3B-NVFP4（本地）、Step-3.7-Flash（云端）：<https://modelscope.cn/models/hf/Sehyo-Qwen3.5-35B-A3B-NVFP4>
-- **图像编辑模型**：Qwen-Image-Edit-2511/ Krea2（本地） 、openAI GPT Image2（云端）：<https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2511>
+- **图像编辑模型**：Qwen-Image-Edit-2511（本地） 、openAI GPT Image2（云端）：<https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2511>
 - **语音合成模型**：Qwen3-TTS：<https://modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base>
 - **音乐生成模型**：ACE-STEP XL Turbo（ACE Studio 与 StepFun）：<https://modelscope.cn/models/ACE-Step/acestep-v15-xl-turbo>
-- **框架**：ComfyUI、FastAPI、WebSocket
+- **框架**：ComfyUI、FastAPI + Pydantic + ThreadPoolExecutor、React 18 + Vite 5 + Tailwind CSS + TypeScript
 
 ## 🚀 快速开始
 

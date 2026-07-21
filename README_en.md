@@ -75,10 +75,10 @@ This project is specifically designed for **NVIDIA DGX Spark (GB10 128G Unified 
 ### Tech Stack
 
 - **Text Models:** Sehyo-Qwen3.5-35B-A3B-NVFP4 (local), Step-3.7-Flash (cloud): <https://modelscope.cn/models/hf/Sehyo-Qwen3.5-35B-A3B-NVFP4>
-- **Image Editing Models:** Qwen-Image-Edit-2511/ Krea2 (local), openAI GPT Image2 (cloud): <https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2511>
+- **Image Editing Models:** Qwen-Image-Edit-2511 (local), openAI GPT Image2 (cloud): <https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2511>
 - **Speech Synthesis Model:** Qwen3-TTS: <https://modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base>
 - **Music Generation Model:** ACE-STEP XL Turbo (ACE Studio & StepFun): <https://modelscope.cn/models/ACE-Step/acestep-v15-xl-turbo>
-- **Frameworks:** ComfyUI, FastAPI, WebSocket
+- **Frameworks:** ComfyUI, FastAPI + Pydantic + ThreadPoolExecutor, React 18 + Vite 5 + Tailwind CSS + TypeScript
 
 ## 🚀 Quick Start
 
