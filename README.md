@@ -28,11 +28,7 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 
 ## Demo
 
-> [Demo 视频](https://www.bilibili.com/video/BV1TpKh6nEyS)
->
-> ```html
-> <video src="docs/demo/wanderink-demo.mp4" controls width="720"></video>
-> ```
+> [Demo 视频（bilibili）](https://www.bilibili.com/video/BV1ymK865Et1)
 
 ## 一句话 Pitch
 
@@ -674,7 +670,7 @@ WanderInk/
 
 ## 📆更新说明及团队动态
 
-[2026.7.21] **张小白**编写 WanderInk体验手册，参见：https://zhuanlan.zhihu.com/p/2062795404199073593 。张小白编制DEMO讲解视频，参见：https://www.bilibili.com/video/BV1TpKh6nEyS
+[2026.7.21] **张小白**编写 WanderInk体验手册，参见：https://zhuanlan.zhihu.com/p/2062795404199073593 。Nancy编制DEMO讲解视频，参见：https://www.bilibili.com/video/BV1ymK865Et1 。 **般度五子**制作团队合影。
 
 [2026.7.20] **Nancy**编制项目演示PPT。
 
@@ -718,13 +714,13 @@ WanderInk/
 
 ## 📆项目团队
 
-| 成员                                       | 职责                                   |
-| ---------------------------------------- | ------------------------------------ |
-| [张小白](https://github.com/zhanghui-china) | 队长、项目策划、环境部署、项目测试、文档编写               |
-| [Nancy](https://github.com/nancysxy000)  | 队员、文档编制、景区故事生成、DEMO视频制作              |
-| [轻踏](https://github.com/DoubleCore)      | 队员、Skill 开发、Hermes 对接、编剧/导演 skill 迭代 |
-| [般度五子](https://github.com/Bandukids)     | 队员、ComfyUI 服务部署与开发、图像/音频管线           |
-| [馄饨](https://github.com/nativeas)        | 队员、Web 前后台开发、前端交互与多用户设计              |
+| 成员                                        | 职责                                                |
+| ------------------------------------------- | --------------------------------------------------- |
+| [张小白](https://github.com/zhanghui-china) | 队长、项目策划、环境部署、项目测试、文档编写        |
+| [Nancy](https://github.com/nancysxy000)     | 队员、文档编制、景区故事生成、DEMO视频制作          |
+| [轻踏](https://github.com/DoubleCore)       | 队员、Skill 开发、Hermes 对接、编剧/导演 skill 迭代 |
+| [般度五子](https://github.com/Bandukids)    | 队员、ComfyUI 服务部署与开发、图像/音频管线         |
+| [馄饨](https://github.com/nativeas)         | 队员、Web 前后台开发、前端交互与多用户设计          |
 
 ![合影](wanderink-group.jpg)
 

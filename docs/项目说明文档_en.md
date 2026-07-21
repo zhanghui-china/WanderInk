@@ -1680,9 +1680,9 @@ In one sentence: **The team leader remains the same, but the product format, tec
 
 ### 12.2 Project Updates
 
-[2026.7.21] **Zhang Xiaobai** wrote WanderInk Experience Manual, see: https://zhuanlan.zhihu.com/p/2062795404199073593
+[2026.7.21] **Zhang Xiaobai** wrote WanderInk Experience Manual, see: https://zhuanlan.zhihu.com/p/2062795404199073593. **Nancy** created the DEMO explanation video, see: https://www.bilibili.com/video/BV1ymK865Et1. **Ban Du Wu Zi** created the team photo.
 
-[2026.7.20] **Nancy** completed project demonstration materials preparation.
+[2026.7.20] **Nancy** completed project demonstration PPT preparation.
 
 [2026.7.19] **Zhang Xiaobai**, **Ban Du Wu Zi** completed deployment documentation, project introduction documentation, etc.
 
