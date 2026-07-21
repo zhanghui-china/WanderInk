@@ -28,15 +28,10 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 
 ## Demo
 
-> **Demo 视频（待补充）**
->
-> - 在线播放：`（粘贴视频链接，如 GitHub Release / Bilibili / YouTube）`
-> - 或把文件放到本仓库后引用，例如：`docs/demo/wanderink-demo.mp4`
+> [Demo 视频](https://www.bilibili.com/video/BV1TpKh6nEyS)
 >
 > ```html
-> <!-- 可选：HTML 嵌入占位
 > <video src="docs/demo/wanderink-demo.mp4" controls width="720"></video>
-> -->
 > ```
 
 ## 一句话 Pitch
@@ -624,7 +619,6 @@ WanderInk/
 │   ├── workflows/        # 图像 / TTS / 音乐 JSON 工作流模板
 │   ├── test/             # CLI 测试脚本
 │   ├── comfyui_api_service.py
-│   └── comfyui_edit_service.py
 ├── docs/                 # 项目文档
 │   ├── product/          # 产品方案
 │   ├── guides/           # DGX / Ollama / ComfyUI 运维手册
@@ -680,9 +674,9 @@ WanderInk/
 
 ## 📆更新说明及团队动态
 
-[2026.7.21] **张小白**编写 WanderInk体验手册，参见：https://zhuanlan.zhihu.com/p/2062795404199073593
+[2026.7.21] **张小白**编写 WanderInk体验手册，参见：https://zhuanlan.zhihu.com/p/2062795404199073593 。张小白编制DEMO讲解视频，参见：https://www.bilibili.com/video/BV1TpKh6nEyS
 
-[2026.7.20] **Nancy**完成项目演示材料编制。
+[2026.7.20] **Nancy**编制项目演示PPT。
 
 \[2026.7.19] **张小白**、**般度五子**完善部署文档、项目介绍文档等。
 
