@@ -653,6 +653,8 @@ WanderInk/
 
 ## 📆 Updates & Team Activities
 
+[2026.7.21] **Zhang Xiaobai** (张小白) wrote WanderInk Experience Manual. See: https://zhuanlan.zhihu.com/p/2062795404199073593
+
 [2026.7.20] **Nancy** completed project demonstration materials preparation.
 
 \[2026.7.19] **Zhang Xiaobai** (张小白) and **Bandukids** (般度五子) improved deployment documentation and project introduction documents.
@@ -716,6 +718,10 @@ Thanks to Zanqi Technology for providing competition support
 Thanks to StepFun for providing model and online computing power support
 
 ![stepfun-logo](stepfun-logo.png)
+
+Thanks to [@Shanyin](https://github.com/Shanyin-ai) for providing professional open-source skill support
+
+![shanyin-logo](shanyin-logo.png)
 
 ## License
 
