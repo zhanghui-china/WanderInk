@@ -654,7 +654,7 @@ WanderInk/
 
 ## 📆更新说明及团队动态
 
-[2026.7.21] 张小白编写 WanderInk体验手册，参见：https://zhuanlan.zhihu.com/p/2062795404199073593
+[2026.7.21] **张小白**编写 WanderInk体验手册，参见：https://zhuanlan.zhihu.com/p/2062795404199073593
 
 [2026.7.20] **Nancy**完成项目演示材料编制。
 
