@@ -620,37 +620,63 @@ docker logs [containerid]
 
 ```
 WanderInk/
-├── docs/
+├── comfyui-bridge/       # ComfyUI HTTP 桥接服务
+│   ├── workflows/        # 图像 / TTS / 音乐 JSON 工作流模板
+│   ├── test/             # CLI 测试脚本
+│   ├── comfyui_api_service.py
+│   └── comfyui_edit_service.py
+├── docs/                 # 项目文档
 │   ├── product/          # 产品方案
 │   ├── guides/           # DGX / Ollama / ComfyUI 运维手册
-│   └── demo/             # （可选）放置 Demo 视频文件
-├── web/                  # 主应用（FastAPI + React）
-│   ├── src/shanhai/      # 后端流水线 S0–S6
-│   ├── web/              # 前端
-│   ├── assets/           # 字体、BGM 等
-│   └── docs/             # PRD、部署与决策记录
-└── comfyui-bridge/       # ComfyUI HTTP 桥接
-│   ├── workflows/        # 图像 / TTS / 音乐 JSON 模板
-│   └── test/             # CLI 测试脚本
-└── models                # 模型
-│   └── comfyui_models/   # ComfyUI使用的模型
-│   └── ├── diffusion_models/   # 图像编辑模型所在目录
-│   └── ├── checkpoints/  # 音乐生成模型所在目录
-│   └── ├── qwen-tts/     # 语音合成模型所在目录
-│   └── ├── loras/        # 图像编辑Qwen Image Edit 2511的Lora模型所在目录
+│   ├── demo/             # （可选）放置 Demo 视频文件
+│   ├── Web技术白皮书.md
+│   ├── Web端操作手册.md
+│   └── 项目说明文档.md
+├── samples/              # 生成作品示例
+│   ├── mp4/              # 有声连环画视频
+│   ├── pdf/              # PDF 漫画书
+│   ├── png/              # 漫画页图片
+│   └── opr/              # 操作手册截图
+└── web/                  # 主应用（FastAPI + React）
+    ├── src/shanhai/      # 后端流水线 S0–S6
+    │   ├── providers/    # Provider层（LLM/图像/TTS/音乐）
+    │   ├── steps/        # 各阶段实现（S0-S6）
+    │   ├── api.py        # FastAPI 接口定义
+    │   ├── cli.py        # 命令行工具
+    │   ├── config.py     # 配置管理
+    │   ├── store.py      # 数据持久化
+    │   └── schema.py     # 数据模型定义
+    ├── web/              # 前端（React + Vite + Tailwind）
+    │   ├── src/
+    │   │   ├── components/  # React 组件
+    │   │   ├── data/        # 静态数据
+    │   │   └── api.ts       # API 客户端
+    │   └── vite.config.ts
+    ├── assets/           # 字体、BGM 等静态资源
+    ├── docs/             # PRD、决策记录、规格文档
+    │   ├── decisions/    # 决策记录（0001-0006）
+    │   └── superpowers/  # 计划与规格文档
+    ├── tests/            # 单元测试（300+ 用例）
+    ├── scripts/          # 辅助脚本
+    ├── spike/            # 实验代码
+    └── .env.example      # 环境变量模板
 
 ```
 
 ## 文档索引
 
-| 位置                                                   | 内容                        |
-| ---------------------------------------------------- | ------------------------- |
-| [docs/product/](docs/product/)                       | 产品方案（优化版）                 |
-| [docs/guides/](docs/guides/)                         | ComfyUI / Ollama / DGX 运维 |
-| [web/docs/](web/docs/)                               | PRD、决策记录                  |
-| [web/docs/deploy-dgx.md](web/docs/deploy-dgx.md)     | DGX 部署说明                  |
-| [web/.env.example](web/.env.example)                 | 环境变量模板                    |
-| [comfyui-bridge/README.md](comfyui-bridge/README.md) | 桥接服务说明                    |
+| 位置                                                                 | 内容                          |
+| -------------------------------------------------------------------- | ----------------------------- |
+| [docs/项目说明文档.md](docs/项目说明文档.md)                         | 项目说明文档（中文）           |
+| [docs/项目说明文档_en.md](docs/项目说明文档_en.md)                   | 项目说明文档（英文）           |
+| [docs/product/](docs/product/)                                       | 产品方案（优化版）             |
+| [docs/guides/](docs/guides/)                                         | ComfyUI / Ollama / DGX 运维手册 |
+| [docs/Web技术白皮书.md](docs/Web技术白皮书.md)                       | Web技术白皮书                 |
+| [docs/Web端操作手册.md](docs/Web端操作手册.md)                       | Web端操作手册                 |
+| [web/docs/](web/docs/)                                               | PRD、决策记录                  |
+| [web/docs/deploy-dgx.md](web/docs/deploy-dgx.md)                     | DGX 部署说明                  |
+| [web/.env.example](web/.env.example)                                 | 环境变量模板                  |
+| [comfyui-bridge/README.md](comfyui-bridge/README.md)                 | 桥接服务说明                  |
 
 ## 📆更新说明及团队动态
 
@@ -705,6 +731,8 @@ WanderInk/
 | [轻踏](https://github.com/DoubleCore)      | 队员、Skill 开发、Hermes 对接、编剧/导演 skill 迭代 |
 | [般度五子](https://github.com/Bandukids)     | 队员、ComfyUI 服务部署与开发、图像/音频管线           |
 | [馄饨](https://github.com/nativeas)        | 队员、Web 前后台开发、前端交互与多用户设计              |
+
+![合影](wanderink-group.jpg)
 
 ## 💖特别鸣谢
 

@@ -24,7 +24,7 @@ This repository contains ComfyUI-based image generation pipelines and API servic
 - **NVIDIA Full-Stack Implementation:** DGX Spark unified memory + Stepfun series (LLM/TTS) + ACE-STEP music generation + ComfyUI image pipeline, demonstrating a complete creative AI lifecycle.
 - **Skill Modular Design:** Some functional modules are abstracted as independent Skills (screenplay: screenwriter skill, storyboard: director skill, etc.), supporting flexible expansion for new scenarios.
 
-> Detailed product documentation can be found at [docs/product/](docs/product/景区有声连环画%20Agent%20—%20产品方案（优化版）.md)
+> Detailed product documentation can be found at [docs/product/](docs/product/)
 
 ## Demo
 
@@ -614,42 +614,69 @@ docker logs [containerid]
 
 ## ✨ Project Report
 
-[Project Report](https://github.com/zhanghui-china/WanderInk/blob/main/docs/%E9%A1%B9%E7%9B%AE%E8%AF%B4%E6%98%8E%E6%96%87%E6%A1%A3.md)
+[Project Report](https://github.com/zhanghui-china/WanderInk/blob/main/docs/%E9%A1%B9%E7%9B%AE%E8%AF%B4%E6%98%8E%E6%96%87%E6%A1%A3.md) | [English Version](https://github.com/zhanghui-china/WanderInk/blob/main/docs/%E9%A1%B9%E7%9B%AE%E8%AF%B4%E6%98%8E%E6%96%87%E6%A1%A3_en.md)
 
 ## 📋 Project Code Structure
 
 ```
 WanderInk/
-├── docs/
+├── comfyui-bridge/       # ComfyUI HTTP bridge service
+│   ├── workflows/        # Image / TTS / Music JSON workflow templates
+│   ├── test/             # CLI test scripts
+│   ├── comfyui_api_service.py
+│   └── comfyui_edit_service.py
+├── docs/                 # Project documentation
 │   ├── product/          # Product documentation
 │   ├── guides/           # DGX / Ollama / ComfyUI operation guides
-│   └── demo/             # (Optional) Place demo video files
-├── web/                  # Main application (FastAPI + React)
-│   ├── src/shanhai/      # Backend pipeline S0–S6
-│   ├── web/              # Frontend
-│   ├── assets/           # Fonts, BGM, etc.
-│   └── docs/             # PRD, deployment, and decision records
-└── comfyui-bridge/       # ComfyUI HTTP bridge
-│   ├── workflows/        # Image / TTS / Music JSON templates
-│   └── test/             # CLI test scripts
-└── models                # Models
-│   └── comfyui_models/   # Models used by ComfyUI
-│   └── ├── diffusion_models/   # Directory for image editing models
-│   └── ├── checkpoints/  # Directory for music generation models
-│   └── ├── qwen-tts/     # Directory for speech synthesis models
-│   └── ├── loras/        # Directory for Qwen Image Edit 2511 LoRA models
+│   ├── demo/             # (Optional) Place demo video files
+│   ├── Web技术白皮书.md   # Web Technical White Paper
+│   ├── Web端操作手册.md   # Web User Manual
+│   └── 项目说明文档.md    # Project Description Document
+├── samples/              # Generated work samples
+│   ├── mp4/              # Audio comic videos
+│   ├── pdf/              # PDF comic books
+│   ├── png/              # Comic page images
+│   └── opr/              # Operation manual screenshots
+└── web/                  # Main application (FastAPI + React)
+    ├── src/shanhai/      # Backend pipeline S0–S6
+    │   ├── providers/    # Provider layer (LLM/Image/TTS/Music)
+    │   ├── steps/        # Stage implementations (S0-S6)
+    │   ├── api.py        # FastAPI interface definitions
+    │   ├── cli.py        # Command-line tools
+    │   ├── config.py     # Configuration management
+    │   ├── store.py      # Data persistence
+    │   └── schema.py     # Data model definitions
+    ├── web/              # Frontend (React + Vite + Tailwind)
+    │   ├── src/
+    │   │   ├── components/  # React components
+    │   │   ├── data/        # Static data
+    │   │   └── api.ts       # API client
+    │   └── vite.config.ts
+    ├── assets/           # Static assets (fonts, BGM, etc.)
+    ├── docs/             # PRD, decision records, specifications
+    │   ├── decisions/    # Decision records (0001-0006)
+    │   └── superpowers/  # Plans and specifications
+    ├── tests/            # Unit tests (300+ cases)
+    ├── scripts/          # Helper scripts
+    ├── spike/            # Experimental code
+    └── .env.example      # Environment variable template
+
 ```
 
 ## Document Index
 
-| Location                                               | Content                        |
-| ------------------------------------------------------ | ------------------------------ |
-| [docs/product/](docs/product/)                         | Product documentation (optimized version) |
-| [docs/guides/](docs/guides/)                           | ComfyUI / Ollama / DGX operations |
-| [web/docs/](web/docs/)                                 | PRD, decision records          |
-| [web/docs/deploy-dgx.md](web/docs/deploy-dgx.md)       | DGX deployment instructions    |
-| [web/.env.example](web/.env.example)                   | Environment variable template  |
-| [comfyui-bridge/README.md](comfyui-bridge/README.md)   | Bridge service documentation   |
+| Location                                                                 | Content                          |
+| ------------------------------------------------------------------------ | ------------------------------   |
+| [docs/项目说明文档.md](docs/项目说明文档.md)                             | Project Description Document (Chinese) |
+| [docs/项目说明文档_en.md](docs/项目说明文档_en.md)                       | Project Description Document (English) |
+| [docs/product/](docs/product/)                                           | Product documentation (optimized version) |
+| [docs/guides/](docs/guides/)                                             | ComfyUI / Ollama / DGX operation guides |
+| [docs/Web技术白皮书.md](docs/Web技术白皮书.md)                           | Web Technical White Paper       |
+| [docs/Web端操作手册.md](docs/Web端操作手册.md)                           | Web User Manual                 |
+| [web/docs/](web/docs/)                                                   | PRD, decision records            |
+| [web/docs/deploy-dgx.md](web/docs/deploy-dgx.md)                         | DGX deployment instructions      |
+| [web/.env.example](web/.env.example)                                     | Environment variable template    |
+| [comfyui-bridge/README.md](comfyui-bridge/README.md)                     | Bridge service documentation     |
 
 ## 📆 Updates & Team Activities
 
@@ -704,6 +731,8 @@ WanderInk/
 | [Qingta](https://github.com/DoubleCore)          | Team member, Skill development, Hermes integration, screenwriter/director skill iteration |
 | [Bandukids](https://github.com/Bandukids)        | Team member, ComfyUI service deployment & development, image/audio pipeline |
 | [Huntun](https://github.com/nativeas)            | Team member, Web frontend & backend development, frontend interaction & multi-user design |
+
+![Group Photo](wanderink-group.jpg)
 
 ## 💖 Special Thanks
 

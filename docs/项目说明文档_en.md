@@ -6,13 +6,98 @@
 
 ## I. Project Overview
 
-**WanderInk (Chinese name "漫游墨绘" / Mànyóu Mòhuì)** is an end-to-end multimodal creative system for scenic spot cultural IP development. Users only need to input a scenic spot name, and the system automatically completes legend retrieval, script adaptation, storyboard design, character setting, comic page generation, voice dubbing & music composition, and video synthesis, ultimately outputting a **1080P audio comic short video** that is playable and shareable.
+### 1.1 Project Naming
 
-Core slogan:
+**WanderInk (Chinese name: "漫游墨绘" / Mànyóu Mòhuì)** is an end-to-end multimodal AI creative system for scenic spot cultural IP development and digital content production.
+
+The English name **WanderInk** consists of *Wander* and *Ink*. *Wander* implies exploration, roaming, and cultural tracing, representing users traversing history and geography with AI assistance to explore the cultural stories behind scenic spots. *Ink* symbolizes brush and ink, painting, and traditional artistic expression, reflecting how the system transforms cultural content into visual artworks through AI technology.
+
+The Chinese name "漫游墨绘" integrates the journey of exploration with traditional ink artistic conception, embodying both the immersive cultural experience of scenic spots and the new form of AI-enabled traditional cultural creation.
+
+### 1.2 Project Objectives
+
+WanderInk aims to build an **AI-native multimodal content production platform** for cultural tourism scenarios.
+
+Users only need to input a scenic spot name, and the system automatically completes:
+
+- Scenic spot cultural data retrieval and knowledge understanding;
+- Intelligent adaptation of folk tales and historical stories;
+- Script writing and plot planning;
+- Professional storyboard design;
+- Character image design and visual style generation;
+- Comic page drawing;
+- AI voice dubbing and original music generation;
+- Video editing and multimedia synthesis.
+
+Ultimately outputting an **audio comic short video** with **1080P HD quality, complete narrative, voice dubbing, and background music**.
+
+**Core slogan**:
 
 > **Scenic spot name in, audio comic out.**
 
-This project comprehensively upgrades the product philosophy from the 1st Spark Hackathon project [SparkScroll](https://github.com/zhanghui-china/SparkScroll): from "pure comics" to "multimedia storytelling with sound and visuals", from "direct script generation by large models" to "professionalized creation with film industry screenwriter/director skills", from "fully automated black box" to "step-by-step intervenable, re-runnable, reviewable creative workbench", and from "backend gateway focused" to "complete web application supporting multi-user collaboration with friendly interface". In addition to the team leader, this year's team has introduced more professionals with experience in film, AI engineering, and full-stack frontend/backend development.
+### 1.3 Project Background
+
+WanderInk originates from the technical accumulation and product philosophy of the 1st Spark Hackathon project **[SparkScroll](https://github.com/zhanghui-china/SparkScroll)**, and has comprehensively upgraded from "AI comic generation tool" to "cultural IP multimodal intelligent creation platform" in this project.
+
+Compared with the previous SparkScroll project, this project has achieved technical evolution in four main aspects:
+
+**(1) From single visual generation to multimodal content production**
+
+The first-generation SparkScroll mainly focused on comic generation, while WanderInk further integrates:
+
+- Large language models;
+- Image generation models;
+- Speech synthesis models;
+- Music generation models;
+- Video processing capabilities;
+
+Achieving end-to-end generation from story text to complete audiovisual works.
+
+**(2) From generic large model generation to professional creative Agent**
+
+Traditional large models, although capable of text generation, still suffer from insufficient plot structure, lack of cinematographic language, and weak character consistency in film content production.
+
+This project introduces film industry creative processes, encapsulating:
+
+- Screenwriting capability;
+- Directing capability;
+- Art design capability;
+- Audio/video production capability;
+
+Into multiple professional AI Agents/Skills, completing content production through multi-Agent collaboration, making the generated results more in line with film and comic creation norms.
+
+**(3) From fully automated black-box generation to controllable creative workflow**
+
+Addressing the "uncontrollable, difficult to modify" problem in AI content generation, WanderInk builds an intervenable creative workbench:
+
+Users can perform manual review, adjustment, and regeneration for:
+
+- Plot structure;
+- Character settings;
+- Storyboard content;
+- Image effects;
+- Voice dubbing and background music;
+
+Achieving a collaborative mode of "AI automatic creation + human creative control".
+
+**(4) From single-machine prototype to multi-user Web application platform**
+
+This project further improves system engineering capabilities, supporting:
+
+- Multi-user access;
+- Project management;
+- Creative task scheduling;
+- Generation process management;
+- Web-based interactive experience.
+
+The team structure has also expanded from the previous focus on AI technology exploration to integrate:
+
+- AI engineering;
+- Frontend/backend development;
+- Film and television creation;
+- Product design;
+
+Into a compound team with multi-domain capabilities.
 
 ---
 
@@ -58,10 +143,10 @@ Unlike completely automatic "one-click to end", WanderInk supports step-by-step 
 
 ### 2.5 Professional Skill-Driven
 
-The project introduces **Hermes Agent** (configured with `Step-3.7-Flash` model underneath) to host two professional skills: "Screenwriter Master" and "Director Master", covering all text generation in S1–S3:
+The project introduces **Hermes Agent** (configured with `Step-3.7-Flash` model underneath) to host two professional skills: "Shanyin Super Screenwriter Master" and "Shanyin Super Director Master", covering all text generation in S1–S3:
 
-- **Screenwriter Master Skill**: Responsible for S1 script adaptation, outputting scripts that better conform to film narrative structures (cold opening, exposition-development-climax-resolution, ≤3 main characters);
-- **Director Master Skill**: Responsible for S2 storyboard splitting and S3 character feature extraction, outputting storyboard tables with cinematographic language (wide shot/medium shot/close-up, lighting, atmosphere) and emotion tags.
+- **Shanyin Super Screenwriter Master Skill**: Responsible for S1 script adaptation, outputting scripts that better conform to film narrative structures (cold opening, exposition-development-climax-resolution, ≤3 main characters);
+- **Shanyin Super Director Master Skill**: Responsible for S2 storyboard splitting and S3 character feature extraction, outputting storyboard tables with cinematographic language (wide shot/medium shot/close-up, lighting, atmosphere) and emotion tags.
 
 The integration of Hermes injects film industry knowledge into the pipeline, upgrading generated content from "generic LLM text output" to "structured output constrained by professional creative methodologies". WanderInk simply calls the service via OpenAI-compatible protocol with `hermes-agent` as the model name, and the combination of underlying model and skill prompts is managed internally by Hermes.
 
@@ -71,6 +156,37 @@ The integration of Hermes injects film industry knowledge into the pipeline, upg
 
 ### 3.1 Overall Architecture
 
+WanderInk adopts a **"Supervisor + Sequential Pipeline + Pluggable Provider"** three-layer architecture:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        User Layer (Web)                     │
+│  React 18 + Vite 5 + Tailwind CSS + TypeScript              │
+│  Login Authentication / Project Management / Real-time      │
+│  Progress / Visual Editing                                  │
+├─────────────────────────────────────────────────────────────┤
+│                       Orchestration Layer (API)             │
+│  FastAPI + Pydantic + ThreadPoolExecutor                    │
+│  S0–S6 Seven-Step Pipeline / Background Thread Execution    │
+│  / Breakpoint Resume / Cooperative Cancellation             │
+├─────────────────────────────────────────────────────────────┤
+│                       Data Layer (Project)                  │
+│  Aggregate Root Pattern / project.json Single Source of     │
+│  Truth / Atomic Write Persistence                           │
+├─────────────────────────────────────────────────────────────┤
+│                       Provider Layer                        │
+│  LLM / Image / TTS / Music Four Providers                   │
+│  OpenAI-Compatible Protocol / Local Backend Global          │
+│  Single-Concurrency Lock                                    │
+├─────────────────────────────────────────────────────────────┤
+│                       Model Service Layer                   │
+│  Hermes Agent / ComfyUI / Qwen-TTS / ACE-STEP               │
+│  Local vLLM / Ollama / Cloud StepFun Models                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 3.2 Core Design Principles
+
 The project adopts a **"Supervisor + Sequential Pipeline + Pluggable Provider"** architecture:
 
 - **Single `Project` Aggregate Root**: All intermediate states (candidate legends, scripts, storyboards, character cards, page outputs, final outputs) are attached to the same Pydantic `Project` object, serialized to `projects/<id>/project.json`, serving as the single source of truth;
@@ -78,7 +194,7 @@ The project adopts a **"Supervisor + Sequential Pipeline + Pluggable Provider"**
 - **CLI / HTTP Dual Entry**: `shanhai` (Typer CLI) and `shanhai-web` (FastAPI) reuse the same `steps/*` and provider layer; the HTTP endpoint places pipelines in background threads, with frontend polling for progress;
 - **FFmpeg Functional Synthesis**: `ffmpeg.py` constructs pure commands; S6 concatenates "opening card → page-by-page → closing card → xfade transition → loudness normalization + BGM".
 
-#### Overall Architecture Diagram
+### 3.3 Overall Architecture Diagram
 
 ![WanderInk Overall Architecture](architecture-hd.png)
 
@@ -95,10 +211,36 @@ The project adopts a **"Supervisor + Sequential Pipeline + Pluggable Provider"**
 > - Light orange = Output layer (FFmpeg synthesizer → MP4 final product)
 > - Light cyan = Deployment environment (DGX Spark local + cloud services)
 > - `Project` aggregate root is the single source of truth; all steps read/write the same `project.json`, supporting breakpoint resume.
-> - S0–S3 text stages all go through Hermes screenwriter/director skills (underlying glm5.2); images go through tu-zi cloud gpt-image-2.
+> - S0–S3 text stages all go through Hermes screenwriter/director skills (underlying `Step-3.7-Flash`); images go through tu-zi cloud gpt-image-2.
 > - Strictly drawn according to confirmed facts, no unverified data or specific numbers introduced.
 
-#### Model and Endpoint Configuration for Each Pipeline Stage
+### 3.4 Backend Tech Stack Selection
+
+| Component | Version | Purpose |
+|---|---|---|
+| Python | ≥3.12 | Language foundation |
+| FastAPI | ≥0.111 | HTTP API framework |
+| Pydantic | ≥2.7 | Data validation and serialization |
+| Pydantic Settings | ≥2.3 | Environment configuration management |
+| Typer | ≥0.12 | CLI command-line tool |
+| httpx | ≥0.27 | HTTP client (with retry support) |
+| Pillow | ≥10.3 | Image processing |
+| Uvicorn | ≥0.30 | ASGI server |
+| bcrypt | ≥4.0 | Password hashing |
+| itsdangerous | ≥2.0 | SessionMiddleware signed cookies |
+
+### 3.5 Frontend Tech Stack Selection
+
+| Component | Version | Purpose |
+|---|---|---|
+| React | ^18.3.1 | UI framework |
+| React DOM | ^18.3.1 | DOM rendering |
+| TypeScript | ^5.5.3 | Type system |
+| Vite | ^5.3.4 | Build tool |
+| Tailwind CSS | ^3.4.6 | CSS framework |
+| Bun | latest | Package manager |
+
+### 3.6 Pipeline Stage Models and Endpoint Configuration
 
 The table below corresponds one-to-one with the architecture diagram and current `config.json` values, reflecting the "effective model / endpoint" actually called in each stage S0–S5:
 
@@ -109,7 +251,7 @@ The table below corresponds one-to-one with the architecture diagram and current
 | S2 Storyboard | LLM | `hermes-agent` (Director Master skill, underlying `Step-3.7-Flash`) | `127.0.0.1:8642` |
 | S3 Character Three-views | LLM + Image | LLM: `Sehyo-Qwen3.5-35B-A3B-NVFP4`, `glm-4.7-flash` (local) / `Step-3.7-Flash` (cloud)<br />Image: `gpt-image-2` (cloud) / `Qwen-Image-Edit-2511` (local) | `127.0.0.1:8091` |
 | S4 Comic Pages | Image | `gpt-image-2` (cloud) / `Qwen-Image-Edit-2511` (local) | `127.0.0.1:8091` |
-| S5 Dubbing/BGM | TTS + Music | `Qwen3-TTS` (local) + `ace-step-v1.5xl` (local) | `127.0.0.1:8090/8092` |
+| S5 Dubbing/BGM | TTS + Music | `Qwen3-TTS` (local) + `ACE-STEP-v1.5xl` (local) | `127.0.0.1:8090/8092` |
 
 > **Notes**:
 >
@@ -117,7 +259,9 @@ The table below corresponds one-to-one with the architecture diagram and current
 > - S3 three-views and S4 page-by-page images go through cloud `gpt-image-2` or local `Qwen-Image-Edit-2511`; three-views passed M0 checkpoint with 100% zero identity drift.
 > - S5 dubbing and BGM are all provided locally by DGX (`shanhai-tts` :8090 running `Qwen3-TTS`, `shanhai-music` :8092 running `ACE-STEP 1.5 XL`), protected by `local_backend_guard` global single-concurrency lock.
 
-### 3.2 Multi-Agent Role Design
+### 3.7 Multi-Agent Design and Pipeline Execution Mechanism
+
+#### 3.7.1 Multi-Agent Role Design
 
 | Agent | Responsibility | Underlying Capability |
 |---|---|---|
@@ -130,16 +274,534 @@ The table below corresponds one-to-one with the architecture diagram and current
 | MusicAgent | Emotion tags → Background music (S5) | Music generation |
 | ComposerAgent | Visuals + Voice + Music → MP4 (S6) | FFmpeg + PIL layout |
 
-### 3.3 Key Technical Details
+#### 3.7.2 Background Thread Execution
+
+`api.py` uses `ThreadPoolExecutor(max_workers=4)` to submit pipeline tasks to background threads:
+
+```python
+_EXECUTOR = ThreadPoolExecutor(max_workers=4)
+_JOBS: dict[str, Future] = {}
+
+def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
+    """Run from S0 to MP4 in background thread"""
+    p = store.load(project_id)
+    settings, clients = resolve_stage_clients(cfg)
+    # S0 Legend Retrieval
+    p = s0_legend.run(p, clients["s0"][0])
+    # S1–S6 Loop Execution
+    stages = [
+        ("s1", lambda: s1_script.run(...)),
+        ("s2", lambda: s2_storyboard.run(...)),
+        ("s3", lambda: s3_characters.run(...)),
+        ("s4", lambda: s4_pages.run(...)),
+        ("s5", lambda: s5_audio.run(...)),
+        ("s6", lambda: s6_compose.run(...)),
+    ]
+    for name, fn in stages:
+        fn()
+        _locked_save(p)
+```
+
+#### 3.7.3 Progress Polling
+
+The frontend polls `GET /api/projects/{id}` every 3 seconds to get the latest status, with progress read directly from `project.status` (persisted at each step via `store.save`).
+
+#### 3.7.4 Cooperative Cancellation
+
+Cancellation uses cooperative marking, not interrupting inside the current stage, but taking effect at the next stage transition point:
+
+```python
+_CANCELLED: set[str] = set()
+
+def _check_cancelled(project_id: str) -> bool:
+    """Consume cancellation flag (remove on hit, no repeat trigger)"""
+    with _JOBS_LOCK:
+        if project_id in _CANCELLED:
+            _CANCELLED.discard(project_id)
+            return True
+        return False
+```
+
+### 3.8 Provider Layer Design
+
+#### 3.8.1 OpenAI-Compatible Protocol
+
+All four Providers (LLM / Image / TTS / Music) follow OpenAI-compatible protocols:
+
+```python
+def _clients(s: Settings) -> tuple[LLMClient, ImageClient, TTSClient, MusicClient]:
+    llm_base, llm_key = s.llm_endpoint
+    img_base, img_key = s.image_endpoint
+    tts_base, tts_key = s.tts_endpoint
+    music_base, music_key = s.music_endpoint
+    return (
+        LLMClient(llm_base, llm_key, s.llm_model, timeout=s.llm_timeout),
+        ImageClient(img_base, img_key, s.image_model, s.image_api_mode, ...),
+        TTSClient(tts_base, tts_key, s.tts_model),
+        MusicClient(music_base, music_key, s.music_model),
+    )
+```
+
+#### 3.8.2 Local Backend Global Single-Concurrency Lock
+
+`providers/_http.py`'s `local_backend_guard` implements global single-concurrency protection for local GPU resources:
+
+```python
+_local_lock = threading.Lock()
+
+@contextmanager
+def local_backend_guard(base_url: str):
+    """Local Spark backend global single concurrency: GPU physically shared, queued across stages/users"""
+    if is_local_endpoint(base_url):
+        with _local_lock:
+            yield
+    else:
+        yield
+```
+
+**Design Intent**: Ollama/ComfyUI/Qwen-TTS/ACE-Step on DGX Spark share a single GPU. Concurrent requests compete for VRAM, causing inference slowdowns or even timeouts (measured LLM calls dragged from tens of seconds to nearly 900s when concurrent requests hit the same card).
+
+#### 3.8.3 Retry Strategy
+
+`request_with_retry` implements unified retry logic:
+
+| Retriable Error | Handling |
+|---|---|
+| `httpx.TransportError` | Connection phase errors (ConnectError/ConnectTimeout/PoolTimeout) always retry; read phase errors only retry for idempotent requests |
+| Transient status codes (429/500/502/503/504) | Always retry |
+| Other errors | No retry, re-raise as-is |
+
+```python
+def request_with_retry(do_request, retries, *, idempotent=True, base_url=None):
+    for attempt in range(retries + 1):
+        try:
+            with local_backend_guard(base_url) if base_url else nullcontext():
+                r = do_request()
+        except httpx.TransportError as e:
+            connect_phase = isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+            if attempt == retries or not (idempotent or connect_phase):
+                raise
+            time.sleep(2 * (attempt + 1))
+            continue
+        if r.status_code in TRANSIENT_STATUS and attempt < retries:
+            time.sleep(2 * (attempt + 1))
+            continue
+        return r
+```
+
+---
+
+### 3.9 Concurrency Model
+
+#### 3.9.1 Two-Level Lock Design
+
+The system adopts a **two-level lock** mechanism with one-way hierarchy and non-overlapping critical sections to avoid deadlocks:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  _JOBS_LOCK (Global)                                       │
+│  ├── Protects _JOBS cleanup, backpressure check, submit    │
+│  └── Protects _CANCELLED read/write                        │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  _PROJECT_LOCKS[project_id] (Per-project)                  │
+│  ├── Protects single-project "load→modify→save" cycle      │
+│  └── Prevents writers from losing updates                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Lock Order Rule**: Always `project→jobs`, i.e., acquire project lock first, then jobs lock, never reverse.
+
+#### 3.9.2 Backpressure Mechanism
+
+The system sets `MAX_PENDING=8` as the upper limit for unfinished jobs; exceeding it rejects new creation:
+
+```python
+MAX_PENDING = 8  # Unfinished job limit
+
+@app.post("/api/projects")
+def create_project(body: NewProject, user: str = Depends(current_user)):
+    with _JOBS_LOCK:
+        # Clean completed jobs
+        for done in [k for k, f in list(_JOBS.items()) if f.done()]:
+            del _JOBS[done]
+        # Backpressure check
+        if len(_JOBS) >= MAX_PENDING:
+            raise HTTPException(429, f"Generation queue full (limit {MAX_PENDING}), please try again later")
+        # Create project and submit background task
+        _JOBS[p.project_id] = _EXECUTOR.submit(_pipeline, p.project_id, cfg, body.story)
+```
+
+#### 3.9.3 Single-Step Re-run
+
+Supports partial regeneration after editing without re-running the entire pipeline:
+
+```python
+_STEP_NAMES = ("s2", "s3", "s4", "s5", "s6")
+
+def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
+    """Run single step in background thread"""
+    if name == "s2":
+        p = s2_storyboard.run(p, llm, use_skill=...)
+    elif name == "s3":
+        p = s3_characters.run(p, llm, image, workdir, ...)
+    # ...
+    if name != "s6":
+        p.output.clear()  # Invalidate already-composed output
+        # Cascade clear downstream stage status
+        idx = _STEP_NAMES.index(name)
+        for step in _STEP_NAMES[idx + 1:]:
+            for key in (step, f"{step}_started_at", f"{step}_elapsed_s"):
+                p.status.pop(key, None)
+```
+
+---
+
+### 3.10 Data Persistence
+
+#### 3.10.1 Atomic Write Mechanism
+
+`store.py`'s `atomic_write_text` guarantees write atomicity:
+
+```python
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write to unique temp file first, then os.replace to publish"""
+    tmp = path.parent / f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+```
+
+**Design Intent**: When multiple threads concurrently write to the same path, each writes to its own temp file. Readers always see either the complete old file or new file, avoiding torn writes.
+
+#### 3.10.2 Aggregate Root Pattern
+
+`Project` as the single aggregate root contains all intermediate states:
+
+```python
+class Project(BaseModel):
+    project_id: str
+    scenic_spot: str
+    owner: str = ""
+    created_at: str = ""
+    params: GenerationParams
+    status: dict[str, str]
+    legend_candidates: list[Legend]
+    legend: Legend | None
+    script: Script | None
+    style_preset: str
+    storyboard: list[StoryboardCell]
+    bgm: str = ""
+    output: dict[str, str]
+```
+
+#### 3.10.3 Breakpoint Resume
+
+Breakpoint resume mechanism based on `project.json`:
+
+1. After each step completes, call `store.save(p)` to persist
+2. After restart, `reconcile_zombie_jobs` rewrites `running/queued` status to `error`
+3. Frontend detects `error` status and can choose to re-run or resume from breakpoint
+
+---
+
+### 3.11 Runtime Configuration
+
+#### 3.11.1 Three-Layer Overlay Mechanism
+
+Configuration uses **three-layer overlay**, with later layers overriding earlier ones, and only "set (non-None)" fields override:
+
+```
+Settings()  (.env / process environment variables, mandatory baseline)
+   └─ Overlay config.json.global        (global default override)
+        └─ Overlay config.json.stages[stage]   (stage-specific override)
+```
+
+#### 3.11.2 Configuration Views and Redaction
+
+| Operation | Secret Field Handling |
+|---|---|
+| GET `/api/config` | Configured → `"••••••"`, Not configured → `None` |
+| PUT `/api/config` | `"__UNCHANGED__"` or `"••••••"` → Keep original, `""` → Clear (inherit) |
+| .env baseline view | Returns `bool` (whether configured) |
+
+#### 3.11.3 Stage Override Example
+
+```json
+{
+  "global": {
+    "base_url": "https://api.example.com",
+    "api_key": "••••••",
+    "llm_model": "Step-3.7-Flash"
+  },
+  "stages": {
+    "s1": {
+      "llm_model": "hermes-agent"
+    },
+    "s2": {
+      "llm_model": "hermes-agent"
+    },
+    "s3": {
+      "image_model": "Qwen-Image-Edit-2511",
+      "image_base_url": "http://127.0.0.1:8091"
+    }
+  }
+}
+```
+
+---
+
+### 3.12 Security Mechanisms
+
+#### 3.12.1 Authentication and Authorization
+
+- **Password Storage**: bcrypt hashed and stored in `users.json`
+- **Session Management**: Starlette `SessionMiddleware` signed cookies, no server-side session table
+- **Permission Control**: Regular users can only edit their own projects, admins can delete any project
+- **Read-Only Mode**: Enabled via `SHANHAI_READONLY` environment variable, disables all write operations
+
+#### 3.12.2 Path Traversal Protection
+
+```python
+_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+def project_dir(project_id: str, root: Path = DEFAULT_ROOT) -> Path:
+    """Single entry point for project_id storage path"""
+    if not _PROJECT_ID_RE.fullmatch(project_id):
+        raise ValueError(f"Invalid project_id: {project_id!r}")
+    return root / project_id
+```
+
+#### 3.12.3 Static File Access Control
+
+The `_ArtifactStatic` class prohibits downloading sensitive files:
+
+```python
+class _ArtifactStatic(StaticFiles):
+    async def get_response(self, path: str, scope):
+        protected = {"project.json", runtime_config._config_path().name.lower()}
+        if Path(path).name.lower() in protected:
+            raise HTTPException(404)
+        return await super().get_response(path, scope)
+```
+
+#### 3.12.4 Request Body Validation
+
+- Enum parameter validation (`minutes`/`audience`/`tone`/`style`)
+- String length limits (`caption` max_length=80, `story` max_length=20000)
+- Pydantic `validate_assignment` ensures attribute assignment also validates
+
+### 3.13 Frontend-Backend Communication
+
+#### 3.13.1 API Design Specifications
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/login` | POST | User login |
+| `/api/logout` | POST | User logout |
+| `/api/me` | GET | Get current user info |
+| `/api/projects` | POST | Create new project |
+| `/api/projects` | GET | Project list |
+| `/api/projects/{id}` | GET | Project details |
+| `/api/projects/{id}` | DELETE | Delete project (admin) |
+| `/api/projects/{id}/cancel` | POST | Cancel generation task |
+| `/api/projects/{id}/export` | POST | Export PDF/ZIP |
+| `/api/projects/{id}/cells/{index}` | PATCH | Update cell |
+| `/api/projects/{id}/cells/{index}/redraw` | POST | Redraw page |
+| `/api/projects/{id}/cells/{index}/revoice` | POST | Re-dub |
+| `/api/projects/{id}/steps/{name}` | POST | Single-step re-run |
+| `/api/config` | GET/PUT | Configuration management |
+| `/api/queue` | GET | Global queue |
+| `/api/meta` | GET | Enum options |
+
+#### 3.13.2 Error Handling
+
+Frontend `api.ts` unifies HTTP error handling:
+
+```typescript
+export class ApiError extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function j<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    const detail = body?.detail
+    const msg = typeof detail === 'string' && detail !== ''
+      ? detail
+      : detail != null ? JSON.stringify(detail) : `HTTP ${res.status}`
+    throw new ApiError(msg, res.status)
+  }
+  return res.json() as Promise<T>
+}
+```
+
+#### 3.13.3 Caching Strategy
+
+- **File Cache**: Static file URLs append `?v=<mtime>` for cache-busting
+- **Session Cookie**: Secure flag can be enabled via `SHANHAI_SESSION_HTTPS_ONLY=true` in production
+
+### 3.14 Frontend Component Architecture
+
+#### 3.14.1 Core Component Responsibilities
+
+| Component | Responsibility |
+|---|---|
+| `ProjectDetailView` | Project detail main view, including page list, edit operations, step re-run |
+| `ProgressSteps` | Pipeline progress visualization (S0–S6 step bar) |
+| `NewProjectForm` | New project form (scenic spot selection, parameter configuration) |
+| `SettingsPanel` | Runtime configuration panel (endpoint/model override) |
+| `QueuePanel` | Global generation queue display |
+| `ScenicSpotPicker` | 5A scenic spot quick selector |
+
+#### 3.14.2 State Management
+
+The frontend adopts **React built-in state + polling** pattern, without complex state management libraries:
+
+```typescript
+function ProjectDetailView({ project, meta, onChanged }) {
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [insertAfter, setInsertAfter] = useState<number | null>(null)
+  const [stepBusy, setStepBusy] = useState<string | null>(null)
+  
+  // Poll every 3 seconds
+  useEffect(() => {
+    const timer = setInterval(() => {
+      api.get(project.project_id).then(onChanged).catch(() => {})
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [project.project_id, onChanged])
+}
+```
+
+#### 3.14.3 Style Design
+
+Adopts **Tailwind CSS + custom theme** scheme:
+
+```css
+:root {
+  --color-ink: #2c2c2c;
+  --color-ink-soft: #6b6b6b;
+  --color-cinnabar: #c3423f;
+  --color-jade: #4a8c5a;
+  --color-rice: #f8f4e8;
+  --color-paper: #fffcf5;
+  --color-kraft: #e8e0d0;
+}
+```
+
+---
+
+### 3.15 Deployment Architecture
+
+#### 3.15.1 Service Composition
+
+| Service | Port | Purpose |
+|---|---|---|
+| `shanhai-web` | 8080 | FastAPI main service |
+| `shanhai-image` | 8091 | Qwen-Image-Edit image service (OpenAI-compatible) |
+| `shanhai-tts` | 8090 | Qwen-TTS speech service (OpenAI-compatible) |
+| `shanhai-music` | 8092 | ACE-STEP music service (OpenAI-compatible) |
+| Hermes Agent | 8642 | Screenwriter Master/Director Master skill service |
+| vLLM | 8000 | Local LLM inference service |
+| Ollama | 11434 | Local LLM |
+
+#### 3.15.2 Configuration Files
+
+```bash
+# .env example
+SHANHAI_BASE_URL=https://api.example.com
+SHANHAI_API_KEY=your-api-key
+SHANHAI_LLM_MODEL=Step-3.7-Flash
+SHANHAI_IMAGE_MODEL=gpt-image-2
+SHANHAI_TTS_MODEL=Qwen3-TTS
+SHANHAI_MUSIC_MODEL=ace-step-v1.5xl
+SHANHAI_HOST=0.0.0.0
+SHANHAI_PORT=8080
+SHANHAI_CORS_ORIGINS=https://your-domain.com
+SHANHAI_SESSION_SECRET=your-secret-key
+```
+
+---
+
+### 3.16 Performance Optimization
+
+#### 3.16.1 List Endpoint Optimization
+
+Project list endpoint bypasses full Pydantic validation, directly reading JSON and extracting needed fields:
+
+```python
+@app.get("/api/projects")
+def list_projects(user: str = Depends(current_user)) -> list[dict]:
+    loaded = []
+    for meta in store.DEFAULT_ROOT.glob("*/project.json"):
+        try:
+            d = json.loads(meta.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        item = {
+            "project_id": d.get("project_id") or meta.parent.name,
+            "scenic_spot": d.get("scenic_spot", ""),
+            "owner": d.get("owner", ""),
+            "pipeline": (d.get("status") or {}).get("pipeline", "pending"),
+            "mp4": _mp4_url((d.get("output") or {}).get("mp4", "")),
+        }
+        loaded.append(item)
+```
+
+#### 3.16.2 Client Reuse
+
+Stages with the same configuration within the same job reuse the same set of `httpx.Client`, avoiding 24 connection pool leaks per job:
+
+```python
+def _client_key(s: Settings) -> tuple:
+    """Client deduplication key within one resolve"""
+    return (s.llm_provider, s.llm_endpoint, s.llm_model, ...)
+
+def resolve_stage_clients(cfg: AppConfig | None = None) -> ...:
+    cache: dict[tuple, tuple[LLMClient, ImageClient, TTSClient, MusicClient]] = {}
+    clients = {}
+    for st in settings:
+        key = _client_key(settings[st])
+        if key not in cache:
+            cache[key] = _clients(settings[st])
+        clients[st] = cache[key]
+    return settings, clients
+```
+
+#### 3.16.3 Async I/O
+
+All external calls (LLM/Image/TTS/Music) use httpx async client to avoid blocking the thread pool.
+
+---
+
+### 3.17 Technical Summary
+
+WanderInk is a **professional, intervenable, and deployable** multimodal creative system whose technical architecture embodies the following core values:
+
+1. **Clear Architecture**: Three-layer architecture (orchestration/data/Provider) with well-defined responsibilities, easy to maintain and extend
+2. **High Availability Design**: Atomic write, breakpoint resume, retry strategy, and cooperative cancellation ensure system stability
+3. **Concurrency Safety**: Two-level lock mechanism, local backend global single-concurrency lock, and backpressure control guarantee safe multi-user collaboration
+4. **Flexible Configuration**: Three-layer overlay configuration mechanism supports global defaults and stage-specific overrides, allowing model switching without restart
+5. **Security Compliance**: Authentication/authorization, path traversal protection, sensitive file access control, AI compliance watermarking
+6. **Comprehensive Testing**: 300+ unit tests covering core paths ensure code quality
+
+The system fully leverages NVIDIA DGX Spark's unified memory advantages, integrating StepFun large models, Hermes professional skills, ComfyUI image pipelines, and FFmpeg synthesis capabilities, realizing a complete practice of "AI creative industrialization".
+
+### 3.18 Key Technical Details
 
 - **Subtitle and Visual Layering**: `compose_page()` only outputs 1920×1080 full-frame base image; `overlay_layer()` separately generates transparent PNG for subtitles and "AI Generated" watermark; ffmpeg overlay is applied after Ken Burns scaling to avoid text shaking with camera movement or watermark being cropped out of frame.
 - **Atomic Write and Reentrant**: `store.save()` uses "write to `.tmp` then `os.replace`" atomic write, persisting at each step; S3 `locked` is idempotent, S4/S5 output existence validation supports breakpoint resume after any step crash.
 - **Local Backend Global Single Concurrency**: `providers/_http.py` automatically identifies `127.0.0.1`/`localhost` endpoints through `local_backend_guard`, globally queuing Ollama/vllm/ComfyUI/Qwen-TTS/ACE-Step sharing GPU on DGX Spark, avoiding timeout caused by multi-task GPU contention.
-- **Stage-Specific Configuration Override**: Web configuration panel supports "global default + S0–S5 stage-specific override", e.g., S1–S2 all use Hermes screenwriter/director skills (underlying glm5.2), images use cloud or local ComfyUI, taking effect without restart.
+- **Stage-Specific Configuration Override**: Web configuration panel supports "global default + S0–S5 stage-specific override", e.g., S1–S2 all use Hermes screenwriter/director skills (underlying `Step-3.7-Flash`), images use cloud or local ComfyUI, taking effect without restart.
 
 ---
 
-## IV. Architecture Design Philosophy and Optimization Plan
+## IV. Architecture Optimization Plan
 
 ### 4.1 DGX Spark Platform Adaptation Philosophy
 
@@ -613,9 +1275,9 @@ source ~/.bashrc
 hermes gateway restart
 ```
 
-#### 6.3.4 LLM Model Startup
+#### 6.6.4 LLM Model Startup
 
-##### 6.3.4.1 vllm docker startup for Qwen3.5-35B-A3B-NVFP4 model
+##### 6.6.4.1 vllm docker startup for Qwen3.5-35B-A3B-NVFP4 model
 
 Edit file: `/home1/wuzi/models/Sehyo/Qwen3.5-35B-A3B-NVFP4/model_qwen35_p8000.yaml`
 
@@ -657,7 +1319,7 @@ docker ps
 docker logs [containerid]
 ```
 
-##### 6.3.4.2 ollama startup for glm-4.7-flash model
+##### 6.6.4.2 ollama startup for glm-4.7-flash model
 
 Edit `~/.config/systemd/user/ollama-preload.service` to configure systemctl service:
 
@@ -766,19 +1428,19 @@ In summary, the **vLLM + Docker** technical solution adopted in this project not
 
 To fully leverage the hardware performance of the NVIDIA DGX Spark platform, this project adopts **CUDA 13.0** as the underlying GPU computing runtime environment, providing unified high-performance computing infrastructure support for large model inference, multimodal content generation, and AI Agent workflows.
 
-CUDA (Compute Unified Device Architecture) is a general-purpose parallel computing platform and programming model launched by NVIDIA, and is also the de facto standard GPU computing ecosystem in the current artificial intelligence field. Modern large model training and inference frameworks, including core components such as PyTorch, TensorRT, vLLM, FlashAttention, and Transformer Engine, are all built on the CUDA ecosystem. CUDA not only manages GPU resource scheduling and computing task execution, but also provides high-performance math libraries, communication libraries, and Tensor Core acceleration capabilities optimized for AI scenarios, serving as the foundational runtime platform for the entire AI technology stack.
+CUDA (Compute Unified Device Architecture) is a general-purpose parallel computing platform and programming model launched by NVIDIA, and is also the de facto standard GPU computing ecosystem in the current artificial intelligence field. Modern large model training and inference frameworks, including PyTorch, TensorRT, vLLM, FlashAttention, and Transformer Engine, are all built on the CUDA ecosystem. CUDA not only manages GPU resource scheduling and computing task execution, but also provides high-performance math libraries, communication libraries, and Tensor Core acceleration capabilities optimized for AI scenarios, serving as the foundational runtime platform for the entire AI technology stack.
 
 Compared with early CUDA versions, CUDA 13.0 has been deeply optimized for NVIDIA's new-generation **Blackwell architecture GPU**, better supporting high-throughput computing requirements in large model inference scenarios. Especially in terms of support for low-precision computing formats such as FP8 and FP4, CUDA 13.0 provides complete software stack support, enabling new-generation quantization models to fully utilize Blackwell Tensor Core computing capabilities, significantly improving inference efficiency while ensuring model accuracy.
 
-The core text model adopted in this project, **Sehyo/Qwen3.5-35B-A3B-NVFP4**, uses NVIDIA's proprietary NVFP4 quantization format, which achieves high compression ratio and high computing efficiency through the combination of FP4 weights and FP8 Scale. CUDA 13.0 can directly call the FP4 Tensor Core instruction set natively supported by Blackwell GPU, enabling the model inference process to complete large-scale inference tasks with lower memory footprint and higher computing throughput, thereby fully releasing the hardware potential of DGX Spark.
+The core text model adopted in this project, **Sehyo/Qwen3.5-35B-A3B-NVFP4**, uses NVIDIA's proprietary NVFP4 quantization format, which achieves high compression ratio and high computing efficiency through the combination of FP4 weights and FP8 Scale. CUDA 13.0 can directly call the FP4 Tensor Core instruction set natively supported by Blackwell GPU, enabling the model inference process to complete large-scale inference tasks with lower memory footprint and higher computing throughput, thereby fully releasing DGX Spark's hardware potential.
 
-In terms of multi-GPU communication and inference services, CUDA 13.0 is deeply integrated with NCCL (NVIDIA Collective Communications Library), providing efficient data exchange capabilities for Tensor Parallel, Pipeline Parallel, and distributed inference scenarios. Although this project currently mainly runs in a single-node environment, when expanding to multi-GPU or GPU clusters in the future, it can still build larger-scale model service capabilities based on CUDA and NCCL, reserving sufficient space for system expansion.
+In multi-GPU communication and inference services, CUDA 13.0 is deeply integrated with NCCL (NVIDIA Collective Communications Library), providing efficient data exchange capabilities for Tensor Parallel, Pipeline Parallel, and distributed inference scenarios. Although this project currently mainly runs in a single-node environment, future expansion to multi-GPU or GPU clusters can still build larger-scale model service capabilities based on CUDA and NCCL, reserving sufficient space for system expansion.
 
 In addition, CUDA 13.0 maintains high compatibility with the current mainstream AI software ecosystem. Key components including PyTorch, vLLM, TensorRT-LLM, FlashAttention, and Transformer Engine have all completed adaptation. Through a unified software stack, the project can obtain a more stable runtime environment and continuous performance optimization support, reducing compatibility risks between different components.
 
-From an engineering practice perspective, CUDA 13.0 not only provides underlying GPU computing capabilities, but also undertakes the runtime infrastructure role of the entire AI inference platform. Tasks such as text generation, image generation, music generation, and multi-Agent collaborative inference in the project are all completed through CUDA scheduling GPU resources. With the high-performance parallel computing capabilities provided by CUDA, the system can achieve higher model throughput, lower inference latency, and better resource utilization under limited hardware resources.
+From an engineering practice perspective, CUDA 13.0 not only provides underlying GPU computing capabilities but also undertakes the runtime infrastructure role of the entire AI inference platform. Tasks such as text generation, image generation, music generation, and multi-Agent collaborative inference in the project are all completed through CUDA scheduling GPU resources. With CUDA's high-performance parallel computing capabilities, the system can achieve higher model throughput, lower inference latency, and better resource utilization under limited hardware resources.
 
-In summary, CUDA 13.0, as an important software infrastructure of the NVIDIA Blackwell platform, not only provides a stable and efficient GPU computing environment for this project, but also provides key support for the high-performance operation of NVFP4 quantization models, vLLM inference engines, and multimodal generation models. Through the collaborative optimization of CUDA 13.0 and the DGX Spark platform, the project can fully leverage the advantages of the new-generation GPU architecture, providing powerful computing power guarantee for complex AI application scenarios.
+In summary, CUDA 13.0, as an important software infrastructure of the NVIDIA Blackwell platform, not only provides a stable and efficient GPU computing environment for this project, but also provides key support for the high-performance operation of NVFP4 quantization models, vLLM inference engines, and multimodal generation models. Through the collaborative optimization of CUDA 13.0 and DGX Spark platform, the project can fully leverage the advantages of the new-generation GPU architecture, providing powerful computing power guarantee for complex AI application scenarios.
 
 #### 7.2.3 Image Generation Service Architecture Optimization — Qwen-Image-Edit-2511 Inference Solution Based on ComfyUI
 
@@ -846,7 +1508,124 @@ He has long focused on AIGC art creation, intelligent content production process
 
 ---
 
-## VIII. Project Completeness
+## VIII. Project Operation Manual
+
+### 8.1 Creating a New Work
+
+![page_01](../samples/opr/001.png)
+
+Enter the scenic spot name in the input field. The system has built-in all 359 national 5A scenic spots provided by the Ministry of Culture and Tourism. For example, when you input "Hua Shan", the following scenic spots will appear:
+
+![page_01](../samples/opr/002.png)
+
+At this point:
+
+- Select video duration: 1 minute, 3 minutes, 5 minutes
+- Select target audience: General, Children
+- Select video tone: Warm, Fantasy, Suspense
+- Select art style: Chinese Ink, Children's Picture Book, Modern Illustration
+- Select voice: Male, Female
+- Select speech rate: 0.8, 1.0, 1.2
+- Enable Shanyin Super Screenwriter Master Skill for script generation and Shanyin Super Director Master Skill for storyboard generation.
+- If no related stories are found for the scenic spot, users can also prepare their own stories.
+
+Click [Start Generation], and WanderInk begins working.
+
+During video production, the [Generation Queue] will display:
+
+![page_01](../samples/opr/003.png)
+
+### 8.2 S0 Legend: Story Generation
+
+When this step is completed, the generated story content and information sources will be displayed below.
+
+![page_01](../samples/opr/004.png)
+
+### 8.3 S1 Script Generation
+
+When this step is completed, the script is generated and character settings are finalized. The following information will be displayed, showing four characters: Bai Suzhen, Xu Xian, Fahai, and Xiaoqing.
+
+![page_01](../samples/opr/005.png)
+
+### 8.4 S2 Storyboard Generation
+
+When this step is completed, the storyboard text is generated. The following 9 pages of storyboard information will be displayed:
+
+![page_01](../samples/opr/006.png)
+
+![page_01](../samples/opr/007.png)
+
+![page_01](../samples/opr/008.png)
+
+![page_01](../samples/opr/009.png)
+
+![page_01](../samples/opr/010.png)
+
+### 8.5 S3 Character Generation
+
+![page_01](../samples/opr/011.png)
+
+When this step is completed, three-view information will be displayed:
+
+![page_01](../samples/opr/012.png)
+
+Click [View Details] to see three-view information for each character:
+
+Bai Suzhen:
+
+![page_01](../samples/opr/013.png)
+
+Xu Xian:
+
+![page_01](../samples/opr/014.png)
+
+Fahai:
+
+![page_01](../samples/opr/015.png)
+
+Xiaoqing:
+
+![page_01](../samples/opr/016.png)
+
+### 8.6 S4 Comic Page Generation
+
+When this step is completed, the system will display the following comic page information:
+
+![page_01](../samples/png/003/page_01.png)
+![page_02](../samples/png/003/page_02.png)
+![page_03](../samples/png/003/page_03.png)
+![page_04](../samples/png/003/page_04.png)
+![page_05](../samples/png/003/page_05.png)
+![page_06](../samples/png/003/page_06.png)
+![page_07](../samples/png/003/page_07.png)
+![page_08](../samples/png/003/page_08.png)
+![page_09](../samples/png/003/page_09.png)
+
+### 8.7 S5 Dubbing Generation
+
+When this step is completed, both images and audio are ready:
+
+![page_01](../samples/opr/017.png)
+
+![page_01](../samples/opr/018.png)
+
+![page_01](../samples/opr/019.png)
+
+![page_01](../samples/opr/020.png)
+
+![page_01](../samples/opr/021.png)
+
+### 8.8 S6 Video Composition
+
+When this step is completed, the audio comic video is finished:
+
+![page_01](../samples/opr/022.png)
+
+The system also provides video download, image PDF download, and image package download functions.
+
+---
+
+## IX. Project Completeness
 
 - **Functionally Complete**: All S0–S6 seven steps are fully implemented; frontend supports creating, previewing, editing, redrawing, re-dubbing, downloading MP4 video/PDF/image package;
 - **Frontend-Backend Complete**: Backend FastAPI + frontend React + Vite + Tailwind, supporting multi-user, queue, and share links;
@@ -855,3 +1634,160 @@ He has long focused on AIGC art creation, intelligent content production process
 - **Demo-ready**: After inputting scenic spot name, frontend displays real-time progress and time consumption for each step, with final playable MP4.
 
 ---
+
+## X. Differences from SparkScroll (1st Spark Hackathon)
+
+This project upgrades the philosophy from [SparkScroll](https://github.com/zhanghui-china/SparkScroll) with professional enhancements:
+
+| Dimension | 1st SparkScroll | This WanderInk |
+|---|---|---|
+| Output Format | Pure comic images | Audio comic short video (visuals + narration + BGM) |
+| Script Source | LLM + prompt direct generation | Film industry "Screenwriter Master / Director Master" skills |
+| Creative Process | Fully automated black box | Step-by-step intervenable, redrawable, re-dubbable, reviewable |
+| Frontend Role | Backend gateway focused | Frontend as important display entry, supporting multi-user collaboration |
+| Character Consistency | Initial solution | Three-view reference images + fixed art style + consistency checkpoint |
+| Platform Adaptation | Concept verification | DGX Spark local LLM + image + TTS + music full-stack closed loop |
+| Team | Changed members except team leader | Introduced professionals with film skill, frontend/backend, ComfyUI engineering experience |
+
+In one sentence: **The team leader remains the same, but the product format, technical depth, and team configuration have all undergone qualitative changes.**
+
+---
+
+## XI. Evaluation Criteria Comparison Table
+
+| Evaluation Dimension | Weight | Project Corresponding Content |
+|---|---|---|
+| Practicality, Industry Value & Technical Innovation | 25% | Solves the pain point of IP development for small and medium scenic spots ("long cycle, high cost"); end-to-end audio comic solution has industry pioneering nature; fully utilizes DGX Spark unified memory for single-machine closed loop |
+| Agent Integration & Model Optimization Technical Depth | 25% | Multi-Agent collaboration (Story/Script/Director/Character/Image/Voice/Music/Composer); Hermes "Screenwriter Master/Director Master" skill injection; three-view consistency solution; TTS truncation detection and silent fallback |
+| Project Completeness | 20% | S0–S6 functionally complete; FastAPI + React frontend-backend complete; 300+ test cases; PRD/deployment manual/user manual/decision records complete; live demo ready |
+| Platform Adaptability | 15% | DGX Spark 128GB unified memory time-slice loading; vllm local LLM; ComfyUI image pipeline; Qwen3-TTS speech; Stepfun ACE-STEP music; Stepfun step-3.7-flash text model |
+| Demo Effect | 10% | Web real-time progress + three-view/page-by-page preview + final MP4 playback; Demo script 3-minute complete closed loop |
+| Competition Essay | 5% | "Ten Days' Talk" development journey, decision records, bug fixes and recovery processes fully documented in `web/docs/decisions/` and README update notes |
+
+---
+
+## XII. Project Team and Updates
+
+### 12.1 Project Team
+
+| Member | Responsibility |
+|---|---|
+| [Zhang Xiaobai](https://github.com/zhanghui-china) | Team Leader, Project Planning, Environment Deployment, Project Testing, Documentation |
+| [Nancy](https://github.com/nancysxy000) | Member, Documentation, Scenic Spot Story Generation, DEMO Video Production |
+| [Qing Ta](https://github.com/DoubleCore) | Member, Skill Development, Hermes Integration, Screenwriter/Director Skill Iteration |
+| [Ban Du Wu Zi](https://github.com/Bandukids) | Member, ComfyUI Service Deployment & Development, Image/Audio Pipeline |
+| [Hun Tun](https://github.com/nativeas) | Member, Web Frontend/Backend Development, Frontend Interaction & Multi-user Design |
+
+### 12.2 Project Updates
+
+[2026.7.21] **Zhang Xiaobai** wrote WanderInk Experience Manual, see: https://zhuanlan.zhihu.com/p/2062795404199073593
+
+[2026.7.20] **Nancy** completed project demonstration materials preparation.
+
+[2026.7.19] **Zhang Xiaobai**, **Ban Du Wu Zi** completed deployment documentation, project introduction documentation, etc.
+
+[2026.7.18] Project members conducted a series of test verifications on the project. After **Hun Tun** fixed Web-end bugs, Web-end code was frozen.
+
+[2026.7.15] Project members conducted intensive testing on the WanderInk product. During testing, the team found that the Spark device suddenly became unreachable remotely. **Zhang Xiaobai** discovered that Spark had automatically shut down. With **Qing Ta**'s support, **Hun Tun** changed LLM script and storyboard generation to call Hermes skills.
+
+[2026.7.14] **Zhang Xiaobai** assigned tasks to team members. **Ban Du Wu Zi** and **Hun Tun** focused on BugFix and code optimization, while others focused on testing the project code, aiming to release a version of documentation and code by July 18. Text models began using the sponsor-provided step-3.7-flash model. All developers submitted code to this repository.
+
+[2026.7.13] **Zhang Xiaobai** discovered that image editing model calls produced all-black results. After **Ban Du Wu Zi** checked, it was found that adding sage attention acceleration during startup caused this issue, which was resolved by reverting to flash-attn acceleration. Zhang Xiaobai repackaged the ComfyUI HTTP service and tested it successfully.
+
+[2026.7.12] The WanderInk team participated in the morning hackathon online training camp and started text live broadcasting in the group. **Ban Du Wu Zi** configured and started the Ollama local model on Spark.
+
+[2026.7.10] **Hun Tun** submitted the project frontend prototype.
+
+[2026.7.7] **Nancy** submitted code and documentation for LLM-generated scenic spot stories. Due to team member **LZH**'s withdrawal, the WanderInk team recruited new member **Hun Tun** (from Wuxi).
+
+[2026.7.4] **Zhang Xiaobai** installed Hermes on the DGX Spark device, see: https://zhuanlan.zhihu.com/p/2056830749530142643
+
+[2026.7.3] **Zhang Xiaobai** attempted to package **Ban Du Wu Zi**'s ComfyUI service as an HTTP service.
+
+[2026.7.2] The WanderInk team held the second video conference (LZH was unable to attend). The project direction of **audio comic** was basically determined.
+
+[2026.7.1] **Ban Du Wu Zi** completed writing the ComfyUI installation, deployment, and usage documentation. Zhang Xiaobai completed the download and deployment attempt of Stepfun's Step-3.7-Flash-GGUF model, see: https://zhuanlan.zhihu.com/p/2055024035302471223
+
+[2026.6.30] **Qing Ta** researched Shanyin's Screenwriter Master and Director Master skills, attempted to iterate prompts, and installed Claude Code on Spark with successful results. **Nancy** was experimenting with ComfyUI's Lora models. **Ban Du Wu Zi** conducted ComfyUI environment verification for single-image, double-image, and triple-image editing, tuned TTS speech generation, and suggested **Nancy** find some new model Loras.
+
+[2026.6.29] **Zhang Xiaobai** attempted to download and deploy Stepfun's Step-3.7-Flash-NVFP4 model. The next day, he announced that both docker and conda methods failed to start due to insufficient memory.
+
+[2026.6.28] **Ban Du Wu Zi** deployed the ComfyUI environment on Spark. He also spent a long time compiling flash-attention from source, generated music using ACE-STEP XL Turbo, and began testing and verifying ComfyUI image generation. **Qing Ta** started researching Eazo (https://creator.eazo.ai/apps)
+
+[2026.6.27] **Zhang Xiaobai** purchased an intranet penetration cloud service, providing ssh and http channel methods for team members to share his Spark device. Zhang Xiaobai created this repository.
+
+[2026.6.26] The WanderInk team recruited new member **Qing Ta** and held the first video conference (Qing Ta was unable to attend). Brainstorming session. Team members joined a Feishu enterprise organization and a Feishu group with OpenClaw robot (**LZH** was unable to join).
+
+[2026.6.25] WanderInk team name confirmed, recruiting new member **Ban Du Wu Zi** (from Wuxi).
+
+[2026.6.24] WanderInk team members recruited, **Zhang Xiaobai** (Zhang Hui, from Nanjing), **Nancy** (Su Xiaoye, from Chengdu), **LZH** (from Hangzhou) began discussing project direction.
+
+---
+
+## XIII. Easter Egg — WanderInk Generated Works Showcase
+
+### 13.1 Nanxun Ancient Town: Four Elephants, Eight Bulls, Seventy-two Dogs
+
+![page_01](../samples/png/001/page_01.png)
+
+![page_02](../samples/png/001/page_02.png)
+
+![page_03](../samples/png/001/page_03.png)
+
+![page_04](../samples/png/001/page_04.png)
+
+![page_05](../samples/png/001/page_05.png)
+
+![page_06](../samples/png/001/page_06.png)
+![page_07](../samples/png/001/page_07.png)
+![page_08](../samples/png/001/page_08.png)
+
+![page_09](../samples/png/001/page_09.png)
+![page_10](../samples/png/001/page_10.png)
+
+![page_11](../samples/png/001/page_11.png)
+![page_12](../samples/png/001/page_12.png)
+![page_13](../samples/png/001/page_13.png)
+![page_14](../samples/png/001/page_14.png)
+![page_15](../samples/png/001/page_15.png)
+![page_16](../samples/png/001/page_16.png)
+![page_17](../samples/png/001/page_17.png)
+![page_18](../samples/png/001/page_18.png)
+![page_19](../samples/png/001/page_19.png)
+![page_20](../samples/png/001/page_20.png)
+
+![page_21](../samples/png/001/page_21.png)
+![page_22](../samples/png/001/page_22.png)
+
+### 13.2 Lijiang: Wooden City Without Walls
+
+![page_01](../samples/png/002/page_01.png)
+![page_02](../samples/png/002/page_02.png)
+![page_03](../samples/png/002/page_03.png)
+![page_04](../samples/png/002/page_04.png)
+![page_05](../samples/png/002/page_05.png)
+![page_06](../samples/png/002/page_06.png)
+![page_07](../samples/png/002/page_07.png)
+![page_08](../samples/png/002/page_08.png)
+![page_09](../samples/png/002/page_09.png)
+![page_10](../samples/png/002/page_10.png)
+![page_11](../samples/png/002/page_11.png)
+![page_12](../samples/png/002/page_12.png)
+![page_13](../samples/png/002/page_13.png)
+![page_14](../samples/png/002/page_14.png)
+![page_15](../samples/png/002/page_15.png)
+![page_16](../samples/png/002/page_16.png)
+![page_17](../samples/png/002/page_17.png)
+![page_18](../samples/png/002/page_18.png)
+![page_19](../samples/png/002/page_19.png)
+![page_20](../samples/png/002/page_20.png)
+![page_21](../samples/png/002/page_21.png)
+![page_22](../samples/png/002/page_22.png)
+
+---
+
+## XIV. Conclusion
+
+WanderInk is not just an "AI-generated video" toy, but a **professional, intervenable, and deployable** multimodal creative system for scenic spot cultural IP production. It fully leverages NVIDIA DGX Spark's unified memory advantages, integrating Stepfun large models, Hermes professional skills, ComfyUI image pipelines, and FFmpeg synthesis capabilities, representing a complete practice of "AI creative industrialization".
+
+> Scenic spot name in, audio comic out. WanderInk, making every landscape have a story to tell.
