@@ -30,7 +30,7 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 
 > [Demo 视频（bilibili）](https://www.bilibili.com/video/BV1ymK865Et1)
 >
-> [Demo PPT](docs/demo/Wanderink 景区有声连环画 Agent.pptx)
+> [Demo PPT](https://github.com/zhanghui-china/WanderInk/blob/main/docs/demo/Wanderink%20%E6%99%AF%E5%8C%BA%E6%9C%89%E5%A3%B0%E8%BF%9E%E7%8E%AF%E7%94%BB%20Agent.pptx)
 
 ## 一句话 Pitch
 
