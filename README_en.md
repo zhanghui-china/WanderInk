@@ -29,6 +29,8 @@ This repository contains ComfyUI-based image generation pipelines and API servic
 ## Demo
 
 > [Demo Video (bilibili)](https://www.bilibili.com/video/BV1ymK865Et1)
+>
+> [Demo PPT](docs/demo/Wanderink 景区有声连环画 Agent.pptx)
 
 ## One-Sentence Pitch
 
