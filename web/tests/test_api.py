@@ -39,7 +39,7 @@ def test_meta_includes_voices():
 def test_meta_includes_loras():
     # loras 列表来自 loras.LORA_PRESETS 的 key,不是文件名——前端下拉框只需要短名。
     j = client.get("/api/meta").json()
-    assert set(j["loras"]) == {"Real_Ani", "figurine"}
+    assert set(j["loras"]) == {"Real_ani_qwen", "figurine_qwen", "bjd.7ARL"}
 
 
 def test_meta_voices_follow_s5_override(_isolated_config_path):

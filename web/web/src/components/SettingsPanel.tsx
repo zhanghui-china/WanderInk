@@ -37,6 +37,7 @@ const TTS_FIELDS: FieldDef[] = [
   { key: 'tts_model', label: '模型', kind: 'text' },
   { key: 'tts_voice', label: '默认音色', kind: 'text' },
   { key: 'tts_voices', label: '可选音色(逗号分隔)', kind: 'text' },
+  { key: 'tts_voice_en', label: '英文轨音色', kind: 'text' },
 ]
 const MUSIC_FIELDS: FieldDef[] = [
   { key: 'music_base_url', label: '端点 Base URL', kind: 'text' },
@@ -76,6 +77,7 @@ const EMPTY_OVERRIDE_VIEW: ConfigOverrideView = {
   tts_model: null,
   tts_voice: null,
   tts_voices: null,
+  tts_voice_en: null,
   music_base_url: null,
   music_api_key: null,
   music_model: null,
@@ -263,13 +265,15 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
               markTouched(scope, field.key)
             }}
           >
-            <option value="">不使用{eff ? `(继承:${eff})` : ''}</option>
+            <option value="">默认(Real_ani_qwen){eff ? `(继承:${eff})` : ''}</option>
             {(meta?.loras ?? []).map((name) => (
               <option key={name} value={name}>
                 {name}
               </option>
             ))}
           </select>
+          {/* 三视图走的工作流模板里没有 LoRA 节点,选了也不会生效,提前讲清楚免得用户误判 */}
+          <p className="mt-1 text-[11px] text-muted">仅对漫画页生效,角色三视图不支持</p>
         </div>
       )
     }

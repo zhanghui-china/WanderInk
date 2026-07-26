@@ -5,7 +5,6 @@ import typer
 
 from shanhai import auth, store
 from shanhai.config import Settings
-from shanhai.loras import LORA_PRESETS
 from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig,
                                      image_concurrency, resolve_settings)
 from shanhai.providers.image import ImageClient
@@ -45,10 +44,9 @@ def _clients(s: Settings) -> tuple[LLMClient, ImageClient, TTSClient, MusicClien
         llm = OllamaLLMClient(llm_base, llm_key, s.llm_model, timeout=s.llm_timeout)
     else:
         llm = LLMClient(llm_base, llm_key, s.llm_model, timeout=s.llm_timeout)
-    lora_model = LORA_PRESETS.get(s.image_lora_model) if s.image_lora_model else None
     return (llm,
             ImageClient(img_base, img_key, s.image_model, s.image_api_mode,
-                        timeout=s.image_timeout, lora_model=lora_model),
+                        timeout=s.image_timeout, lora_model=s.image_lora_model or None),
             TTSClient(tts_base, tts_key, s.tts_model),
             MusicClient(music_base, music_key, s.music_model))
 

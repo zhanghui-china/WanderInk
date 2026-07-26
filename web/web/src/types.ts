@@ -7,6 +7,7 @@ export interface Meta {
   styles: string[]
   voices?: string[]
   loras?: string[]
+  track_langs?: string[]
   readonly?: boolean
 }
 
@@ -37,6 +38,15 @@ export interface Page {
   visual_desc: string
   characters: string[]
   image: string | null
+  audio: string | null
+  // 附加语种轨,key 是语种码(如 "en");没生成过就是空对象
+  tracks: Record<string, LocalizedTrack>
+}
+
+export interface LocalizedTrack {
+  caption: string
+  duration_ms: number
+  silent: boolean
   audio: string | null
 }
 
@@ -70,6 +80,7 @@ export interface ProjectDetail {
   mp4: string | null
   pdf: string | null
   zip: string | null
+  track_mp4: Record<string, string | null>
 }
 
 export interface CellPatch {
@@ -124,6 +135,7 @@ export interface ConfigOverrideView {
   tts_model: string | null
   tts_voice: string | null
   tts_voices: string | null
+  tts_voice_en: string | null
   music_base_url: string | null
   music_api_key: string | null
   music_model: string | null
@@ -149,6 +161,7 @@ export interface ConfigDefaults {
   tts_model: string
   tts_voice: string
   tts_voices: string
+  tts_voice_en: string
   music_base_url: string | null
   music_api_key: boolean
   music_model: string

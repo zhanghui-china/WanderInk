@@ -2,7 +2,7 @@ import io
 import os
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 from shanhai.providers.image import ImageGenError
@@ -280,6 +280,17 @@ def test_s4_records_image_gen_ms_on_success(tmp_path: Path):
     image.generate.side_effect = side_effect
     p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
     assert p.storyboard[0].image_gen_ms >= 20            # 计时覆盖实际生成调用耗时
+
+
+def test_s4_no_image_gen_ms_when_compose_fails(tmp_path: Path):
+    # 排版失败时图没落地,耗时也不该留在 cell 上——否则失败页会挂着一个"生成 X.Xs"
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
+    with patch("shanhai.steps.s4_pages.typeset.compose_page",
+               side_effect=OSError("磁盘满")):
+        p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
+    assert p.storyboard[0].status == "failed"
+    assert p.storyboard[0].image == ""
+    assert p.storyboard[0].image_gen_ms == 0
 
 
 def test_s4_multi_panel_image_gen_ms_sums_each_panel(tmp_path: Path):
