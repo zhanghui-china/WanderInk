@@ -113,9 +113,12 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
                     for c in present if c.turnaround_image]
             gen_t0 = time.monotonic()
             art = image.generate(prompt, size=image_size, references=refs or None)
-            cell.image_gen_ms = round((time.monotonic() - gen_t0) * 1000)
+            gen_ms = round((time.monotonic() - gen_t0) * 1000)
             typeset.compose_page(art, out)
+            # 耗时与图同生共死:先存局部变量、等排版和 image 都落定了再写回 cell。
+            # 否则 compose_page 抛异常时耗时已经写进去、图却没有,失败页会挂着一个"生成 X.Xs"。
             cell.image = str(out.relative_to(workdir))
+            cell.image_gen_ms = gen_ms
             cell.status = "confirmed"
             return
         except Exception:  # noqa: BLE001 单页失败不拖垮整轮,重试/预算耗尽后标 failed
