@@ -278,13 +278,13 @@ def test_adduser_long_password_exits_with_friendly_message(tmp_path, monkeypatch
     assert not users.exists()
 
 
-def test_clients_resolves_lora_short_name_to_filename():
+def test_clients_passes_lora_short_name_through():
     from shanhai import cli
     from shanhai.config import Settings
     s = Settings(_env_file=None, base_url="http://127.0.0.1:8091/v1", api_key="x",
-                 image_lora_model="figurine")
+                 image_lora_model="figurine_qwen")
     _llm, image, _tts, _music = cli._clients(s)
-    assert image.lora_model == "figurine_qwen.safetensors"   # 短名翻译成真实文件名
+    assert image.lora_model == "figurine_qwen"   # 短名原样下发,文件名映射归 shim 侧
 
 
 def test_clients_lora_none_when_unset():

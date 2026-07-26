@@ -2,6 +2,7 @@
 import base64
 import io
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 import respx, httpx, pytest
@@ -150,47 +151,46 @@ def test_timeout_is_configurable():
 
 
 @respx.mock
-def test_generations_includes_lora_model_name_when_set():
+def test_generations_includes_lora_when_set():
     route = respx.post(f"{BASE}/images/generations").mock(
         return_value=httpx.Response(200, json={"data": [{"b64_json": PNG}]}))
     c = ImageClient(BASE, "sk", "comfyui-local", mode="images_api",
-                    lora_model="Real_Ani-Qwen_000001250.safetensors")
+                    lora_model="Real_ani_qwen")
     c.generate("a cat")
-    assert json.loads(route.calls[0].request.content)["lora_model_name"] == \
-        "Real_Ani-Qwen_000001250.safetensors"
+    assert json.loads(route.calls[0].request.content)["lora"] == "Real_ani_qwen"
 
 
 @respx.mock
-def test_generations_omits_lora_model_name_when_unset():
+def test_generations_omits_lora_when_unset():
     route = respx.post(f"{BASE}/images/generations").mock(
         return_value=httpx.Response(200, json={"data": [{"b64_json": PNG}]}))
     c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
     c.generate("a cat")
-    assert "lora_model_name" not in json.loads(route.calls[0].request.content)
+    assert "lora" not in json.loads(route.calls[0].request.content)
 
 
 @respx.mock
-def test_edits_includes_lora_model_name_when_set(tmp_path: Path):
+def test_edits_includes_lora_when_set(tmp_path: Path):
     ref = tmp_path / "ref.png"; ref.write_bytes(b"refpng")
     route = respx.post(f"{BASE}/images/edits").mock(
         return_value=httpx.Response(200, json={"data": [{"b64_json": PNG}]}))
     c = ImageClient(BASE, "sk", "comfyui-local", mode="images_api",
-                    lora_model="figurine_qwen.safetensors")
+                    lora_model="figurine_qwen")
     c.generate("a cat", references=[ref])
     body = route.calls[0].request.content.decode("utf-8", errors="ignore")
-    assert "figurine_qwen.safetensors" in body
+    # multipart 里字段名和值要一起断言:只 grep 值的话字段名写错也照样绿
+    assert re.search(r'name="lora"\r\n\r\nfigurine_qwen\r\n', body)
 
 
 @respx.mock
-def test_chat_mode_includes_lora_model_name_when_set():
+def test_chat_mode_includes_lora_when_set():
     route = respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
         "choices": [{"message": {"content": "",
             "images": [{"image_url": {"url": f"data:image/png;base64,{PNG}"}}]}}]}))
     c = ImageClient(BASE, "sk", "nano-banana", mode="chat_api",
-                    lora_model="Real_Ani-Qwen_000001250.safetensors")
+                    lora_model="Real_ani_qwen")
     c.generate("a cat")
-    assert json.loads(route.calls[0].request.content)["lora_model_name"] == \
-        "Real_Ani-Qwen_000001250.safetensors"
+    assert json.loads(route.calls[0].request.content)["lora"] == "Real_ani_qwen"
 
 
 def test_timeout_attribute_reflects_constructor_arg():

@@ -37,8 +37,9 @@ class ImageClient:
                  timeout: float = 1200, lora_model: str | None = None):
         self.model = model
         self.mode = mode
-        self.lora_model = lora_model  # 实际 safetensors 文件名(已由调用方从短名翻译好),
-        # 仅本地 ComfyUI 后端有意义;非空时随请求体一并发送,远程后端多半直接忽略这个字段。
+        self.lora_model = lora_model  # LoRA 短名(不区分大小写),短名→safetensors 文件名的映射
+        # 由 shim 侧负责,这边不必知道文件名;仅本地 ComfyUI 后端有意义,非空时随请求体一并
+        # 发送,远程后端多半直接忽略这个字段。
         self.timeout = timeout  # 暴露为可读属性,供 s4_pages.py 的重试循环读取同一个
         # "单张图总耗时预算"上限(S3 单角色只生成一次、无重试循环,不需要读这个属性)。
         self._base_url = base_url
@@ -66,7 +67,9 @@ class ImageClient:
         return self._via_generations(prompt, size, retries)
 
     def _lora_extra(self) -> dict:
-        return {"lora_model_name": self.lora_model} if self.lora_model else {}
+        # 字段名与值域(短名,不区分大小写)由 DGX 上的 image-shim 定义,两边必须一致;
+        # 不传则由 shim 回落到它自己的默认 LoRA。
+        return {"lora": self.lora_model} if self.lora_model else {}
 
     def _via_generations(self, prompt: str, size: str, retries: int) -> bytes:
         r = request_with_retry(lambda: self._client.post(

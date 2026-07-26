@@ -265,13 +265,15 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
               markTouched(scope, field.key)
             }}
           >
-            <option value="">不使用{eff ? `(继承:${eff})` : ''}</option>
+            <option value="">默认(Real_ani_qwen){eff ? `(继承:${eff})` : ''}</option>
             {(meta?.loras ?? []).map((name) => (
               <option key={name} value={name}>
                 {name}
               </option>
             ))}
           </select>
+          {/* 三视图走的工作流模板里没有 LoRA 节点,选了也不会生效,提前讲清楚免得用户误判 */}
+          <p className="mt-1 text-[11px] text-muted">仅对漫画页生效,角色三视图不支持</p>
         </div>
       )
     }
