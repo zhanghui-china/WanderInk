@@ -568,6 +568,8 @@ function PageCard({
     if (kind === 'delete' && !window.confirm(`确定删除第 ${pg.index} 页?此操作不可撤销。`)) return
     if (kind === 'redraw' &&
         !window.confirm(`确定重新生成第 ${pg.index} 页的图片?将调用配置的生图 API。`)) return
+    if (kind === 'revoice' &&
+        !window.confirm(`确定重新生成第 ${pg.index} 页的配音?将调用配置的 TTS API,并清空已合成的成片。`)) return
     setBusy(kind)
     try {
       if (kind === 'redraw') {
@@ -584,7 +586,19 @@ function PageCard({
           return
         }
       }
-      if (kind === 'revoice') await api.revoiceCell(projectId, pg.index)
+      if (kind === 'revoice') {
+        await api.revoiceCell(projectId, pg.index)
+        try {
+          await api.runStep(projectId, 's5') // 同 redraw:标记后立即触发 S5,只会重配本页(其余页幂等跳过)
+        } catch (e) {
+          // revoiceCell 已清掉本页 audio/output,若触发生成失败要刷新让用户看到已被清的状态。
+          onChanged()
+          alert(
+            `已标记重配音,但触发生成失败:${e instanceof Error ? e.message : String(e)},可点配音步骤重试`,
+          )
+          return
+        }
+      }
       if (kind === 'delete') await api.deleteCell(projectId, pg.index)
       onChanged()
     } catch (e) {
