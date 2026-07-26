@@ -28,6 +28,7 @@ def _project(tmp_path: Path) -> Project:
 
 def _multi_panel_project(tmp_path: Path, n_panels: int = 2) -> Project:
     p = _project(tmp_path)
+    p.params.multi_panel = True   # 分格分支现在同时要求这个开关,只填 panels 会被当单图页
     p.storyboard[0].panels = [
         Panel(visual_desc=f"格{i}", shot_type="medium", characters=["白素贞"])
         for i in range(1, n_panels + 1)
@@ -268,6 +269,32 @@ def test_s4_single_page_mode_unaffected(tmp_path: Path):
     assert image.generate.call_count == 1
     assert p.storyboard[0].status == "confirmed"
     assert not (tmp_path / "pages" / "page_01_panel1.png").exists()
+
+
+def test_s4_ignores_panels_when_multi_panel_off(tmp_path: Path):
+    """用户没开分格时,即便 cell 上有 panels(模型自作主张填的、或历史数据)也走单图路径。
+    以前判据只看 cell.panels,会静默分格——与用户预期相反。"""
+    p = _multi_panel_project(tmp_path, 3)
+    p.params.multi_panel = False          # 关掉开关,panels 保留
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
+    p = s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 1                      # 整页一张图,不是逐格 3 张
+    assert image.generate.call_args.kwargs["size"] == "1536x1024"   # 用整页尺寸,不是版位尺寸
+    assert not (tmp_path / "pages" / "page_01_panel1.png").exists()
+    assert p.storyboard[0].status == "confirmed"
+
+
+def test_s4_panel_sizes_follow_slot_geometry(tmp_path: Path):
+    """每格按它自己的版位比例出图(而不是所有格共用整页的 3:2)——这是人脸被裁的根治手段。"""
+    from shanhai import paneling
+    p = _multi_panel_project(tmp_path, 3)
+    image = MagicMock(); image.timeout = 600; image.generate.return_value = _png()
+    s4_pages.run(p, image, tmp_path, "1536x1024")
+    sent = [c.kwargs["size"] for c in image.generate.call_args_list]
+    expect = [f"{w}x{h}" for w, h in paneling.slot_sizes(p.storyboard[0].panels)]
+    assert sent == expect
+    assert len(set(sent)) > 1, "3 格版式的版位尺寸本就不同,不该全部一样"
+    assert "1536x1024" not in sent, "不应再退回整页尺寸"
 
 
 def test_s4_records_image_gen_ms_on_success(tmp_path: Path):
