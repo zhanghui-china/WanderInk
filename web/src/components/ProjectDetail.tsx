@@ -21,6 +21,9 @@ function emotionCls(e: string): string {
 
 const EMOTIONS = ['宁静', '温情', '惊变', '悲壮', '险境', '烟雨', '苍凉']
 
+// 语种码 -> 中文标签。后端 /api/meta 的 track_langs 决定出现哪些语种,这里只管显示名。
+const TRACK_LABEL: Record<string, string> = { en: '英文版' }
+
 const STEP_ACTIONS: { name: string; label: string; destructive?: boolean }[] = [
   { name: 's2', label: '分镜', destructive: true },
   { name: 's3', label: '角色' },
@@ -61,6 +64,7 @@ export function ProjectDetailView({
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [insertAfter, setInsertAfter] = useState<number | null>(null)
   const [stepBusy, setStepBusy] = useState<string | null>(null)
+  const [trackBusy, setTrackBusy] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
   const generating = project.pipeline === 'queued' || project.pipeline === 'running'
@@ -92,6 +96,21 @@ export function ProjectDetailView({
       setTimeout(() => setCopied(false), 1500)
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function handleTrack(lang: string) {
+    if (!window.confirm(
+      `确定生成${TRACK_LABEL[lang] ?? lang}?会把中文解说逐页翻译、合成该语种配音并另出一支成片,` +
+      `耗时与配音+合成相当。中文成片不受影响。`)) return
+    setTrackBusy(lang)
+    try {
+      await api.runTrack(project.project_id, lang)
+      onChanged()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTrackBusy(null)
     }
   }
 
@@ -172,6 +191,47 @@ export function ProjectDetailView({
         </div>
       )}
 
+      {/* 多语种轨:面向外国游客的另一支成片(共用同一套画面,只换译文与配音) */}
+      {!meta?.readonly && (meta?.track_langs?.length ?? 0) > 0 && project.pages.length > 0 && (
+        <div className={card}>
+          <CardHead glyph="译" title="多语种" />
+          <div className="space-y-3">
+            {(meta?.track_langs ?? []).map((lang) => {
+              const label = TRACK_LABEL[lang] ?? lang
+              const url = project.track_mp4?.[lang]
+              const translated = project.pages.filter((p) => p.tracks?.[lang]?.caption).length
+              const voiced = project.pages.filter((p) => p.tracks?.[lang]?.audio).length
+              return (
+                <div key={lang} className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium tracking-wide text-muted">{label}</span>
+                    <span className="text-[11px] text-muted">
+                      译文 {translated}/{project.pages.length} · 配音 {voiced}/{project.pages.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleTrack(lang)}
+                      disabled={generating || trackBusy !== null}
+                      className={`${toolBtn} ml-auto`}
+                    >
+                      {trackBusy === lang ? '入队中…' : url ? `重新生成${label}` : `生成${label}`}
+                    </button>
+                  </div>
+                  {url && (
+                    <>
+                      <video src={url} controls className="w-full rounded-xl border border-line bg-black" />
+                      <a href={url} download className={ghostBtn}>
+                        下载{label}成片
+                      </a>
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* 成片 */}
       {project.mp4 && (
         <div className={card}>
@@ -234,6 +294,7 @@ export function ProjectDetailView({
                 <PageCard
                   pg={pg}
                   projectId={project.project_id}
+                  trackLangs={meta?.track_langs ?? []}
                   editable={editable}
                   onChanged={onChanged}
                   dragIndex={dragIndex}
@@ -433,6 +494,117 @@ function CharacterCard({
   )
 }
 
+function TrackRow({
+  projectId,
+  pg,
+  lang,
+  editable,
+  onChanged,
+}: {
+  projectId: string
+  pg: Page
+  lang: string
+  editable: boolean
+  onChanged: () => void
+}) {
+  const track = pg.tracks?.[lang]
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState(track?.caption ?? '')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const label = TRACK_LABEL[lang] ?? lang
+
+  // 还没翻译过这一页就整行不渲染,避免每页都挂一条空壳
+  if (!track?.caption && !editing) return null
+
+  async function save() {
+    setBusy('save')
+    setErr(null)
+    try {
+      await api.patchCellTrack(projectId, pg.index, lang, text.trim())
+      setEditing(false)
+      onChanged()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function revoice() {
+    if (!window.confirm(
+      `确定重配第 ${pg.index} 页的${label}配音?改完后需要再点一次「重新生成${label}」才会合成。`
+    )) return
+    setBusy('revoice')
+    try {
+      await api.revoiceCellTrack(projectId, pg.index, lang)
+      onChanged()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="space-y-1.5 rounded-lg border border-line bg-white/40 p-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] tracking-[2px] text-muted">{label}</span>
+        {track?.duration_ms ? (
+          <span className="text-[11px] text-muted">{(track.duration_ms / 1000).toFixed(1)}s</span>
+        ) : null}
+        {editable && !editing && (
+          <div className="ml-auto flex gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setText(track?.caption ?? '')
+                setErr(null)
+                setEditing(true)
+              }}
+              className={toolBtn}
+            >
+              校对
+            </button>
+            {track?.audio && (
+              <button type="button" onClick={revoice} disabled={busy !== null} className={toolBtn}>
+                {busy === 'revoice' ? '处理中…' : '重配音'}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {editing ? (
+        <div className="space-y-1.5">
+          <textarea
+            className={`${fieldCls} h-16 resize-none`}
+            value={text}
+            maxLength={240}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <div className="flex items-center gap-1.5">
+            <button type="button" onClick={save} disabled={busy !== null} className={primaryBtn}>
+              {busy === 'save' ? '保存中…' : '保存'}
+            </button>
+            <button type="button" onClick={() => setEditing(false)} className={ghostBtn}>
+              取消
+            </button>
+            <span className="text-[11px] text-muted">
+              改动会作废本页{label}配音,需重新生成
+            </span>
+          </div>
+          {err && <p className="text-[11px] text-alarm">{err}</p>}
+        </div>
+      ) : (
+        <p className="text-[13px] leading-relaxed text-ink-soft">{track?.caption}</p>
+      )}
+      {track?.audio && !editing && (
+        <audio src={track.audio} controls className="h-9 w-full" />
+      )}
+    </div>
+  )
+}
+
 function InsertPageForm({
   projectId,
   afterIndex,
@@ -505,6 +677,7 @@ function InsertPageForm({
 function PageCard({
   pg,
   projectId,
+  trackLangs,
   editable,
   onChanged,
   dragIndex,
@@ -516,6 +689,7 @@ function PageCard({
 }: {
   pg: Page
   projectId: string
+  trackLangs: string[]
   editable: boolean
   onChanged: () => void
   dragIndex: number | null
@@ -785,6 +959,17 @@ function PageCard({
             {pg.status === 'failed' && <span className="text-alarm">生成失败</span>}
           </div>
           {pg.audio && <audio src={pg.audio} controls className="h-9 w-full" />}
+
+          {trackLangs.map((lang) => (
+            <TrackRow
+              key={lang}
+              projectId={projectId}
+              pg={pg}
+              lang={lang}
+              editable={editable}
+              onChanged={onChanged}
+            />
+          ))}
 
           {(pg.image || editable) && (
             <div className="flex flex-wrap items-center gap-1.5 border-t border-line pt-2.5">

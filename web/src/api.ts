@@ -104,6 +104,26 @@ export const api = {
       j<ProjectDetail>(r)
     ),
 
+  // ---- 附加语种轨(如英文版):翻译 + 配音 + 成片 ----
+  runTrack: (id: string, lang: string) =>
+    fetch(`/api/projects/${id}/tracks/${lang}`, { ...CREDS, method: 'POST' }).then((r) =>
+      j<{ queued: boolean }>(r)
+    ),
+
+  patchCellTrack: (id: string, index: number, lang: string, caption: string) =>
+    fetch(`/api/projects/${id}/cells/${index}/tracks/${lang}`, {
+      ...CREDS,
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ caption }),
+    }).then((r) => j<ProjectDetail>(r)),
+
+  revoiceCellTrack: (id: string, index: number, lang: string) =>
+    fetch(`/api/projects/${id}/cells/${index}/tracks/${lang}/revoice`, {
+      ...CREDS,
+      method: 'POST',
+    }).then((r) => j<ProjectDetail>(r)),
+
   insertCell: (id: string, afterIndex: number, fields: InsertCellFields) =>
     fetch(`/api/projects/${id}/cells`, {
       ...CREDS,

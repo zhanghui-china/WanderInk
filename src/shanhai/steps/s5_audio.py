@@ -10,11 +10,11 @@ from shanhai import ffmpeg
 from shanhai.ffmpeg import probe_duration_ms
 from shanhai.providers.music import MusicClient
 from shanhai.providers.tts import TTSClient
-from shanhai.schema import Project
+from shanhai.schema import LocalizedTrack, Project, StoryboardCell
 
 DEFAULT_MANIFEST = Path(__file__).resolve().parents[3] / "assets" / "bgm" / "manifest.json"
-CHARS_PER_SEC = 4.0       # 解说语速估算(与 PRD S1 字数-时长模型同量级)
 MIN_MS = 2500             # 单页最短显示时长
+DEFAULT_LANG = "zh"       # 主语言:文本/音频仍存在 StoryboardCell 自身字段上
 
 # 情绪基调 → 器乐风格标签(ACE-Step 的 style 是音乐风格描述,不经 LLM,直接查表拼装)。
 TONE_MUSIC_TAGS = {
@@ -30,17 +30,29 @@ STYLE_PRESET_MUSIC_TAGS = {
 }
 MUSIC_MAX_S = 180.0       # ACE-Step 单曲合理上限;超时长交给 finalize_cmd 的 -stream_loop 循环兜底
 MUSIC_RETRIES = 1         # 见 providers/music.py 的取舍说明:单次生成慢,不宜死磕重试
-# DGX 实测 CosyVoice2 连读约 240–270ms/字(见 docs/deploy-dgx.md P1 实证):旧值 380 高于真实语速,
-# 会把正常语音误判为截断而空转 TTS_TRIES;下调到 150 只兜住真正的严重截断(<150ms/字)。
-MIN_MS_PER_CHAR = 150     # 低于字数×150ms 才判疑似截断(既做整段截断兜底,也做分句重试阈值)
+# 每语种的朗读节奏:(每秒字符数, 每字符最短毫秒数)。
+# - 每秒字符数用于 TTS 不可用时按文案长度估算静音兜底时长。
+# - 每字符最短毫秒数是"疑似截断"的下限阈值:低于 字符数×该值 才判截断。
+# zh:DGX 实测 CosyVoice2 连读约 240–270ms/字(见 docs/deploy-dgx.md P1 实证),旧值 380 高于
+#    真实语速会把正常语音误判为截断而空转 TTS_TRIES,150 只兜住真正的严重截断。
+# en:英文 TTS 约 2.5–3 词/秒、平均词长约 5 字符 → 约 14 字符/秒、约 70ms/字符;阈值取 55 留余量。
+#    **这组英文数字是按通用语速折算的估值,不是实测**——上线后拿真实英文音频复测再定标,
+#    做法与当年把中文从 380 下调到 150 完全一样(见 docs/deploy-dgx.md)。
+LANG_PACE: dict[str, tuple[float, int]] = {"zh": (4.0, 150), "en": (14.0, 55)}
+
+
+def _pace(lang: str) -> tuple[float, int]:
+    """未知语种回落到主语言参数——宁可沿用中文阈值,也不要因为查不到而崩掉整轮配音。"""
+    return LANG_PACE.get(lang, LANG_PACE[DEFAULT_LANG])
 TTS_TRIES = 3             # 弱模型 TTS 偶发截断/空返回,分句退化路径里重合成取最长的一次
 CLAUSE_DELIMS = "。！？；，、：!?;,:\n"  # 全角+半角句/读点;短输入避开小模型的确定性提前停止
 MIN_CLAUSE_CHARS = 3      # 短于此的碎片并入相邻句,避免逐字合成发碎
 S5_CONCURRENCY = 3        # 逐页配音并发上限,与 S4 同量级(代理过载/本地 TTS 排队保守取值)
 
 
-def _estimate_ms(caption: str) -> int:
-    return max(MIN_MS, round(len(caption) / CHARS_PER_SEC * 1000))
+def _estimate_ms(caption: str, lang: str = DEFAULT_LANG) -> int:
+    chars_per_sec, _ = _pace(lang)
+    return max(MIN_MS, round(len(caption) / chars_per_sec * 1000))
 
 
 def _split_clauses(caption: str) -> list[str]:
@@ -72,11 +84,11 @@ def _split_clauses(caption: str) -> list[str]:
 
 
 def _synthesize_clause(tts: TTSClient, text: str, voice: str, dest: Path,
-                       speed: float = 1.0) -> int:
+                       speed: float = 1.0, lang: str = DEFAULT_LANG) -> int:
     """合成一句并检测截断:时长明显偏短则重合成,始终保留最长的一次。返回时长 ms。"""
-    # floor 随 speed 缩放:MIN_MS_PER_CHAR 按 speed=1.0 校准,语速越快每字应有的最短时长越短,
+    # floor 随 speed 缩放:每字符最短毫秒数按 speed=1.0 校准,语速越快每字应有的最短时长越短,
     # 否则高语速正常语音会被误判截断而空转 TTS_TRIES。speed=1.0 时与原值一致(无回归)。
-    floor = round(len(text) * MIN_MS_PER_CHAR / speed)
+    floor = round(len(text) * _pace(lang)[1] / speed)
     tmp = dest.with_suffix(".try.mp3")
     best_ms = 0
     for _ in range(TTS_TRIES):
@@ -95,20 +107,20 @@ def _synthesize_clause(tts: TTSClient, text: str, voice: str, dest: Path,
 
 
 def _synthesize_full(tts: TTSClient, caption: str, voice: str, out: Path,
-                     speed: float = 1.0) -> int:
+                     speed: float = 1.0, lang: str = DEFAULT_LANG) -> int:
     """整段单发优先:CosyVoice2 类稳定模型一次合成整句最自然、且不截断(DGX 实测,见
     docs/deploy-dgx.md P1),省去逐句的多次调用与句间硬拼。仅当单发结果疑似截断
-    (时长 < 字数×MIN_MS_PER_CHAR)才退化到逐句合成,兼容会确定性截断的弱模型。
+    (时长 < 字符数×每字符最短毫秒数)才退化到逐句合成,兼容会确定性截断的弱模型。
     返回真实时长 ms;失败向上抛。"""
     if not caption.strip():
         raise ValueError("空文案,无法合成")
     ms = _synthesize_single(tts, caption, voice, out, speed=speed)
     # floor 随 speed 缩放(同 _synthesize_clause):高语速下正常语音更短,不应误判为截断而退化逐句。
-    floor = round(len(caption) * MIN_MS_PER_CHAR / speed)
+    floor = round(len(caption) * _pace(lang)[1] / speed)
     if ms >= floor:
         return ms
-    print(f"⚠️ 整段合成疑似截断({ms}ms<{floor}ms),退化逐句合成")
-    return _synthesize_chunked(tts, caption, voice, out, speed=speed)
+    print(f"⚠️ 整段合成疑似截断({lang}:{ms}ms<{floor}ms),退化逐句合成")
+    return _synthesize_chunked(tts, caption, voice, out, speed=speed, lang=lang)
 
 
 def _synthesize_single(tts: TTSClient, caption: str, voice: str, out: Path,
@@ -124,7 +136,7 @@ def _synthesize_single(tts: TTSClient, caption: str, voice: str, out: Path,
 
 
 def _synthesize_chunked(tts: TTSClient, caption: str, voice: str, out: Path,
-                        speed: float = 1.0) -> int:
+                        speed: float = 1.0, lang: str = DEFAULT_LANG) -> int:
     """退化路径:按标点分句、逐句合成(避开弱模型的确定性截断)、逐句修剪首尾静音、拼接为整页音轨。
     返回真实总时长 ms;失败向上抛。"""
     clauses = _split_clauses(caption)
@@ -135,7 +147,7 @@ def _synthesize_chunked(tts: TTSClient, caption: str, voice: str, out: Path,
     list_file = out.with_suffix(".concat.txt")
     try:
         for clause, raw, part in zip(clauses, raws, parts):
-            _synthesize_clause(tts, clause, voice, raw, speed=speed)
+            _synthesize_clause(tts, clause, voice, raw, speed=speed, lang=lang)
             ffmpeg.sh(ffmpeg.trim_silence_cmd(raw, part))   # 修剪该句首尾静音
         if len(parts) == 1:
             parts[0].replace(out)
@@ -153,34 +165,47 @@ def _synthesize_chunked(tts: TTSClient, caption: str, voice: str, out: Path,
         list_file.unlink(missing_ok=True)
 
 
+def track_of(cell: StoryboardCell, lang: str) -> StoryboardCell | LocalizedTrack:
+    """取该语种的文本/音频载体。主语言直接用 cell 自身的字段(零改动、零迁移);
+    其它语种用 cell.tracks[lang],不存在则就地建一个空轨。
+    两者字段同名(caption/audio/duration_ms/silent),调用方无需分支。"""
+    if lang == DEFAULT_LANG:
+        return cell
+    return cell.tracks.setdefault(lang, LocalizedTrack())
+
+
 def _process_cell(cell, tts: TTSClient, voice: str, speed: float,
-                  audio_dir: Path, workdir: Path) -> None:
-    """单页配音:线程安全——只写各自 page_NN.mp3 与各自 cell,不共享可变态。
+                  audio_dir: Path, workdir: Path, lang: str = DEFAULT_LANG) -> None:
+    """单页配音:线程安全——只写各自 page_NN[.lang].mp3 与各自 cell,不共享可变态。
     TTS 失败→静音兜底;兜底也失败→留空(异常在此吞掉,不炸线程池)。"""
-    out = audio_dir / f"page_{cell.index:02d}.mp3"
+    track = track_of(cell, lang)
+    suffix = "" if lang == DEFAULT_LANG else f".{lang}"
+    out = audio_dir / f"page_{cell.index:02d}{suffix}.mp3"
+    if not track.caption.strip():
+        return   # 该语种还没有译文(如英文轨尚未翻译到这一页),跳过而不是合成空音频
     # 静音兜底页不短路:即使已有音轨也应重试真人合成,以便 TTS 恢复后重跑补回解说。
-    if cell.audio and not cell.silent and out.exists():
-        cell.duration_ms = max(probe_duration_ms(out), MIN_MS)   # M6:续跑复用也套 MIN_MS 下限
+    if track.audio and not track.silent and out.exists():
+        track.duration_ms = max(probe_duration_ms(out), MIN_MS)   # M6:续跑复用也套 MIN_MS 下限
         return
     try:
         # M6:成功路径抬到 MIN_MS,避免修剪后极短音频让页面一闪而过。
-        cell.duration_ms = max(_synthesize_full(tts, cell.caption, voice, out, speed=speed),
-                               MIN_MS)
-        cell.audio = str(out.relative_to(workdir))
-        cell.silent = False
+        track.duration_ms = max(
+            _synthesize_full(tts, track.caption, voice, out, speed=speed, lang=lang), MIN_MS)
+        track.audio = str(out.relative_to(workdir))
+        track.silent = False
     except Exception as e:  # noqa: BLE001 TTS/探测失败 → 静音兜底,成片完整但该页无解说
         try:
-            dur = _estimate_ms(cell.caption)
+            dur = _estimate_ms(track.caption, lang)
             ffmpeg.sh(ffmpeg.silent_audio_cmd(dur, out))
-            cell.audio = str(out.relative_to(workdir))
-            cell.duration_ms = dur
-            cell.silent = True
-            print(f"第 {cell.index} 页 TTS 失败,静音兜底({dur}ms):{e}")
+            track.audio = str(out.relative_to(workdir))
+            track.duration_ms = dur
+            track.silent = True
+            print(f"第 {cell.index} 页 TTS 失败({lang}),静音兜底({dur}ms):{e}")
         except Exception as e2:  # noqa: BLE001 兜底也失败 → 留空,S6 跳过该页
-            print(f"第 {cell.index} 页配音+兜底均失败:{e2}")
-            cell.audio = ""
-            cell.duration_ms = 0
-            cell.silent = False   # 无音轨,silent 复位,免让 UI 误标"静音兜底"
+            print(f"第 {cell.index} 页配音+兜底均失败({lang}):{e2}")
+            track.audio = ""
+            track.duration_ms = 0
+            track.silent = False   # 无音轨,silent 复位,免让 UI 误标"静音兜底"
 
 
 def _build_music_prompt(project: Project) -> str:
@@ -241,8 +266,13 @@ def _resolve_bgm(project: Project, music: MusicClient | None, workdir: Path,
 
 def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
         music: MusicClient | None = None, manifest_path: Path = DEFAULT_MANIFEST,
-        cancel_check: Callable[[], bool] | None = None) -> Project:
-    effective_voice = project.params.voice or voice
+        cancel_check: Callable[[], bool] | None = None,
+        lang: str = DEFAULT_LANG) -> Project:
+    # 非主语言走 params.voice_en(留空则用调用方传入的配置层默认);BGM 与语言无关,
+    # 已经由主语言那轮生成过,附加语种轨不再重跑,免得白烧一次 GPU 还覆盖掉现有 project.bgm。
+    is_main = lang == DEFAULT_LANG
+    effective_voice = (project.params.voice or voice) if is_main \
+        else (project.params.voice_en or voice)
     speed = project.params.speed
     audio_dir = workdir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -252,9 +282,12 @@ def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
     # 派生(page_NN.*),各页互不相干;单页异常已在 _process_cell 内吞掉并兜底,不炸线程池。
     # BGM 在独立线程里三级降级、异常自兜底(_resolve_bgm 内整段捕获),故 bgm_future.result() 不抛。
     with cf.ThreadPoolExecutor(max_workers=S5_CONCURRENCY + 1) as ex:
-        bgm_future = ex.submit(_resolve_bgm, project, music, workdir, manifest_path)
+        # BGM 与语言无关,主语言那轮已经选好/生成好了:附加语种轨不再重跑,既省一次 GPU,
+        # 也避免用曲库兜底的结果覆盖掉已有的 AI BGM。
+        bgm_future = ex.submit(_resolve_bgm, project, music, workdir, manifest_path) \
+            if is_main else None
         futures = [ex.submit(_process_cell, cell, tts, effective_voice, speed,
-                             audio_dir, workdir) for cell in project.storyboard]
+                             audio_dir, workdir, lang) for cell in project.storyboard]
         cancelled = False
         for f in cf.as_completed(futures):
             if cancel_check and cancel_check():
@@ -263,14 +296,17 @@ def run(project: Project, tts: TTSClient, voice: str, workdir: Path,
                     pending_f.cancel()  # 已开始的取消不了(Python 线程池物理限制),但能拦掉还没排上的
                 break
             f.result()
-        if cancelled:
+        if bgm_future is None:
+            pass   # 附加语种轨不碰 BGM,沿用主语言那轮的 project.bgm
+        elif cancelled:
             bgm_future.cancel()  # 已开始的 BGM 生成取消不了,但至少不再无条件等它(BGM 非关键,允许缺失)
             if not bgm_future.cancelled():
                 project.bgm = bgm_future.result()  # 已经在跑,只能等它跑完;_resolve_bgm 内部自兜底不会抛
         else:
             project.bgm = bgm_future.result()
-    # 诚实状态:仅当每页都有真人解说(有音频且非静音兜底)才算 done;否则 partial
-    narrated = bool(project.storyboard) and all(
-        c.audio and not c.silent for c in project.storyboard)
-    project.status["s5"] = "done" if narrated else "partial"
+    # 诚实状态:仅当每页都有真人解说(有音频且非静音兜底)才算 done;否则 partial。
+    # 附加语种轨记在自己的状态键上,不覆盖主语言的 s5。
+    tracks = [track_of(c, lang) for c in project.storyboard]
+    narrated = bool(tracks) and all(t.audio and not t.silent for t in tracks)
+    project.status["s5" if is_main else f"s5_{lang}"] = "done" if narrated else "partial"
     return project

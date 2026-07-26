@@ -183,3 +183,24 @@ def finalize_cmd(video: Path, bgm: Path | None, out: Path) -> list[str]:
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", str(out)]
     return ["ffmpeg", "-y", "-i", str(video), "-af", loudnorm,
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(out)]
+
+
+def mux_subtitles_cmd(video: Path, subs: list[tuple[Path, str]], out: Path) -> list[str]:
+    """把若干 SRT 作为软字幕轨封进 MP4。subs 是 (srt 路径, ISO 639-2 语种码) 列表,
+    如 [(zh.srt, "zho"), (en.srt, "eng")]。
+
+    独立一趟做,不并进 finalize_cmd:后者带 -stream_loop -1 的 BGM 输入和 -shortest,
+    再塞进稀疏的字幕流容易让 -shortest 按字幕结束时刻截断整片。这里音视频都是 copy,
+    没有重编码开销,代价可以忽略。"""
+    cmd = ["ffmpeg", "-y", "-i", str(video)]
+    for path, _lang in subs:
+        cmd += ["-i", str(path)]
+    cmd += ["-map", "0:v", "-map", "0:a"]
+    for i in range(len(subs)):
+        cmd += ["-map", str(i + 1)]
+    # mov_text 是 MP4 容器唯一广泛支持的字幕编码;srt 原样封装播放器多半不认。
+    cmd += ["-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text"]
+    for i, (_path, lang) in enumerate(subs):
+        cmd += [f"-metadata:s:s:{i}", f"language={lang}"]
+    cmd.append(str(out))
+    return cmd

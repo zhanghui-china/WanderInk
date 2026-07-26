@@ -49,7 +49,7 @@ def test_s6_builds_and_records_output(tmp_path: Path):
     assert p.output["mp4"].endswith("final.mp4")
     assert p.status["s6"] == "done"
     assert sh.call_count >= 4          # 片头 clip + 页 clip + 片尾 clip + concat + finalize
-    assert ov.call_count == 1          # 每确认页生成一张静态字幕/水印 overlay
+    assert ov.call_count == 1          # 全片共用一张水印 overlay(字幕已改走软字幕轨)
 
 
 def test_s6_kenburns_xfade_pipeline(tmp_path: Path):
@@ -103,7 +103,8 @@ def test_s6_skips_missing_and_unconfirmed_cells(tmp_path: Path):
          patch("shanhai.steps.s6_compose.typeset.credits_card"), \
          patch("shanhai.steps.s6_compose.typeset.overlay_layer") as ov:
         p = s6_compose.run(p, tmp_path)
-    assert sh.call_count == 5           # 片头 + 1 正文页 + 片尾 + concat + finalize,跳过另两页
+    # 片头 + 1 正文页 + 片尾 + concat + finalize + 封字幕轨,跳过另两页
+    assert sh.call_count == 6
     assert ov.call_count == 1           # 仅入选页生成 overlay
     assert p.status["s6"] == "partial"  # 有页被跳过,不能诚实地标 done(见 2026-07-16 反馈)
 
@@ -146,7 +147,8 @@ def test_s6_parallel_encode_preserves_page_order(tmp_path: Path):
          patch("shanhai.steps.s6_compose.typeset.overlay_layer") as ov:
         s6_compose.run(p, tmp_path)
 
-    assert ov.call_count == n                       # 每页各生成一次 overlay
+    # 字幕改走软字幕轨后 overlay 只剩水印,内容与页码无关 → 全片共用一张,不再逐页生成
+    assert ov.call_count == 1
     page_calls = [c.args[0] for c in sh.call_args_list if "zoompan" in " ".join(c.args[0])]
     assert len(page_calls) == n                      # 每页各编码一次
 

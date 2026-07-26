@@ -37,6 +37,7 @@ const TTS_FIELDS: FieldDef[] = [
   { key: 'tts_model', label: '模型', kind: 'text' },
   { key: 'tts_voice', label: '默认音色', kind: 'text' },
   { key: 'tts_voices', label: '可选音色(逗号分隔)', kind: 'text' },
+  { key: 'tts_voice_en', label: '英文轨音色', kind: 'text' },
 ]
 const MUSIC_FIELDS: FieldDef[] = [
   { key: 'music_base_url', label: '端点 Base URL', kind: 'text' },
@@ -76,6 +77,7 @@ const EMPTY_OVERRIDE_VIEW: ConfigOverrideView = {
   tts_model: null,
   tts_voice: null,
   tts_voices: null,
+  tts_voice_en: null,
   music_base_url: null,
   music_api_key: null,
   music_model: null,

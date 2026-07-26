@@ -48,21 +48,24 @@ def compose_page(art: bytes, out: Path) -> None:
 def overlay_image(caption: str) -> Image.Image:
     # 1920×1080 透明画布:仅底部渐变遮罩 + 白色字幕 + 右上"@WanderInk AI辅助生成"水印。
     # 上部完全透明,合成时不遮画面;整层静态,不随 Ken Burns 推拉。
+    # caption 为空 = 不烧字幕(只留水印):成片走 MP4 软字幕轨,画面不该再压死一层文字;
+    # 导出的 zip/pdf 仍传 caption 烧录——纸质连环画没有"软字幕"这回事,去掉文字就废了。
     layer = Image.new("RGBA", FRAME, (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer, "RGBA")
-    # 底部半透明渐变遮罩(透明→半透明黑,越往下越暗),承载字幕但不切走画面
-    grad_top = FRAME[1] - CAPTION_GRAD_H
-    for i in range(CAPTION_GRAD_H):
-        alpha = round(200 * i / (CAPTION_GRAD_H - 1))
-        draw.line([(0, grad_top + i), (FRAME[0], grad_top + i)], fill=(0, 0, 0, alpha))
-    font = _font(40)
-    lines = _wrap(caption, font, FRAME[0] - 240)[:2]
-    line_h = 56
-    y0 = FRAME[1] - 20 - line_h * len(lines)
-    for i, line in enumerate(lines):
-        w = font.getlength(line)
-        draw.text(((FRAME[0] - w) / 2, y0 + i * line_h), line, font=font, fill="white",
-                  stroke_width=2, stroke_fill="black")
+    if caption:
+        # 底部半透明渐变遮罩(透明→半透明黑,越往下越暗),承载字幕但不切走画面
+        grad_top = FRAME[1] - CAPTION_GRAD_H
+        for i in range(CAPTION_GRAD_H):
+            alpha = round(200 * i / (CAPTION_GRAD_H - 1))
+            draw.line([(0, grad_top + i), (FRAME[0], grad_top + i)], fill=(0, 0, 0, alpha))
+        font = _font(40)
+        lines = _wrap(caption, font, FRAME[0] - 240)[:2]
+        line_h = 56
+        y0 = FRAME[1] - 20 - line_h * len(lines)
+        for i, line in enumerate(lines):
+            w = font.getlength(line)
+            draw.text(((FRAME[0] - w) / 2, y0 + i * line_h), line, font=font, fill="white",
+                      stroke_width=2, stroke_fill="black")
     wm_font = _font(28)
     # 深色描边保证 AI 标识在留白/浅色画面上始终可见(合规:标识不可失效)
     draw.text((FRAME[0] - wm_font.getlength(WATERMARK) - 24, 20), WATERMARK,

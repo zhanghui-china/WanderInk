@@ -70,6 +70,7 @@ class ConfigOverride(BaseModel):
     tts_model: str | None = None
     tts_voice: str | None = None
     tts_voices: str | None = None
+    tts_voice_en: str | None = None
     music_base_url: str | None = None
     music_api_key: str | None = None
     music_model: str | None = None

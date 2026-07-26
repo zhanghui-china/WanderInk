@@ -4,7 +4,7 @@
 复位下游环节 status、把 pipeline 打回 partial 并清 project.output(mp4/zip/pdf 一旦内容变即过期)。"""
 from pathlib import Path
 
-from shanhai.schema import Project, StoryboardCell
+from shanhai.schema import LocalizedTrack, Project, StoryboardCell
 
 # 产物文件命名与 s4/s5 保持一致:pages/page_{index:02d}.png、audio/page_{index:02d}.mp3
 _MEDIA = [("image", "pages", "png"), ("audio", "audio", "mp3")]
@@ -127,6 +127,39 @@ def mark_redraw(project: Project, index: int) -> None:
     cell.image = ""
     cell.image_gen_ms = 0
     _invalidate_downstream(project, "s4")
+
+
+def _invalidate_track_output(project: Project, lang: str) -> None:
+    """该语种成片过期。只清这一语种的产物与状态,不动主语言的 mp4/zip/pdf——
+    改英文译文没有理由让中文成片作废。"""
+    project.output.pop(f"mp4_{lang}", None)
+    for key in (f"s6_{lang}", f"track_{lang}",
+                f"track_{lang}_started_at", f"track_{lang}_elapsed_s"):
+        project.status.pop(key, None)
+
+
+def update_track_caption(project: Project, index: int, lang: str, caption: str) -> None:
+    """人工校对某页某语种的译文。文本一变,该页该语种的旧配音就念的是旧稿,一并作废;
+    该语种成片同样过期。主语言内容与产物完全不受影响。"""
+    cell = _cell_at(project, index)
+    track = cell.tracks.setdefault(lang, LocalizedTrack())
+    track.caption = caption
+    track.audio = ""
+    track.duration_ms = 0
+    track.silent = False
+    project.status.pop(f"s5_{lang}", None)
+    _invalidate_track_output(project, lang)
+
+
+def mark_track_revoice(project: Project, index: int, lang: str) -> None:
+    """标记某页某语种需重配音:清该语种音频(译文保留,s5 据此重配)。"""
+    cell = _cell_at(project, index)
+    track = cell.tracks.setdefault(lang, LocalizedTrack())
+    track.audio = ""
+    track.duration_ms = 0
+    track.silent = False
+    project.status.pop(f"s5_{lang}", None)
+    _invalidate_track_output(project, lang)
 
 
 def mark_revoice(project: Project, index: int) -> None:

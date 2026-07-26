@@ -53,6 +53,19 @@ class Panel(BaseModel):
     image: str = ""  # S4 填入,该格自己的生成图相对路径
 
 
+class LocalizedTrack(BaseModel):
+    """非主语言(中文)的一页译文与配音。主语言仍走 StoryboardCell 上的原字段
+    (caption/audio/duration_ms/silent),这样既有项目文件、既有代码路径与既有测试全部零改动,
+    多语种只是旁挂上来的一层。"""
+    model_config = ConfigDict(validate_assignment=True)
+
+    # 英文表达同义内容的字符数约为中文的 2~2.5 倍,主语言那条 80 的上限不够用。
+    caption: str = Field(default="", max_length=240)
+    audio: str = ""
+    duration_ms: int = 0
+    silent: bool = False
+
+
 class StoryboardCell(BaseModel):
     # validate_assignment:属性赋值也校验,堵住编辑端点绕过 caption max_length 写入
     # 永久不可加载的 project.json(pydantic ValidationError 是 ValueError 子类,端点直接转 400)。
@@ -72,6 +85,8 @@ class StoryboardCell(BaseModel):
     silent: bool = False
     status: Literal["draft", "confirmed", "failed"] = "draft"
     panels: list[Panel] = Field(default_factory=list)  # 空 = 单图模式(现状不变)
+    # 语种码 -> 该语种的译文与配音(如 "en");中文不进这里,仍用上面的原字段。
+    tracks: dict[str, LocalizedTrack] = Field(default_factory=dict)
 
 
 class GenerationParams(BaseModel):
@@ -79,6 +94,7 @@ class GenerationParams(BaseModel):
     audience: Literal["儿童", "大众"] = "大众"
     tone: Literal["温情", "奇幻", "悬疑"] = "温情"
     voice: str = ""
+    voice_en: str = ""   # 英文轨音色;留空则回落到配置层的 tts_voice_en
     speed: float = 1.0
     multi_panel: bool = False
     use_hermes_agent: bool = True

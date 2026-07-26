@@ -35,9 +35,12 @@ from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig, apply_put,
                                      update_overrides)
 from shanhai.schema import Project
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
-                           s4_pages, s5_audio, s6_compose)
+                           s4_pages, s5_audio, s5t_translate, s6_compose)
 from shanhai.loras import LORA_PRESETS
 from shanhai.styles import STYLE_PRESETS
+
+# 可产出的附加语种轨(主语言中文不在其中,它走原有流水线)。加一门语言只需扩 s5t_translate.LANGUAGES。
+TRACK_LANGS = tuple(s5t_translate.LANGUAGES)
 
 app = FastAPI(title="WanderInk · 有声连环画生成器")
 
@@ -322,6 +325,10 @@ def _serialize(p: Project) -> dict:
         "scene_ref": c.scene_ref, "visual_desc": c.visual_desc, "characters": c.characters,
         "image": _file_url(p.project_id, c.image, workdir),
         "audio": _file_url(p.project_id, c.audio, workdir),
+        "tracks": {lg: {"caption": t.caption, "duration_ms": t.duration_ms,
+                        "silent": t.silent,
+                        "audio": _file_url(p.project_id, t.audio, workdir)}
+                   for lg, t in c.tracks.items()},
     } for c in p.storyboard]
     characters = [{
         "name": c.name, "role": c.role,
@@ -344,6 +351,9 @@ def _serialize(p: Project) -> dict:
         "mp4": _mp4_url(p.output.get("mp4", "")),
         "zip": _mp4_url(p.output.get("zip", "")),
         "pdf": _mp4_url(p.output.get("pdf", "")),
+        # 附加语种成片:{"en": "/files/..."};没生成过就是空字典
+        "track_mp4": {lg: _mp4_url(p.output.get(f"mp4_{lg}", ""))
+                      for lg in TRACK_LANGS if p.output.get(f"mp4_{lg}")},
     }
 
 
@@ -808,6 +818,116 @@ def run_step(project_id: str, name: str, user: str = Depends(current_user)) -> J
     return JSONResponse({"queued": True}, status_code=202)
 
 
+def _run_track(project_id: str, lang: str, cfg: AppConfig) -> None:
+    """后台线程产出附加语种轨:翻译 → 该语种配音 → 该语种成片。
+    复用 _run_step 的状态写入与异常兜底语义;各环节自身幂等,失败后重点一次即可续跑。"""
+    try:
+        p = store.load(project_id)
+        workdir = store.project_dir(project_id)
+        p.status["pipeline"] = "running"
+        p.status["pipeline_started_at"] = _now_iso()
+        _locked_save(p)
+        if _check_cancelled(project_id):
+            p.status["pipeline"] = "cancelled"
+            p.status["pipeline_finished_at"] = _now_iso()
+            _locked_save(p)
+            return
+        t0 = _mark_step_started(p, f"track_{lang}")
+        p.status.pop(f"track_{lang}", None)
+        _locked_save(p)
+
+        s_llm = resolve_settings("s2", cfg)      # 译文属文本环节,沿用 S2 的 LLM 配置
+        llm, _image, _tts, _music = _clients(s_llm)
+        p = s5t_translate.run(p, llm, lang=lang)
+        _locked_save(p)
+
+        s_tts = resolve_settings("s5", cfg)
+        _l, _i, tts, _m = _clients(s_tts)
+        voice = s_tts.tts_voice_en or s_tts.tts_voice
+        p = s5_audio.run(p, tts, voice, workdir,
+                         cancel_check=lambda: _is_cancelled(project_id), lang=lang)
+        _locked_save(p)
+
+        p = s6_compose.run(p, workdir, lang=lang)
+        _mark_step_elapsed(p, f"track_{lang}", t0)
+        p.status[f"track_{lang}"] = "done" if p.output.get(f"mp4_{lang}") else "partial"
+        _locked_save(p)
+        if _check_cancelled(project_id):
+            p.status["pipeline"] = "cancelled"
+        else:
+            p.status["pipeline"] = _deliverable_status(p)
+        p.status["pipeline_finished_at"] = _now_iso()
+        _locked_save(p)
+    except Exception as e:  # noqa: BLE001 — 后台线程需兜住任何异常并记录到项目状态
+        _save_error(project_id, e)
+    finally:
+        with _JOBS_LOCK:
+            _CANCELLED.discard(project_id)
+
+
+@app.post("/api/projects/{project_id}/tracks/{lang}")
+def run_track(project_id: str, lang: str, user: str = Depends(current_user)) -> JSONResponse:
+    """生成附加语种轨(翻译 + 配音 + 成片)。排队/背压/互斥与 run_step 完全同款。"""
+    if lang not in TRACK_LANGS:
+        raise HTTPException(400, f"未知语种: {lang}")
+    _editable(project_id, user)
+    Settings()
+    cfg = load_overrides()
+    with _project_lock(project_id):
+        with _JOBS_LOCK:
+            for done in [k for k, f in list(_JOBS.items()) if f.done()]:
+                del _JOBS[done]
+            if project_id in _JOBS:
+                raise HTTPException(409, "该项目有未完成的生成作业,请等待完成后再编辑")
+            if len(_JOBS) >= MAX_PENDING:
+                raise HTTPException(429, f"生成队列已满(上限 {MAX_PENDING}),请稍后再试")
+            p = store.load(project_id)
+            if not p.storyboard:
+                raise HTTPException(400, "请先完成分镜与配图")
+            p.status["pipeline"] = "queued"
+            store.save(p)
+            _CANCELLED.discard(project_id)
+            _JOBS[project_id] = _EXECUTOR.submit(_run_track, project_id, lang, cfg)
+    return JSONResponse({"queued": True}, status_code=202)
+
+
+class TrackPatch(BaseModel):
+    caption: str = Field(max_length=240)   # 与 schema.LocalizedTrack.caption 同上限
+
+
+@app.patch("/api/projects/{project_id}/cells/{index}/tracks/{lang}")
+def patch_cell_track(project_id: str, index: int, lang: str, body: TrackPatch,
+                     user: str = Depends(current_user)) -> dict:
+    """人工校对译文。改了文本就作废该页该语种的旧配音与该语种成片——旧音频念的是旧译文。"""
+    if lang not in TRACK_LANGS:
+        raise HTTPException(400, f"未知语种: {lang}")
+    with _project_lock(project_id):
+        p = _editable(project_id, user)
+        try:
+            editing.update_track_caption(p, index, lang, body.caption)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        store.save(p)
+    return _serialize(p)
+
+
+@app.post("/api/projects/{project_id}/cells/{index}/tracks/{lang}/revoice")
+def revoice_cell_track(project_id: str, index: int, lang: str,
+                       user: str = Depends(current_user)) -> dict:
+    """标记单页该语种需重配音(清掉该页该语种音频与该语种成片)。
+    与主语言的 revoice 一样,只做标记;触发合成由前端紧接着调 /tracks/{lang} 完成。"""
+    if lang not in TRACK_LANGS:
+        raise HTTPException(400, f"未知语种: {lang}")
+    with _project_lock(project_id):
+        p = _editable(project_id, user)
+        try:
+            editing.mark_track_revoice(p, index, lang)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        store.save(p)
+    return _serialize(p)
+
+
 @app.get("/api/meta")
 def meta(user: str = Depends(current_user)) -> dict:
     """前端建项目表单用的枚举选项。"""
@@ -818,6 +938,8 @@ def meta(user: str = Depends(current_user)) -> dict:
         # 若这里只解析全局层,用户把 s5 覆盖成本地 CosyVoice 后表单仍列全局音色、选中即令 S5 请求全失败降级静音。
         "voices": resolve_settings("s5").tts_voices_list,
         "loras": list(LORA_PRESETS),
+        # 可产出的附加语种轨,如 ["en"];前端据此渲染"生成英文版"这类入口,不硬编码语种
+        "track_langs": list(TRACK_LANGS),
         "readonly": _READONLY,
     }
 

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     tts_model: str = "gpt-4o-mini-tts"
     tts_voice: str = "alloy"
     tts_voices: str = ""  # 逗号分隔的可选音色列表;空则回退 [tts_voice]
+    tts_voice_en: str = ""  # 英文轨默认音色(须是 TTS 后端认得的英文音色 key);空则沿用 tts_voice
     music_model: str = "ace-step-v1.5xl"
     llm_base_url: str | None = None
     llm_api_key: str | None = None
