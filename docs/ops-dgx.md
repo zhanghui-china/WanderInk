@@ -56,6 +56,11 @@ curl http://127.0.0.1:8092/health     # 配乐 shim:{"status":"ok"}
 curl http://127.0.0.1:8188/system_stats   # ComfyUI 本尊:200 说明它还活着
 ```
 
+> **三个 shim 的源码存档**:`~/image-shim`、`~/qwentts-shim`、`~/music-shim` 的 `main.py`
+> 都不在版本控制里,但仓库的 [`scripts/dgx-shims/`](../scripts/dgx-shims/) 存了一份**副本**,
+> 便于查阅、review 与机器重装时恢复。注意那是副本不是真源——**改仓库里那份不会有任何效果**,
+> 必须 scp 回 DGX 并重启对应服务,同步方法见该目录的 README。
+
 ## 8091 图像服务(shanhai-image)专项
 
 - 本体是 `~/image-shim/main.py`(独立 venv,不在 shanhai git 仓库里),用 `uvicorn main:app --port 8091` 常驻。它自己不做任何生成计算,只是把 shanhai 发来的 `POST /v1/images/generations` 请求转换成 ComfyUI 的 websocket 排队协议,再把结果转回 OpenAI 风格的响应。
