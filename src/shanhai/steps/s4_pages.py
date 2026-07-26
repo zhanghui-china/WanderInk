@@ -27,14 +27,19 @@ PAGE_TMPL = (
 PANEL_TMPL = (
     "{style}。漫画格画面:{scene}。出场角色:{features}。{shot}。"
     "严格保持角色与参考图中的形象一致(外观特征、色彩、服饰或体表覆盖物)。"
+    # 与 PAGE_TMPL 同款的安全边距要求。分格页拼版时每格仍会按版位比例做少量裁切,
+    # 主体贴边(尤其头顶/下巴)会被切掉——这是"人脸不全"投诉的一半原因。
+    "主体居中,人物头顶与下巴距画面上下边缘留出充足安全边距(排版时边缘可能被裁切)。"
     "画面中不要出现任何文字。"
 )
 
+_FACE_MARGIN = "特写镜头,聚焦面部表情与细节,但完整保留头顶与下巴,不要让脸贴到画面边缘"
 SHOT_HINTS = {
     "wide": "远景构图,交代场景全貌",
     "medium": "中景构图,人物与环境兼顾",
-    "closeup": "特写镜头,聚焦面部表情与细节",
-    "insert": "特写镜头,聚焦面部表情与细节",
+    # 特写本就要求脸占满画幅、几乎无余量,叠加拼版裁切最容易切额头/下巴,故单独强调留边
+    "closeup": _FACE_MARGIN,
+    "insert": _FACE_MARGIN,
 }
 
 
@@ -60,12 +65,19 @@ def _panel_prompt(panel: Panel, style: str, cards: dict) -> tuple[str, list[Char
 
 
 def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClient,
-                       image_size: str, workdir: Path, pages_dir: Path, ref_cache: Path) -> None:
+                       workdir: Path, pages_dir: Path, ref_cache: Path) -> None:
     imgs: list[bytes] = []
     kept_panels: list[Panel] = []
     gen_ms_total = 0
+    # 每格按它自己要塞进的版位比例出图,而不是所有格都用整页的 image_size:后者是 3:2,
+    # 而版位比例从 1.79 到 3.61 不等,cover 裁切会吃掉 16%~58% 的高度、人物头部首当其冲。
+    # 已知限制:某格生成失败被跳过时,compose_manga_page 会按幸存格数降级版式,届时这里
+    # 算的比例又对不上了——那种情况靠 paneling 的 PANEL_ANCHOR_Y 保头兜底。
+    sizes = paneling.slot_sizes(cell.panels)
     for i, panel in enumerate(cell.panels, 1):
         prompt, present = _panel_prompt(panel, style, cards)
+        sw, sh = sizes[i - 1]
+        panel_size = f"{sw}x{sh}"
         t0 = time.monotonic()
         for attempt in range(MAX_ATTEMPTS):
             if attempt > 0 and time.monotonic() - t0 >= image.timeout:
@@ -74,7 +86,7 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
                 refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
                         for c in present if c.turnaround_image]
                 gen_t0 = time.monotonic()
-                art = image.generate(prompt, size=image_size, references=refs or None)
+                art = image.generate(prompt, size=panel_size, references=refs or None)
                 gen_ms_total += round((time.monotonic() - gen_t0) * 1000)
                 out = pages_dir / f"page_{cell.index:02d}_panel{i}.png"
                 out.write_bytes(art)
@@ -96,9 +108,13 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
 
 
 def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClient,
-                 image_size: str, workdir: Path, pages_dir: Path, ref_cache: Path) -> None:
-    if cell.panels:
-        _render_panel_cell(cell, style, cards, image, image_size, workdir, pages_dir, ref_cache)
+                 image_size: str, workdir: Path, pages_dir: Path, ref_cache: Path,
+                 multi_panel: bool = False) -> None:
+    # 判据必须同时看 multi_panel:S2 给模型的 JSON Schema 里始终带着 panels 字段,
+    # 模型可能在用户没开分格时自发填上;只看 cell.panels 就会静默走分格(与用户预期相反)。
+    # 历史项目里已经存下的 panels 同理——开关关着就一律当单图页处理。
+    if cell.panels and multi_panel:
+        _render_panel_cell(cell, style, cards, image, workdir, pages_dir, ref_cache)
         return
     present = [cards[n] for n in cell.characters if n in cards]
     features = ";".join(f"{c.name}({c.feature_prompt})" for c in present) or "无固定角色"
@@ -145,8 +161,9 @@ def run(project: Project, image: ImageClient, workdir: Path, image_size: str,
     pending = [c for c in project.storyboard
                if not (c.status == "confirmed" and c.image and (workdir / c.image).exists())]
     with cf.ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futures = [ex.submit(_render_cell, cell, style, cards, image,
-                             image_size, workdir, pages_dir, ref_cache) for cell in pending]
+        futures = [ex.submit(_render_cell, cell, style, cards, image, image_size,
+                             workdir, pages_dir, ref_cache, project.params.multi_panel)
+                   for cell in pending]
         for f in cf.as_completed(futures):
             if cancel_check and cancel_check():
                 for pending_f in futures:

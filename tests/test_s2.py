@@ -153,3 +153,25 @@ def test_s2_multi_panel_clamps_panels_to_hard_cap():
     p.script = Script(title="t", theme="th", acts=[], characters=[])
     p = s2_storyboard.run(p, LLMClient(BASE, "sk", "m"))
     assert len(p.storyboard[0].panels) == s2_storyboard.MAX_PANELS_PER_PAGE
+
+
+@respx.mock
+def test_s2_drops_panels_when_multi_panel_off():
+    """未勾选分格时,模型自发填的 panels 必须被清掉。
+
+    PANEL_RULES 开关只控制自然语言指令,而 llm.structured 无条件把含 panels 字段
+    (带 shot_type 枚举和中文说明)的完整 JSON Schema 喂给模型——模型完全可能好心填上,
+    填了就会让 S4 走分格路径,与用户预期相反。"""
+    cells = {"cells": [
+        {"index": 1, "scene_ref": "1-1", "visual_desc": "断桥", "characters": ["白素贞"],
+         "caption": "初遇。", "emotion": "宁静",
+         "panels": [{"visual_desc": "格1", "shot_type": "wide", "characters": []},
+                    {"visual_desc": "格2", "shot_type": "closeup", "characters": []}]}]}
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(cells, ensure_ascii=False)}}]}))
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.duration_min = 1
+    p.params.multi_panel = False          # 用户没开分格
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    p = s2_storyboard.run(p, LLMClient(BASE, "sk", "m"))
+    assert p.storyboard[0].panels == []

@@ -14,7 +14,7 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(str(FONT_PATH), size)
 
 
-def _cover(img: Image.Image, size: tuple[int, int], anchor_y: float = 0.5) -> Image.Image:
+def cover(img: Image.Image, size: tuple[int, int], anchor_y: float = 0.5) -> Image.Image:
     """缩放并裁剪填满 size(cover-fit)。anchor_y 为垂直裁切锚点(0=保留顶部,1=保留底部)。"""
     tw, th = size
     scale = max(tw / img.width, th / img.height)
@@ -41,7 +41,7 @@ def compose_page(art: bytes, out: Path) -> None:
     # 只产出 cover-crop 满幅底图(锚点偏上保住头部);字幕/水印移到 overlay_layer,
     # 由 ffmpeg 作为静态层叠加,使 Ken Burns 只推拉底图、字幕/水印保持不动。
     img = Image.open(io.BytesIO(art)).convert("RGB")
-    frame = _cover(img, FRAME, anchor_y=CAPTION_ANCHOR_Y)
+    frame = cover(img, FRAME, anchor_y=CAPTION_ANCHOR_Y)
     frame.save(out)
 
 

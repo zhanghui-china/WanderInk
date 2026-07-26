@@ -63,7 +63,13 @@ def run(project: Project, llm: LLMClient, use_skill: bool = False) -> Project:
         cell.index = i
     for cell in project.storyboard:   # 防御:剔除误入出场角色的旁白/叙事者
         cell.characters = [n for n in cell.characters if not is_narrator(n)]
-    for cell in project.storyboard:  # 防御:LLM 可能无视上限,强制裁到 MAX_PANELS_PER_PAGE
-        cell.panels = cell.panels[:MAX_PANELS_PER_PAGE]
+    for cell in project.storyboard:
+        if not project.params.multi_panel:
+            # 用户没开分格就一律清空。上面的 PANEL_RULES 开关只控制"怎么用分格"这段自然语言
+            # 指令,而 llm.structured 无条件把含 panels 字段(带 shot_type 枚举和中文说明)的
+            # 完整 JSON Schema 喂给模型——模型完全可能好心自己填,填了就会让 S4 走分格路径。
+            cell.panels = []
+        else:  # 防御:LLM 可能无视上限,强制裁到 MAX_PANELS_PER_PAGE
+            cell.panels = cell.panels[:MAX_PANELS_PER_PAGE]
     project.status["s2"] = "done"
     return project

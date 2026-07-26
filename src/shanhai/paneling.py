@@ -6,7 +6,7 @@ import io
 from PIL import Image, ImageDraw
 
 from shanhai.schema import Panel
-from shanhai.typeset import FRAME
+from shanhai.typeset import FRAME, cover
 
 GUTTER = 12  # 格间装订线宽度(像素)
 BORDER = (20, 16, 12)  # 画布底色 = 装订线颜色(深墨色)
@@ -15,6 +15,10 @@ INSET_MARGIN = 24  # 特写叠加格距宿主格边缘的留白(像素)
 INSET_RADIUS = 24  # 特写叠加格圆角半径(像素)
 OUTLINE_COLOR = (245, 240, 228)  # 特写叠加格描边颜色(米宣纸色)
 OUTLINE_WIDTH = 6  # 特写叠加格描边宽度(像素)
+# 每格塞进版位时的垂直裁切锚点:偏上,让残余裁切吃掉画面下部而不是人物头顶。
+# 与 typeset.CAPTION_ANCHOR_Y 同为 0.4 但语义不同(那个是给字幕排版用的),故各自命名。
+# 本次问题正是因为这里原先写死居中裁切(anchor 0.5),头顶被切在画框边缘。
+PANEL_ANCHOR_Y = 0.4
 
 # 每种"常规格数"(不含 insert 格)对应的归一化矩形列表 (x0, y0, x1, y1),0~1 比例坐标。
 LAYOUTS: dict[int, list[tuple[float, float, float, float]]] = {
@@ -31,13 +35,40 @@ def _rect_px(rect: tuple[float, float, float, float]) -> tuple[int, int, int, in
     return (round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h))
 
 
-def _cover(img: Image.Image, w: int, h: int) -> Image.Image:
-    """缩放并裁剪填满 (w, h),cover-fit,居中裁切。"""
-    scale = max(w / img.width, h / img.height)
-    resized = img.resize((max(round(img.width * scale), w), max(round(img.height * scale), h)))
-    left = (resized.width - w) // 2
-    top = (resized.height - h) // 2
-    return resized.crop((left, top, left + w, top + h))
+def _plan(panels: list[Panel]) -> tuple[int | None, list[int], list[tuple[float, float, float, float]]]:
+    """版位规划:返回 (insert 格下标或 None, 常规格在 panels 里的下标列表, 版式矩形列表)。
+
+    compose_manga_page 与 slot_sizes 都走这一个函数——两处各算一遍 insert 判定和
+    LAYOUTS 查表迟早会漂移,而"生成时按什么比例出图"和"合成时塞进什么版位"一旦不一致,
+    裁切量就失控(这正是本次人脸被裁的一半原因)。"""
+    n = len(panels)
+    insert_idx = next((i for i, p in enumerate(panels) if p.shot_type == "insert"), None)
+    if insert_idx is not None and n == 1:
+        insert_idx = None  # 唯一一格标了 insert 也没有宿主格可叠加,退化为普通整页
+    regular = [i for i in range(n) if i != insert_idx]
+    return insert_idx, regular, LAYOUTS[len(regular)]
+
+
+def _slot_wh(rect: tuple[float, float, float, float]) -> tuple[int, int]:
+    """版位矩形 -> 扣掉装订线后的实际可用像素尺寸。"""
+    x0, y0, x1, y1 = _rect_px(rect)
+    return x1 - x0 - GUTTER, y1 - y0 - GUTTER
+
+
+def slot_sizes(panels: list[Panel]) -> list[tuple[int, int]]:
+    """每格最终要塞进的像素尺寸,顺序与 panels 一一对应(insert 格给它的叠加尺寸)。
+
+    供 S4 在**生成前**按每格自己的版位比例下发 size——原先所有格都用整页的 3:2 尺寸,
+    塞进 1.79~3.61 的各种版位时垂直方向要裁掉 16%~58%,人物头部首当其冲。"""
+    insert_idx, regular, layout = _plan(panels)
+    sizes: list[tuple[int, int]] = [(0, 0)] * len(panels)
+    for slot_i, panel_i in enumerate(regular):
+        sizes[panel_i] = _slot_wh(layout[slot_i])
+    if insert_idx is not None:
+        hx0, hy0, hx1, hy1 = _rect_px(layout[0])   # 宿主格固定是版式模板第一格
+        sizes[insert_idx] = (round((hx1 - hx0) * INSET_SCALE),
+                             round((hy1 - hy0) * INSET_SCALE))
+    return sizes
 
 
 def _rounded_mask(size: tuple[int, int], radius: int) -> Image.Image:
@@ -53,26 +84,23 @@ def compose_manga_page(panel_imgs: list[bytes], panels: list[Panel]) -> bytes:
     if n == 0:
         raise ValueError("没有可用的格子图片")
 
-    insert_idx = next((i for i, p in enumerate(panels) if p.shot_type == "insert"), None)
-    if insert_idx is not None and n == 1:
-        insert_idx = None  # 唯一一格标了 insert 也没有宿主格可叠加,退化为普通整页
-
-    regular = [(img, p) for i, (img, p) in enumerate(zip(panel_imgs, panels)) if i != insert_idx]
-    layout = LAYOUTS[len(regular)]
+    insert_idx, regular, layout = _plan(panels)
 
     canvas = Image.new("RGB", FRAME, BORDER)
-    for (data, _), rect in zip(regular, layout):
-        x0, y0, x1, y1 = _rect_px(rect)
-        w, h = x1 - x0 - GUTTER, y1 - y0 - GUTTER
-        img = Image.open(io.BytesIO(data)).convert("RGB")
-        canvas.paste(_cover(img, w, h), (x0 + GUTTER // 2, y0 + GUTTER // 2))
+    for slot_i, panel_i in enumerate(regular):
+        rect = layout[slot_i]
+        x0, y0, _x1, _y1 = _rect_px(rect)
+        w, h = _slot_wh(rect)
+        img = Image.open(io.BytesIO(panel_imgs[panel_i])).convert("RGB")
+        canvas.paste(cover(img, (w, h), anchor_y=PANEL_ANCHOR_Y),
+                     (x0 + GUTTER // 2, y0 + GUTTER // 2))
 
     if insert_idx is not None:
         hx0, hy0, hx1, hy1 = _rect_px(layout[0])  # 宿主格固定选常规格里版式模板的第一格
         iw = round((hx1 - hx0) * INSET_SCALE)
         ih = round((hy1 - hy0) * INSET_SCALE)
         img = Image.open(io.BytesIO(panel_imgs[insert_idx])).convert("RGB")
-        inset = _cover(img, iw, ih)
+        inset = cover(img, (iw, ih), anchor_y=PANEL_ANCHOR_Y)
         mask = _rounded_mask((iw, ih), INSET_RADIUS)
         pos = (hx1 - iw - INSET_MARGIN, hy1 - ih - INSET_MARGIN)
         outline = Image.new("RGB", (iw + OUTLINE_WIDTH * 2, ih + OUTLINE_WIDTH * 2), OUTLINE_COLOR)
