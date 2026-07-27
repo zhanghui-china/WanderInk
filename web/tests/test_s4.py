@@ -271,6 +271,27 @@ def test_s4_single_page_mode_unaffected(tmp_path: Path):
     assert not (tmp_path / "pages" / "page_01_panel1.png").exists()
 
 
+def test_s4_retries_when_image_rejected_as_framed(tmp_path: Path):
+    """边框拦截(providers.image._reject_if_framed)抛的也是 ImageGenError,
+    必须能接上 S4 既有的重试链,而不是新开一条路径。"""
+    image = MagicMock(); image.timeout = 600
+    image.generate.side_effect = ImageGenError("生成图片左右两侧都有框线,疑似被画成了漫画分格页")
+    p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
+    assert image.generate.call_count == MAX_ATTEMPTS     # 走满重试,试图换一张不带框的
+    assert p.storyboard[0].status == "failed"
+
+
+def test_s4_page_prompt_forbids_panel_frame():
+    """两个模板都不能再出现"连环画单页"/"漫画格"这类**诱导**模型画分格边框的措辞,
+    且必须带上显式的禁止边框约束。注意 NO_FRAME 里"不是漫画分格页"是**否定句**,
+    出现"漫画"二字是有意的,所以这里断言的是具体诱导词而非笼统地禁"漫画"。"""
+    for tmpl in (s4_pages.PAGE_TMPL, s4_pages.PANEL_TMPL):
+        assert "连环画单页" not in tmpl
+        assert "漫画格画面" not in tmpl
+        assert "边框" in tmpl and "满幅" in tmpl
+    assert "不是漫画分格页" in s4_pages.NO_FRAME    # 禁止约束本身必须在
+
+
 def test_s4_ignores_panels_when_multi_panel_off(tmp_path: Path):
     """用户没开分格时,即便 cell 上有 panels(模型自作主张填的、或历史数据)也走单图路径。
     以前判据只看 cell.panels,会静默分格——与用户预期相反。"""

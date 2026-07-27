@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from unittest.mock import patch
 import respx, httpx, pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 from shanhai.providers.image import ImageClient, ImageGenError
 
 
@@ -197,6 +197,62 @@ def test_timeout_attribute_reflects_constructor_arg():
     # image.timeout 暴露给 S4 的重试预算计时逻辑读取,须原样落到实例属性上
     c = ImageClient(BASE, "sk", "gpt-image-1", timeout=123)
     assert c.timeout == 123
+
+
+def _framed_png(w=1920, h=1080, margin=52, line=6) -> bytes:
+    """模拟"模型自己画了分格边框"的图:浅色留白 + 左右各一条深色竖框线 + 框内有内容。
+    上下边框故意不画——真实线上就是这样(3:2 生成图被裁成 16:9 时上下框线一起被裁掉了)。"""
+    im = Image.new("RGB", (w, h), (250, 249, 246))
+    d = ImageDraw.Draw(im)
+    d.rectangle((margin, 0, margin + line, h), fill=(12, 12, 12))
+    d.rectangle((w - margin - line, 0, w - margin, h), fill=(12, 12, 12))
+    d.ellipse((w // 3, h // 3, w * 2 // 3, h * 2 // 3), fill=(180, 90, 40))  # 框内内容
+    buf = io.BytesIO(); im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _scene_png(w=1920, h=1080) -> bytes:
+    """正常满幅场景图:横向渐变铺满,四周无留白无框线。"""
+    im = Image.new("RGB", (w, h))
+    px = im.load()
+    for x in range(w):
+        c = (round(255 * x / (w - 1)), 90, 255 - round(255 * x / (w - 1)))
+        for y in range(h):
+            px[x, y] = c
+    buf = io.BytesIO(); im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@respx.mock
+def test_generate_rejects_self_drawn_panel_frame():
+    # 模型常自作主张把画面画成漫画分格页(旧提示词"连环画单页/漫画格"是诱因,
+    # 实测 26% 的线上成图中招)。提示词已改,这里是第二道拦截。
+    b64 = base64.b64encode(_framed_png()).decode()
+    respx.post(f"{BASE}/images/generations").mock(
+        return_value=httpx.Response(200, json={"data": [{"b64_json": b64}]}))
+    c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
+    with pytest.raises(ImageGenError, match="分格"):
+        c.generate("a cat")
+
+
+@respx.mock
+def test_generate_accepts_normal_full_bleed_image():
+    # 比"能拦住"更要紧的一条:正常满幅图**不能**被误拦——误报会白烧一次重生成。
+    b64 = base64.b64encode(_scene_png()).decode()
+    respx.post(f"{BASE}/images/generations").mock(
+        return_value=httpx.Response(200, json={"data": [{"b64_json": b64}]}))
+    c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
+    assert c.generate("a cat")           # 不抛异常即通过
+
+
+def test_frame_check_needs_both_sides():
+    # 只有一侧有暗带(如画面本身左边是深色物体)不该判为边框,否则误报率会很高
+    from shanhai.providers.image import _reject_if_framed
+    im = Image.open(io.BytesIO(_framed_png())).convert("RGB")
+    d = ImageDraw.Draw(im)
+    d.rectangle((im.width - 60, 0, im.width, im.height), fill=(250, 249, 246))  # 抹掉右框线
+    buf = io.BytesIO(); im.save(buf, format="PNG")
+    assert _reject_if_framed(buf.getvalue())   # 单侧不拦
 
 
 @respx.mock
