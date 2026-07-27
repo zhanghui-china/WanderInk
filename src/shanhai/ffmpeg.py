@@ -23,6 +23,27 @@ def sh(cmd: list[str]) -> None:
         raise RuntimeError(f"ffmpeg 失败({' '.join(cmd[:3])}…):{stderr}") from e
 
 
+# 音色克隆参考音频的规格:16kHz 单声道 pcm_s16le。
+# ⚠️ 刻意**不**复用上面的 AUDIO_RATE/AUDIO_CH——那条"所有音频分支统一 44.1kHz/立体声"的约束
+# 是为了成片音轨的 acrossfade/amix 不错乱,而参考音频**不进成片**,它只是喂给 TTS 后端的输入;
+# 而声纹提取与 Whisper 转写本来就工作在 16k 单声道上,升到 44.1k 立体声纯属浪费且无益。
+VOICE_SAMPLE_RATE = 16000
+VOICE_SAMPLE_MAX_S = 20     # 录音上限,与前端一致;这里是硬截断,不能只信前端
+
+
+def voice_sample_cmd(src: Path, out: Path, in_fmt: str,
+                     max_s: float = VOICE_SAMPLE_MAX_S) -> list[str]:
+    """把上传的录音转成规范的参考音频 wav。这一步同时是**安全净化**:
+    等同于图片路径的重编码——干掉伪装成音频的 polyglot 字节与容器里的任意元数据。
+
+    `-f {in_fmt}` 显式指定输入 demuxer 而不是让 ffmpeg 自动探测:Pillow 是个纯解码器,
+    而 ffmpeg 是一大堆解析器的集合,把用户字节直接丢给它自动探测,攻击面比图片那条路大得多,
+    必须按前端声明的少数几种格式收窄。
+    `-t` 在**输入之后**,是对输出的硬截断:超长录音直接切掉,不能只信前端的计时。"""
+    return ["ffmpeg", "-y", "-f", in_fmt, "-i", str(src), "-t", f"{max_s:g}",
+            "-ar", str(VOICE_SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le", str(out)]
+
+
 def probe_duration_ms(path: Path) -> int:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",

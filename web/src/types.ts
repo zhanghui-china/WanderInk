@@ -70,7 +70,7 @@ export interface ProjectDetail {
   scenic_spot: string
   owner: string
   style_preset: string
-  params: { duration_min: number; audience: string; tone: string }
+  params: { duration_min: number; audience: string; tone: string; voice?: string }
   status: Record<string, string>
   pipeline: string
   legend: { title: string; summary: string; source_type: string } | null

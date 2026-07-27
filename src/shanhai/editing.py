@@ -37,6 +37,13 @@ def _invalidate_downstream(project: Project, from_step: str) -> None:
     project.status["pipeline"] = "partial: 已编辑,待重新生成"
 
 
+def invalidate_from(project: Project, from_step: str) -> None:
+    """`_invalidate_downstream` 的公开入口。本模块里的编辑函数各自在末尾调私有版,
+    但「换配音音色」这类改动发生在 api 层(它改的是 params 而不是分镜内容),需要一个
+    正经的对外名字,而不是从别的模块伸手去调下划线开头的私有函数。"""
+    _invalidate_downstream(project, from_step)
+
+
 def _cell_at(project: Project, index: int) -> StoryboardCell:
     for cell in project.storyboard:
         if cell.index == index:

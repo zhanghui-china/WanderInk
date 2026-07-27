@@ -1,9 +1,14 @@
 import { useState } from 'react'
-import { api } from '../api'
+import { api, voiceSampleTarget, type VoiceSample } from '../api'
+import { useUpload } from '../useUpload'
 import { CardHead } from './decor'
 import { ScenicSpotPicker } from './ScenicSpotPicker'
+import { UploadDialog } from './UploadDialog'
+import { VoiceRecorder } from './VoiceRecorder'
 import { STYLE_LABEL } from '../styles'
 import type { Meta } from '../types'
+
+const CUSTOM_VOICE = '__custom__'   // 下拉框里的哨兵值,不会与任何真实音色 key 相撞
 
 export function NewProjectForm({
   meta,
@@ -19,6 +24,12 @@ export function NewProjectForm({
   const [style, setStyle] = useState('guofeng_ink')
   const [story, setStory] = useState('')
   const [voice, setVoice] = useState('')
+  // 自定义音色:录音上传后拿到的句柄(形如 clone:xxx.wav)。它与 voice 分开存,
+  // 是为了让用户在"自定义"和内置音色之间来回切换时不丢掉已经录好的那一份。
+  const [cloned, setCloned] = useState<VoiceSample | null>(null)
+  const [recOpen, setRecOpen] = useState(false)
+  const [picked, setPicked] = useState<{ blob: Blob; filename: string } | null>(null)
+  const upload = useUpload<VoiceSample>()
   const [speed, setSpeed] = useState(1.0)
   const [multiPanel, setMultiPanel] = useState(false)
   const [masterSkill, setMasterSkill] = useState(false)
@@ -60,6 +71,7 @@ export function NewProjectForm({
   const chips = ['雷峰塔', '黄鹤楼', '莫高窟', '峨眉山']
 
   return (
+    <>
     <form
       onSubmit={submit}
       className="space-y-4 rounded-2xl border border-band bg-paper p-5 shadow-paper"
@@ -133,14 +145,40 @@ export function NewProjectForm({
         {meta?.voices && meta.voices.length > 0 && (
           <div>
             <label className={label}>音色</label>
-            <select className={field} value={voice} onChange={(e) => setVoice(e.target.value)}>
-              <option value="">默认</option>
-              {meta.voices.map((v) => (
-                <option key={v} value={v}>
-                  {v}
+            <div className="flex items-center gap-1.5">
+              <select
+                className={field}
+                value={cloned && voice === cloned.voice ? CUSTOM_VOICE : voice}
+                onChange={(e) => {
+                  if (e.target.value === CUSTOM_VOICE) {
+                    // 还没录过就直接开录音弹窗;录过则把已有的那份用回来
+                    if (cloned) setVoice(cloned.voice)
+                    else setRecOpen(true)
+                  } else {
+                    setVoice(e.target.value)
+                  }
+                }}
+              >
+                <option value="">默认</option>
+                {meta.voices.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+                <option value={CUSTOM_VOICE}>
+                  自定义{cloned ? `(已录 ${Math.round(cloned.duration_ms / 1000)}s)` : '(录音)'}
                 </option>
-              ))}
-            </select>
+              </select>
+              <button
+                type="button"
+                onClick={() => setRecOpen(true)}
+                title="录一段自己的声音作为音色"
+                aria-label="录音自定义音色"
+                className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg border border-line text-ink-soft transition hover:border-cinnabar hover:text-cinnabar"
+              >
+                ●
+              </button>
+            </div>
           </div>
         )}
         <div>
@@ -204,5 +242,43 @@ export function NewProjectForm({
         <p className="text-center text-xs text-muted">生成在所有者本机进行,此处仅浏览已有作品</p>
       )}
     </form>
+    {recOpen && (
+      <UploadDialog
+        title="录制自定义音色"
+        glyph="音"
+        hint="念一段 5–20 秒的话,系统会克隆这个音色来配音"
+        picker={
+          <VoiceRecorder
+            onPicked={(b, f) => setPicked({ blob: b, filename: f })}
+            disabled={upload.phase === 'uploading' || upload.phase === 'processing'}
+          />
+        }
+        ready={!!picked}
+        phase={upload.phase}
+        progress={upload.progress}
+        indeterminate={upload.indeterminate}
+        error={upload.error}
+        confirmLabel="用这个音色"
+        phaseLabels={{ processing: '转码并注册音色…', done: '音色已就绪' }}
+        onConfirm={() => {
+          if (!picked) return
+          void upload.start(voiceSampleTarget(), picked.blob, picked.filename).then((r) => {
+            if (!r) return   // 失败信息已经落在 upload.error 里,弹窗自己会显示
+            setCloned(r)
+            setVoice(r.voice)
+            setRecOpen(false)
+            setPicked(null)
+            upload.reset()
+          })
+        }}
+        onCancel={() => {
+          upload.cancel()
+          upload.reset()
+          setRecOpen(false)
+          setPicked(null)
+        }}
+      />
+    )}
+    </>
   )
 }

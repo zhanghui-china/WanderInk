@@ -162,3 +162,68 @@ def test_body_size_limit_middleware_rejects_before_form_parsing():
             files={"file": ("a.png", BytesIO(big), "image/png")})
     assert r.status_code == 413
     assert called == []          # 没进 handler → 字节没被解析、没落盘
+
+
+def _webm_bytes(seconds: float = 8.0) -> bytes:
+    """用 ffmpeg 造一段真的 webm/opus,模拟浏览器 MediaRecorder 的产出。"""
+    import subprocess, tempfile
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "a.webm"
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+             "-c:a", "libopus", str(out)],
+            check=True, capture_output=True)
+        return out.read_bytes()
+
+
+def test_voice_sample_transcodes_to_16k_mono_wav():
+    """净化 = 转码:落盘的必须是我们自己编码的 16k 单声道 pcm_s16le wav,
+    绝不是客户端原样的 webm(与图片那条"绝不原样落盘"的承诺同一套)。"""
+    import subprocess, tempfile
+    raw = _webm_bytes(8.0)
+    wav = uploads.to_voice_sample_wav(raw, "audio/webm")
+    assert wav != raw
+    assert wav[:4] == b"RIFF"
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "o.wav"; p.write_bytes(wav)
+        info = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+             "stream=sample_rate,channels,codec_name", "-of", "csv=p=0", str(p)],
+            check=True, capture_output=True, text=True).stdout.strip()
+    assert info == "pcm_s16le,16000,1", info
+
+
+def test_voice_sample_hard_truncates_over_20s():
+    """20 秒是硬截断,不能只信前端的计时。"""
+    wav = uploads.to_voice_sample_wav(_webm_bytes(35.0), "audio/webm")
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "o.wav"; p.write_bytes(wav)
+        ms = __import__("shanhai.ffmpeg", fromlist=["x"]).probe_duration_ms(p)
+    assert ms <= 20_500, f"应被截断到 20s,实际 {ms}ms"
+
+
+def test_voice_sample_rejects_too_short():
+    with pytest.raises(HTTPException) as e:
+        uploads.to_voice_sample_wav(_webm_bytes(2.0), "audio/webm")
+    assert e.value.status_code == 400
+
+
+def test_voice_sample_rejects_non_audio():
+    with pytest.raises(HTTPException) as e:
+        uploads.to_voice_sample_wav(b"definitely not audio", "audio/webm")
+    assert e.value.status_code == 400
+
+
+def test_voice_sample_rejects_unknown_content_type():
+    """content_type 不在白名单就直接拒——绝不让 ffmpeg 自动探测 demuxer。
+    Pillow 是纯解码器,而 ffmpeg 是一大堆解析器的集合,自动探测的攻击面大得多。"""
+    with pytest.raises(HTTPException) as e:
+        uploads.to_voice_sample_wav(_webm_bytes(8.0), "application/octet-stream")
+    assert e.value.status_code == 400
+
+
+def test_voice_sample_rel_path_is_salted():
+    a, b = uploads.voice_sample_rel_path(), uploads.voice_sample_rel_path()
+    assert a != b and a.startswith("vs_") and a.endswith(".wav")
+    assert "/" not in a and ".." not in a

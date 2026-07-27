@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from shanhai import editing, export, runtime_config, store, uploads
+from shanhai import editing, export, ffmpeg, runtime_config, store, uploads
 from shanhai.auth import current_user, is_admin, verify_login
 from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _clients,
                          resolve_stage_clients)
@@ -887,6 +887,57 @@ def delete_character_reference(project_id: str, name: str,
             (store.project_dir(project_id) / card.reference_image).unlink(missing_ok=True)
             card.reference_image = ""
         editing.mark_character_redraw(p, name)
+        store.save(p)
+    return _serialize(p)
+
+
+# ---------- 自定义音色(录音 → 音色克隆) ----------
+
+@app.post("/api/voice-samples")
+async def upload_voice_sample(file: UploadFile = File(...),
+                              user: str = Depends(current_user)) -> dict:
+    """上传一段录音,注册成可直接当 voice 用的音色句柄。
+
+    **不绑定任何 project**:录音入口同时在「新建作品表单」(那时还没有 project_id)和
+    「作品详情页」,共用这一个端点、这一份存储,只在上传完成后由前端分叉成"建作品"或"改 params"。
+    因此这里不取 project 锁,只做 _READONLY 与登录校验。
+
+    顺序是「先注册、后落盘」:注册要打 TTS 后端,失败的概率远高于写本地文件,先做能快速失败、
+    不留孤儿。本地这份 wav 保留是为了可回听、可溯源,以及上游 input 目录被清理时能重新注册。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止上传")
+    raw = await uploads.read_limited_audio(file)
+    wav = uploads.to_voice_sample_wav(raw, file.content_type or "")
+
+    s = resolve_settings("s5")   # 音色归 S5 用,须按 S5 实际生效的 TTS 端点注册
+    _l, _i, tts, _m = _clients(s)
+    try:
+        voice = tts.register_clone_voice(wav)
+    except Exception as e:  # noqa: BLE001 —— 上游任何失败都转成用户能看懂的 502
+        raise HTTPException(502, f"音色注册失败,TTS 后端不可用:{e}") from e
+
+    rel = uploads.voice_sample_rel_path()
+    out = store.voice_sample_dir() / rel
+    uploads.atomic_write(out, wav)
+    return {"voice": voice, "sample_url": f"/files/{store.VOICE_SAMPLE_DIRNAME}/{rel}",
+            "duration_ms": ffmpeg.probe_duration_ms(out)}
+
+
+class VoiceParams(BaseModel):
+    voice: str = Field(default="", max_length=200)
+
+
+@app.patch("/api/projects/{project_id}/params/voice")
+def update_project_voice(project_id: str, body: VoiceParams,
+                         user: str = Depends(current_user)) -> dict:
+    """换作品的配音音色。**只放 voice 这一个字段**——做成通用的 params 编辑会立刻牵出
+    "改了 duration_min 要不要重跑 S2"之类一串问题,不值得。
+
+    换音色 = 所有已生成的配音都念错了嗓子,故走与编辑正文同一套下游作废。"""
+    with _project_lock(project_id):
+        p = _editable(project_id, user)
+        p.params.voice = body.voice
+        editing.invalidate_from(p, "s5")
         store.save(p)
     return _serialize(p)
 

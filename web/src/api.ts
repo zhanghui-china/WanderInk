@@ -58,6 +58,16 @@ export const characterReferenceTarget = (id: string, name: string): UploadTarget
   url: `/api/projects/${id}/characters/${encodeURIComponent(name)}/reference`,
 })
 
+// 录音上传不绑定任何作品:新建表单(那时还没有 project_id)和作品详情页共用这一个端点,
+// 只在拿到返回的 voice 之后才分叉成"建作品"或"改 params"。
+export const voiceSampleTarget = (): UploadTarget => ({ url: '/api/voice-samples' })
+
+export interface VoiceSample {
+  voice: string
+  sample_url: string
+  duration_ms: number
+}
+
 export const api = {
   login: (username: string, password: string) =>
     fetch('/api/login', {
@@ -171,6 +181,14 @@ export const api = {
     file: File,
     onProgress: (loaded: number, total: number, lengthComputable: boolean) => void,
   ) => xhrUpload<ProjectDetail>(characterReferenceTarget(id, name), file, file.name, onProgress),
+
+  updateProjectVoice: (id: string, voice: string) =>
+    fetch(`/api/projects/${id}/params/voice`, {
+      ...CREDS,
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voice }),
+    }).then((r) => j<ProjectDetail>(r)),
 
   removeCharacterReference: (id: string, name: string) =>
     fetch(`/api/projects/${id}/characters/${encodeURIComponent(name)}/reference`, {

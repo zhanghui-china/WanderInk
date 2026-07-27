@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
-import { api, characterReferenceTarget } from '../api'
+import { api, characterReferenceTarget, voiceSampleTarget, type VoiceSample } from '../api'
 import { STYLE_LABEL } from '../styles'
 import { useUpload } from '../useUpload'
 import type { Meta, ProjectDetail as Detail, Character, Page } from '../types'
@@ -8,6 +8,7 @@ import { CharacterRedrawDialog } from './CharacterRedrawDialog'
 import { ImageLightbox } from './ImageLightbox'
 import { ImagePicker } from './ImagePicker'
 import { ProgressSteps } from './ProgressSteps'
+import { VoiceRecorder } from './VoiceRecorder'
 import { UploadDialog } from './UploadDialog'
 
 const EMOTION_STYLE: Record<string, string> = {
@@ -69,6 +70,10 @@ export function ProjectDetailView({
   const [stepBusy, setStepBusy] = useState<string | null>(null)
   const [trackBusy, setTrackBusy] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [voiceOpen, setVoiceOpen] = useState(false)
+  const [voicePicked, setVoicePicked] = useState<{ blob: Blob; filename: string } | null>(null)
+  const [voiceBusy, setVoiceBusy] = useState(false)
+  const voiceUpload = useUpload<VoiceSample>()
 
   const generating = project.pipeline === 'queued' || project.pipeline === 'running'
   const editable = !meta?.readonly && !generating
@@ -150,12 +155,22 @@ export function ProjectDetailView({
               {project.scenic_spot} · {STYLE_LABEL[project.style_preset] ?? project.style_preset} ·{' '}
               {project.params.duration_min} 分钟 ·{' '}
               {project.params.audience} · {project.params.tone}
+              {project.params.voice && (
+                <> · 音色 {project.params.voice.startsWith('clone:') ? '自定义' : project.params.voice}</>
+              )}
             </p>
           </div>
         </div>
-        <button type="button" onClick={copyLink} className={ghostBtn}>
-          {copied ? '已复制' : '复制链接'}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {!meta?.readonly && (
+            <button type="button" onClick={() => setVoiceOpen(true)} className={ghostBtn}>
+              换音色
+            </button>
+          )}
+          <button type="button" onClick={copyLink} className={ghostBtn}>
+            {copied ? '已复制' : '复制链接'}
+          </button>
+        </div>
       </div>
 
       <ProgressSteps project={project} />
@@ -341,6 +356,55 @@ export function ProjectDetailView({
           <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
         </div>
       )}
+      {voiceOpen && (
+        <UploadDialog
+          title="更换配音音色"
+          glyph="音"
+          hint="念一段 5–20 秒的话,系统会克隆这个音色重新配音。已生成的配音会作废。"
+          picker={
+            <VoiceRecorder
+              onPicked={(b, f) => setVoicePicked({ blob: b, filename: f })}
+              disabled={voiceBusy || voiceUpload.phase === 'uploading' || voiceUpload.phase === 'processing'}
+            />
+          }
+          ready={!!voicePicked && !voiceBusy}
+          phase={voiceUpload.phase}
+          progress={voiceUpload.progress}
+          indeterminate={voiceUpload.indeterminate}
+          error={voiceUpload.error}
+          confirmLabel="用这个音色"
+          phaseLabels={{ processing: '转码并注册音色…', done: '音色已就绪' }}
+          onConfirm={() => {
+            if (!voicePicked) return
+            void voiceUpload
+              .start(voiceSampleTarget(), voicePicked.blob, voicePicked.filename)
+              .then(async (r) => {
+                if (!r) return   // 失败信息已在 voiceUpload.error 里,弹窗自己显示
+                setVoiceBusy(true)
+                try {
+                  await api.updateProjectVoice(project.project_id, r.voice)
+                } finally {
+                  setVoiceBusy(false)
+                  setVoiceOpen(false)
+                  setVoicePicked(null)
+                  voiceUpload.reset()
+                  onChanged()   // 换音色会作废下游,一律重拉以服务端为准
+                }
+              })
+          }}
+          onCancel={() => {
+            const inFlight =
+              voiceUpload.phase === 'uploading' || voiceUpload.phase === 'processing'
+            voiceUpload.cancel()
+            voiceUpload.reset()
+            setVoiceOpen(false)
+            setVoicePicked(null)
+            // 与参考图同理:取消只切客户端,服务端可能已经注册完了,一律重拉对齐
+            if (inFlight) onChanged()
+          }}
+        />
+      )}
+
     </div>
   )
 }

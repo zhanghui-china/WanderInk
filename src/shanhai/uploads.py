@@ -7,12 +7,14 @@ content_type、文件名、扩展名一律不信,只信解码结果;并且**绝�
 
 import os
 import secrets
+import tempfile
 from io import BytesIO
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
 from PIL import Image, ImageOps
 
+from shanhai import ffmpeg
 from shanhai.steps.s4_pages import REF_MAX
 
 # Pillow 12.3.0 默认 MAX_IMAGE_PIXELS=89478485,这里取更严的值:参考图最终只会被缩到
@@ -84,6 +86,53 @@ def to_reference_png(raw: bytes) -> bytes:
     except Exception as e:   # noqa: BLE001 —— 同上,Pillow 的异常类型没有稳定契约
         raise HTTPException(400, "图片已损坏或不完整,无法处理") from e
     return buf.getvalue()
+
+
+# --- 音色克隆的参考录音 ---
+# 浏览器 MediaRecorder 产出的是 webm/opus(不是 wav),所以后端必须转码。
+MAX_AUDIO_BYTES = 4 * 1024 * 1024   # 20 秒 opus 约 100~300KB,4 MiB 已经宽到离谱
+MIN_VOICE_MS = 5_000                # 太短的样本克隆不出像的音色,不如当场拒绝让用户重录
+# 前端声明什么格式就用什么 demuxer 解,只认这几种;绝不让 ffmpeg 自动探测(见 voice_sample_cmd)
+AUDIO_DEMUXERS = {"audio/webm": "webm", "video/webm": "webm",
+                  "audio/ogg": "ogg", "audio/wav": "wav", "audio/mpeg": "mp3"}
+
+
+async def read_limited_audio(file: UploadFile) -> bytes:
+    """同 read_limited,只是上限与文案换成音频的。"""
+    raw = bytearray()
+    while chunk := await file.read(1 << 20):
+        raw.extend(chunk)
+        if len(raw) > MAX_AUDIO_BYTES:
+            raise HTTPException(413, f"录音超过 {MAX_AUDIO_BYTES // 1024 // 1024} MiB 上限")
+    return bytes(raw)
+
+
+def to_voice_sample_wav(raw: bytes, content_type: str) -> bytes:
+    """把上传的录音净化成 16k 单声道 wav。与 to_reference_png 同一套哲学:
+    绝不把客户端字节原样落盘,一律经 ffmpeg 重编码。"""
+    fmt = AUDIO_DEMUXERS.get((content_type or "").split(";")[0].strip().lower())
+    if fmt is None:
+        raise HTTPException(400, "不支持的音频格式,请用浏览器自带的录音功能")
+    with tempfile.TemporaryDirectory() as td:
+        src, out = Path(td) / f"in.{fmt}", Path(td) / "out.wav"
+        src.write_bytes(raw)
+        try:
+            ffmpeg.sh(ffmpeg.voice_sample_cmd(src, out, fmt))
+        except RuntimeError as e:   # ffmpeg.sh 把非零退出包成 RuntimeError
+            raise HTTPException(400, "录音无法解码,请重新录制") from e
+        if not out.exists() or not out.stat().st_size:
+            raise HTTPException(400, "录音无法解码,请重新录制")
+        ms = ffmpeg.probe_duration_ms(out)
+        if ms < MIN_VOICE_MS:
+            raise HTTPException(400, f"录音太短({ms / 1000:.1f} 秒),至少需要 "
+                                     f"{MIN_VOICE_MS // 1000} 秒才能克隆出像的音色")
+        return out.read_bytes()
+
+
+def voice_sample_rel_path() -> str:
+    """参考录音的相对路径,带随机盐。理由与 reference_rel_path 相同且更强:
+    `/files` 静态挂载没有身份校验,而这是用户**真人声音**,敏感度不低于照片。"""
+    return f"vs_{secrets.token_urlsafe(16)}.wav"
 
 
 def reference_rel_path() -> str:

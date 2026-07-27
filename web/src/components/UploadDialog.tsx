@@ -15,6 +15,8 @@ const ghostBtn =
 // (partial、不保留旧图冒充成功),造一根编出来的条与之矛盾。
 const REVEAL_MS = 250
 
+// 默认文案是图片场景的。其余场景(录音等)由调用方用 phaseLabels 覆盖——写死在这里
+// 会让录音上传显示"校验并处理图片…"。
 const PHASE_LABEL: Partial<Record<Phase, string>> = {
   uploading: '上传中…',
   processing: '校验并处理图片…',
@@ -35,6 +37,7 @@ export function UploadDialog({
   indeterminate,
   error,
   confirmLabel,
+  phaseLabels,
   onConfirm,
   onCancel,
 }: {
@@ -48,9 +51,11 @@ export function UploadDialog({
   indeterminate: boolean
   error: string
   confirmLabel?: string
+  phaseLabels?: Partial<Record<Phase, string>>
   onConfirm: () => void
   onCancel: () => void
 }) {
+  const label = { ...PHASE_LABEL, ...phaseLabels }
   const busy = phase === 'uploading' || phase === 'processing'
   const [revealed, setRevealed] = useState(false)
 
@@ -96,7 +101,7 @@ export function UploadDialog({
         {showBar && (
           <div className="mt-3 animate-shy-rise">
             <div className="flex items-center gap-2">
-              <span className="text-[11px] text-muted truncate">{PHASE_LABEL[phase]}</span>
+              <span className="text-[11px] text-muted truncate">{label[phase]}</span>
               {indeterminate ? (
                 // total 不可信时不画条,用现成的"生成中"竖条,而不是编一个百分比。
                 <span className="ml-auto">
@@ -119,7 +124,7 @@ export function UploadDialog({
         )}
 
         {phase === 'done' && (
-          <p className="mt-3 text-[11px] text-cinnabar">{PHASE_LABEL.done}</p>
+          <p className="mt-3 text-[11px] text-cinnabar">{label.done}</p>
         )}
 
         {error && (
