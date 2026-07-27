@@ -520,3 +520,22 @@ def test_target_music_duration_caps_at_max():
     assert s5_audio._target_music_duration_s(p) == 180.0    # 300s 封顶到 180.0
     p.params.duration_min = 1
     assert s5_audio._target_music_duration_s(p) == 60.0      # 未封顶
+
+
+def test_lang_pace_thresholds_below_measured_speech_rate():
+    """截断下限必须显著低于该语种的**实测**最快语速,否则正常语音会被判成截断,
+    空转 TTS_TRIES 逐句退化(中文 380→150 那个坑的成因)。
+
+    实测基准(DGX,写死在这里当回归基线,改常量时必须连同这里一起复核):
+    - zh CosyVoice2/Qwen3-TTS:最快 221 ms/字符(镇国塔 20 页统计)
+    - en Qwen3-TTS EN-Female:最快 54.1 ms/字符(2026-07-27 实测 5 段)
+    """
+    measured_min = {"zh": 221, "en": 54.1}
+    for lang, fastest in measured_min.items():
+        _, floor = s5_audio._pace(lang)
+        assert floor < fastest, f"{lang} 下限 {floor} 不低于实测最快 {fastest},正常语音会被误判截断"
+        assert floor / fastest < 0.8, f"{lang} 下限 {floor} 距实测最快 {fastest} 余量不足两成"
+
+
+def test_lang_pace_falls_back_to_default_for_unknown_lang():
+    assert s5_audio._pace("ja") == s5_audio.LANG_PACE[s5_audio.DEFAULT_LANG]
