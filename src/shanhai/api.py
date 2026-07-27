@@ -16,6 +16,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -194,22 +195,86 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _mark_step_started(p: Project, name: str) -> float:
-    """记录该环节开始的墙上时间——只在第一次启动时记录,续跑不覆盖(开始时间应该是
-    这个环节第一次被启动的时刻,不是每次续跑都前移);单调时钟仍每次都取,用于算这一次
-    续跑自己的耗时增量。"""
-    p.status.setdefault(f"{name}_started_at", _now_iso())
-    return time.monotonic()
+# 会做"已有产物就跳过"的环节:只有它们可能整轮空转,也只有它们需要空跑守卫。
+# s0/s1/s2 每次都真的重写文本(产物只落在 project.json 里,文件指纹看不见),
+# track_*/未知环节同理——都不设守卫,一律照实记耗时。
+_SKIPPABLE_STEPS = frozenset({"s3", "s4", "s5", "s6"})
 
 
-def _mark_step_elapsed(p: Project, name: str, t0: float) -> None:
-    """该环节耗时:S3/S4/S5 这类"只处理剩余子项"的环节,续跑几次就该把每次的耗时
-    加起来,而不是拿最后一次续跑的耗时覆盖掉之前几轮已经花掉的时间。"""
-    prev = float(p.status.get(f"{name}_elapsed_s") or 0)
-    p.status[f"{name}_elapsed_s"] = f"{prev + (time.monotonic() - t0):.1f}"
-    p.status[f"{name}_finished_at"] = _now_iso()   # 每次真实完成/暂停的墙钟时刻,前端
-    # 直接读这个字段展示"结束"时间,不再用 开始时间+elapsed 现算(那样在开始时间不变、
-    # elapsed 累加之后会算出一个虚假的、远晚于实际完成时刻的"结束"时间)。
+def _artifact_fingerprint(workdir: Path) -> tuple[int, int, int]:
+    """项目产物目录的指纹:(文件数, 最新 mtime_ns, 总字节数)。任何一个产物文件被写过,指纹就变。
+
+    为什么不按环节数产物个数(第一版就是那么写的,被审计推翻):重跑时"计数能代表增量"这个
+    前提对四个环节没有一个成立——s6_compose 完全不幂等、每次全量重编码却写回同名的
+    output["mp4"];s5 的 BGM 每轮无条件重烧、静音兜底页会被真人音轨原地替换;s4 重画失败页
+    时 cell.image 前后都是真值;s3 对第 5 个及以后的角色每次都重算。数个数一个都抓不住,
+    直接问文件系统"这一轮到底有没有文件被写过"才是可靠的判据。
+
+    排除 project.json:它是我们自己每步都要落盘的状态文件,算进来指纹必变、守卫永远失效。
+    已知取舍:s3 对超出 MAX_TURNAROUND 的角色只重算 feature_prompt(写进 project.json、
+    不落文件),这种"只改数据不产文件"的重跑会被判成空跑而不记耗时——够边缘,不为它加复杂度。"""
+    count = size = 0
+    newest = 0
+    for root, _dirs, files in os.walk(workdir):
+        for fn in files:
+            if root == str(workdir) and fn == "project.json":
+                continue
+            try:
+                st = os.stat(os.path.join(root, fn))
+            except OSError:      # 并发删改导致的瞬时缺失:跳过即可,指纹只需"够敏感"
+                continue
+            count += 1
+            size += st.st_size
+            newest = max(newest, st.st_mtime_ns)
+    return count, newest, size
+
+
+class _StepStart(NamedTuple):
+    """一次环节运行的凭证:_mark_step_started 造,原样交给 _mark_step_elapsed。
+    started_at 只揣在内存里,等收尾时和另外两个键一起原子写入(理由见 _mark_step_started)。"""
+    t0: float
+    started_at: str
+    fingerprint: tuple[int, int, int] | None   # None = 该环节不设空跑守卫
+
+
+def _mark_step_started(p: Project, name: str, workdir: Path) -> _StepStart:
+    """标记该环节"本次运行"开始。
+
+    {name}_started_at / _finished_at / _elapsed_s 三个键描述同一次运行,而且是**最近一次**真实
+    运行、不是历史累计——用户拍板的语义:总时长 = 各步骤最后一次耗时相加。
+
+    **这三个键一律等到 _mark_step_elapsed 里一次性写入,开工时一个都不碰**。第一版是开工就
+    改写 started_at、顺手 pop 掉 finished_at,被审计打回:紧跟着就有一次无条件落盘,若步骤体
+    抛异常或进程被杀,盘上会留下"本轮的 started_at + 上一轮的 elapsed_s + 没有 finished_at"
+    这种分属两次运行的错配状态,前端会永久显示"进行中"却同时列着上一轮的耗时,而且下一次
+    空跑还会把它原样还原、自锁住。改成收尾时原子写入后,中途死掉只是保留上一轮的完整记录
+    (陈旧但自洽),不会产生有毒状态,守卫也退化成"什么都不写"这一个动作。
+
+    运行期间的"进行中"显示改用单独的 {name}_running_since:它不属于那三个自洽键,前端只在
+    pipeline 正在跑时才认它,残留一个陈旧值无害。"""
+    p.status[f"{name}_running_since"] = _now_iso()
+    fp = _artifact_fingerprint(workdir) if name in _SKIPPABLE_STEPS else None
+    return _StepStart(time.monotonic(), _now_iso(), fp)
+
+
+def _mark_step_elapsed(p: Project, name: str, start: _StepStart, workdir: Path) -> bool:
+    """原子写入该环节本次运行的起止与耗时,直接覆盖上一轮的值(不累加)。返回是否真的记了。
+
+    空跑守卫:产物指纹与开工时完全一致、且此前已有耗时记录 → 本轮被幂等逻辑全量跳过、
+    一个文件都没写,三个计时键原样不动(实测:DGX 上 5 个 s5_elapsed_s=2.0 的作品,每页音频
+    都在盘上、一页没重做,那 2 秒纯粹是加载遍历的空转;把真实的十几分钟覆盖成 2 秒,正是
+    用户报的那个 bug)。指纹必须在这里重算——环节函数返回的是新的 p、产物也刚落盘。
+
+    返回值给调用方判断要不要走"下游产物已过期"的级联:本轮什么都没重做,下游自然也没过期。"""
+    p.status.pop(f"{name}_running_since", None)
+    if start.fingerprint is not None and f"{name}_elapsed_s" in p.status \
+            and _artifact_fingerprint(workdir) == start.fingerprint:
+        return False
+    p.status[f"{name}_started_at"] = start.started_at
+    p.status[f"{name}_elapsed_s"] = f"{time.monotonic() - start.t0:.1f}"
+    p.status[f"{name}_finished_at"] = _now_iso()   # 本次真实完成的墙钟时刻,前端直接读它展示
+    # "结束"时间,不用 开始时间+elapsed 现算(两者中间可能隔着排队/取消,现算会偏)。
+    return True
 
 
 def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
@@ -232,19 +297,19 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
         _locked_save(p)
-        t0 = _mark_step_started(p, "s0")
+        s0_start = _mark_step_started(p, "s0", workdir)
         if story is not None:
             p = s0_legend.from_text(p, clients["s0"][0], story)
         else:
             p = s0_legend.run(p, clients["s0"][0])
             if not p.legend_candidates:
-                _mark_step_elapsed(p, "s0", t0)
+                _mark_step_elapsed(p, "s0", s0_start, workdir)
                 p.status["pipeline"] = "error: 未检索到可靠传说,请提供自备故事"
                 p.status["pipeline_finished_at"] = _now_iso()
                 _locked_save(p)
                 return
             p.legend = p.legend_candidates[0]
-        _mark_step_elapsed(p, "s0", t0)
+        _mark_step_elapsed(p, "s0", s0_start, workdir)
         _locked_save(p)
         stages = [
             ("s1", lambda: s1_script.run(p, clients["s1"][0],
@@ -271,9 +336,9 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
                 p.status["pipeline_finished_at"] = _now_iso()
                 _locked_save(p)
                 return
-            step_t0 = _mark_step_started(p, _name)
+            step_start = _mark_step_started(p, _name, workdir)
             fn()
-            _mark_step_elapsed(p, _name, step_t0)
+            _mark_step_elapsed(p, _name, step_start, workdir)
             _locked_save(p)
         p.status["pipeline"] = _deliverable_status(p)
         p.status["pipeline_finished_at"] = _now_iso()
@@ -740,7 +805,7 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
             p.status["pipeline_finished_at"] = _now_iso()
             _locked_save(p)
             return
-        step_t0 = _mark_step_started(p, name)
+        step_start = _mark_step_started(p, name, workdir)
         # 清掉该环节自己的陈旧终态(如上次成功的 done):否则重跑期间磁盘上仍是旧值,
         # 前端 currentIdx(非 done/非 partial 才算"当前步")会判定错位,动感显示不到这一格。
         p.status.pop(name, None)
@@ -761,21 +826,23 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
                               cancel_check=lambda: _is_cancelled(project_id))
         elif name == "s6":
             p = s6_compose.run(p, workdir)
-        _mark_step_elapsed(p, name, step_t0)
+        regenerated = _mark_step_elapsed(p, name, step_start, workdir)
         if _check_cancelled(project_id):  # 协作式取消:s3/s4/s5 环节内部提前收尾后在此消费标记,
             # 避免明明是用户主动取消却被 _deliverable_status 判成普通 partial/error,状态失真。
             p.status["pipeline"] = "cancelled"
             p.status["pipeline_finished_at"] = _now_iso()
             _locked_save(p)
             return
-        if name != "s6":
+        # 本轮一个产物文件都没重写(全被幂等逻辑跳过)时不走级联:什么都没变,下游自然没过期。
+        # 这一条顺带修掉一个既有 bug——在已出片的项目上点"重新生成 S4",哪怕一页都没重做,
+        # 原先也会无条件 p.output.clear() 把 mp4/zip/pdf 全毁掉,用户白白丢一次成片。
+        if name != "s6" and regenerated:
             p.output.clear()   # 重跑上游步骤使已合成的 mp4/zip/pdf 失效,清掉避免残留"假成片"
             # 级联:重跑上游环节使其下游环节产物过期,清掉下游 status 键避免残留"假完成"标记。
             # name 恒在 _STEP_NAMES 内(run_step 已校验),故按 _STEP_NAMES 顺序取其后即为下游。
             idx = _STEP_NAMES.index(name)
             for step in _STEP_NAMES[idx + 1:]:
-                for key in (step, f"{step}_started_at", f"{step}_elapsed_s"):
-                    p.status.pop(key, None)
+                editing.clear_step_keys(p.status, step)
         _locked_save(p)
         p.status["pipeline"] = _deliverable_status(p)
         p.status["pipeline_finished_at"] = _now_iso()
@@ -832,7 +899,7 @@ def _run_track(project_id: str, lang: str, cfg: AppConfig) -> None:
             p.status["pipeline_finished_at"] = _now_iso()
             _locked_save(p)
             return
-        t0 = _mark_step_started(p, f"track_{lang}")
+        track_start = _mark_step_started(p, f"track_{lang}", workdir)
         p.status.pop(f"track_{lang}", None)
         _locked_save(p)
 
@@ -849,7 +916,7 @@ def _run_track(project_id: str, lang: str, cfg: AppConfig) -> None:
         _locked_save(p)
 
         p = s6_compose.run(p, workdir, lang=lang)
-        _mark_step_elapsed(p, f"track_{lang}", t0)
+        _mark_step_elapsed(p, f"track_{lang}", track_start, workdir)
         p.status[f"track_{lang}"] = "done" if p.output.get(f"mp4_{lang}") else "partial"
         _locked_save(p)
         if _check_cancelled(project_id):

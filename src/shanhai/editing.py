@@ -12,16 +12,28 @@ _MEDIA = [("image", "pages", "png"), ("audio", "audio", "mp3")]
 # 管线环节顺序(与 api._pipeline / _STEP_NAMES 一致),用于编辑后按环节复位下游 status。
 _PIPELINE_STEPS = ("s0", "s1", "s2", "s3", "s4", "s5", "s6")
 
+# 三个计时键描述的是同一次运行(见 api._mark_step_started),失效时必须同进同退。
+# 曾经只清前两个、漏了 _finished_at,于是失效后留下"只有结束时刻、没有开始时刻"的孤儿键,
+# 前端悬停算不出起止区间、什么都显示不出来。
+_STEP_TIMING_SUFFIXES = ("_started_at", "_finished_at", "_elapsed_s")
+
+
+def clear_step_keys(status: dict[str, str], step: str) -> None:
+    """清掉某环节的状态键及其三个计时键。api.py 的下游级联也调它(api 已 import editing,
+    反向 import 会成环,故单一真源放这边),保证所有失效路径清的永远是同一组键。"""
+    status.pop(step, None)
+    for suffix in _STEP_TIMING_SUFFIXES:
+        status.pop(f"{step}{suffix}", None)
+
 
 def _invalidate_downstream(project: Project, from_step: str) -> None:
     """编辑后诚实化联动:from_step(含)起的下游环节产物已过期。
-    复位这些环节的 status 键(含 _started_at/_elapsed_s),把 pipeline 打回 partial,并清 output
+    复位这些环节的 status 键(含三个计时键),把 pipeline 打回 partial,并清 output
     (mp4/zip/pdf 内容一变即失效)。只改传入 project,不落盘(落盘由调用端点负责)。"""
     project.output.clear()
     start = _PIPELINE_STEPS.index(from_step)
     for step in _PIPELINE_STEPS[start:]:
-        for key in (step, f"{step}_started_at", f"{step}_elapsed_s"):
-            project.status.pop(key, None)
+        clear_step_keys(project.status, step)
     project.status["pipeline"] = "partial: 已编辑,待重新生成"
 
 
@@ -133,9 +145,10 @@ def _invalidate_track_output(project: Project, lang: str) -> None:
     """该语种成片过期。只清这一语种的产物与状态,不动主语言的 mp4/zip/pdf——
     改英文译文没有理由让中文成片作废。"""
     project.output.pop(f"mp4_{lang}", None)
-    for key in (f"s6_{lang}", f"track_{lang}",
-                f"track_{lang}_started_at", f"track_{lang}_elapsed_s"):
-        project.status.pop(key, None)
+    project.status.pop(f"s6_{lang}", None)
+    # 语种轨的状态键前缀是 track_{lang} 而非环节名,按前缀传进去即可复用同一套清理
+    # (旧代码手写键名时漏了 track_{lang}_finished_at,与 _invalidate_downstream 是同一个 bug)。
+    clear_step_keys(project.status, f"track_{lang}")
 
 
 def update_track_caption(project: Project, index: int, lang: str, caption: str) -> None:

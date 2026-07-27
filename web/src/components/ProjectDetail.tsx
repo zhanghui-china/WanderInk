@@ -551,7 +551,7 @@ function TrackRow({
       <div className="flex items-center gap-2">
         <span className="text-[10px] tracking-[2px] text-muted">{label}</span>
         {track?.duration_ms ? (
-          <span className="text-[11px] text-muted">{(track.duration_ms / 1000).toFixed(1)}s</span>
+          <span className="text-[11px] text-muted">配音 {(track.duration_ms / 1000).toFixed(1)}s</span>
         ) : null}
         {editable && !editing && (
           <div className="ml-auto flex gap-1.5">
@@ -948,7 +948,7 @@ function PageCard({
               {pg.emotion}
             </span>
             {pg.duration_ms > 0 && (
-              <span className="text-muted">{(pg.duration_ms / 1000).toFixed(1)}s</span>
+              <span className="text-muted">配音 {(pg.duration_ms / 1000).toFixed(1)}s</span>
             )}
             {pg.image_gen_ms > 0 && (
               <span className="text-muted">生成 {(pg.image_gen_ms / 1000).toFixed(1)}s</span>
