@@ -35,6 +35,11 @@ class CharacterCard(BaseModel):
     appearance: str
     feature_prompt: str = ""
     turnaround_image: str = ""
+    # 用户上传的角色参考图(相对 workdir 的路径),有则 S3 走单图编辑而非文生图。
+    # 有默认值 → 老 project.json 零迁移。
+    # 已知限制:重跑 S1 会重建 characters,该字段随之丢失、图片文件成孤儿。但 _STEP_NAMES
+    # 不含 s1(网页上根本触发不到),只有 CLI 全量重跑会碰到,不值得为此写迁移/清理逻辑。
+    reference_image: str = ""
     locked: bool = False
 
 

@@ -13,6 +13,8 @@ dependencies = [
   "uvicorn[standard]>=0.30",
   "bcrypt>=4.0",  # 口令哈希(auth.py)
   "itsdangerous>=2.0",  # Starlette SessionMiddleware 签名 cookie 依赖
+  "python-multipart>=0.0.9",  # FastAPI UploadFile 依赖:缺它时**定义路由那一刻**就抛
+  # RuntimeError,整个 app import 失败、全量测试一起挂,且报错与上传功能毫无关系,极难定位。
 ]
 
 [project.scripts]

@@ -10,13 +10,15 @@ DGX 专属运维脚本,不纳入 shanhai git 仓库版本控制(与 image-shim/m
 import copy
 import json
 import os
+import subprocess
+import tempfile
 import random
 import uuid
 from pathlib import Path
 
 import httpx
 import websockets
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -27,12 +29,25 @@ COMFYUI_WS = os.getenv("COMFYUI_WS", "ws://127.0.0.1:8188/ws")
 WORKFLOW_PATH = Path(os.getenv(
     "WORKFLOW_JSON_PATH",
     "/home1/wuzi/WanderInk/comfyui-bridge/VoiceDesign-QwenTTS.json"))
+# 音色克隆模板。**这个拷了副本**,与上面"不拷副本"的选择相反,理由:VoiceClone 模板是队友
+# 2026-07-27 才新加的、还在动(同目录其它模板都停在 07-14),线上直接引用等于把生产挂在
+# 别人的编辑器上。VoiceDesign 已经稳定三周,继续直引。
+CLONE_WORKFLOW_PATH = Path(os.getenv(
+    "CLONE_WORKFLOW_JSON_PATH", str(Path(__file__).parent / "VoiceClone-QwenTTS.json")))
 POLL_TIMEOUT_S = float(os.getenv("QWENTTS_SHIM_POLL_TIMEOUT_S", "180"))
 
 # 节点 ID 常量:来自实测确认的工作流结构(curl /object_info 逐一核实)。
 NODE_TEXT = "75"       # Text Multiline —— 要合成的文本
 NODE_VOICE_DESC = "76"  # Text Multiline —— 声音设计提示词(英文)
 NODE_TTS = "73"        # Qwen3TTSVoiceDesign —— 承载"语速"字段
+
+# VoiceClone 模板的节点(结构与 VoiceDesign 完全不同,字段名是英文的)
+CLONE_NODE_AUDIO = "151"   # LoadAudio —— 参考音频,inputs.audio 是 ComfyUI input/ 下的纯文件名
+CLONE_NODE_TEXT = "153"    # Text Multiline —— 要合成的文本
+# 注意:VoiceClone 链路**没有语速节点**(参考音频决定语速),speed 只能在拿到音频后用
+# ffmpeg atempo 后处理,见 _apply_speed。
+CLONE_PREFIX = "clone:"    # voice 值以此开头即走克隆;后面跟 ComfyUI input/ 里的文件名
+FFMPEG = os.getenv("FFMPEG_BIN", "ffmpeg")
 
 # 音色 -> 声音设计提示词(必须是英文,模型只认这个语言的描述效果最好)。
 # 键名直接用中文,前端下拉框(meta.voices)据此渲染,无需额外的 label 映射代码。
@@ -77,10 +92,24 @@ def _randomize_seeds(workflow: dict) -> dict:
     return workflow
 
 
-def _load_workflow() -> dict:
-    if not WORKFLOW_PATH.exists():
-        raise HTTPException(500, f"工作流模板缺失: {WORKFLOW_PATH}(队友 comfyui-bridge 目录结构是否变动?)")
-    return _randomize_seeds(json.loads(WORKFLOW_PATH.read_text(encoding="utf-8")))
+def _load_workflow(path: Path = WORKFLOW_PATH) -> dict:
+    if not path.exists():
+        raise HTTPException(500, f"工作流模板缺失: {path}(队友 comfyui-bridge 目录结构是否变动?)")
+    return _randomize_seeds(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _build_clone_workflow(req: SpeechRequest) -> dict:
+    """克隆音色:voice 形如 "clone:<ComfyUI input 里的文件名>",该文件名由 /v1/voices/clone
+    注册时返回。shim 本身不存任何状态——voice 字符串自己就是句柄。"""
+    ref = req.voice[len(CLONE_PREFIX):].strip()
+    # 不做静默降级:未知的内置音色回落到女声是无害的,但克隆音色一旦回落,用户会拿到一个
+    # 完全不认识的嗓子却毫无提示,只会以为"克隆没生效"。宁可明确报错。
+    if not ref or "/" in ref or "\\" in ref or ".." in ref:
+        raise HTTPException(400, f"非法的克隆音色句柄: {req.voice!r}")
+    wf = copy.deepcopy(_load_workflow(CLONE_WORKFLOW_PATH))
+    wf[CLONE_NODE_AUDIO]["inputs"]["audio"] = ref
+    wf[CLONE_NODE_TEXT]["inputs"]["text"] = req.input
+    return wf
 
 
 def _build_workflow(req: SpeechRequest) -> dict:
@@ -148,12 +177,57 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+def _apply_speed(mp3: bytes, speed: float) -> bytes:
+    """VoiceClone 链路没有语速节点(语速由参考音频决定),只能事后用 atempo 调。
+    VoiceDesign 那条路不走这里——它的语速在工作流里就调好了,再过一道只会白白掉音质。
+    atempo 单次有效范围是 [0.5, 2.0],与 VoiceDesign 语速节点的范围一致,故不需要串联多级。"""
+    if abs(speed - 1.0) < 0.01:
+        return mp3
+    tempo = max(0.5, min(2.0, speed))
+    with tempfile.TemporaryDirectory() as td:
+        src, out = Path(td) / "in.mp3", Path(td) / "out.mp3"
+        src.write_bytes(mp3)
+        r = subprocess.run(
+            [FFMPEG, "-y", "-i", str(src), "-filter:a", f"atempo={tempo:g}",
+             "-c:a", "libmp3lame", "-q:a", "2", str(out)],
+            capture_output=True)
+        if r.returncode != 0 or not out.exists():
+            # 调速失败不该让整段配音失败——原速音频仍然可用,只是语速没生效。
+            print(f"[warn] atempo 失败,返回原速音频: {r.stderr[-200:]!r}", flush=True)
+            return mp3
+        return out.read_bytes()
+
+
+@app.post("/v1/voices/clone")
+async def register_clone_voice(file: UploadFile = File(...)) -> dict:
+    """把一段参考音频注册成音色句柄。做法与 image-shim 的 _upload_reference 同款:
+    纯 HTTP 传到 ComfyUI 的 input/(不需要 wuzi 目录的写权限,ComfyUI 进程自己写)。
+
+    ComfyUI 没有 /upload/audio,但 /upload/image 不校验类型、写的是裸字节,队友那边
+    已经用它传音频跑通过;而 LoadAudio 走 PyAV 解码,wav 自然能读。
+    已知欠账:ComfyUI 无删除接口,这些参考音频会持续累积在 input/,需要定期清理。"""
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "空文件")
+    name = f"shanhai_voice_{uuid.uuid4().hex[:12]}.wav"
+    async with httpx.AsyncClient(timeout=60) as c:
+        try:
+            r = await c.post(f"{COMFYUI_HTTP}/upload/image",
+                             files={"image": (name, data, "audio/wav")},
+                             data={"overwrite": "true"})
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"上传参考音频到 ComfyUI 失败: {e}") from e
+    return {"voice": CLONE_PREFIX + r.json()["name"]}
+
+
 @app.post("/v1/audio/speech")
 async def synthesize(req: SpeechRequest) -> Response:
     if not req.input.strip():
         raise HTTPException(400, "input 不能为空")
     client_id = str(uuid.uuid4())
-    wf = _build_workflow(req)
+    is_clone = req.voice.startswith(CLONE_PREFIX)
+    wf = _build_clone_workflow(req) if is_clone else _build_workflow(req)
     uri = f"{COMFYUI_WS}?clientId={client_id}"
     async with httpx.AsyncClient(timeout=30) as client:
         try:
@@ -167,10 +241,14 @@ async def synthesize(req: SpeechRequest) -> Response:
         except OSError as e:
             raise HTTPException(502, f"ComfyUI WebSocket 连接失败: {e}") from e
         raw = await _fetch_audio(client, prompt_id)
-    # SaveAudioAdvanced 工作流节点(77)配置的 format 就是 "mp3",无需再转码。
+    # SaveAudioAdvanced 两个模板配的 format 都是 "mp3",无需转码;克隆链路没有语速节点,
+    # 语速只能在这里补(见 _apply_speed)。
+    if is_clone:
+        raw = _apply_speed(raw, req.speed)
     return Response(content=raw, media_type="audio/mpeg")
 
 
 @app.get("/v1/models")
 def list_models() -> dict:
-    return {"object": "list", "data": [{"id": "qwen3-tts-voicedesign", "object": "model"}]}
+    return {"object": "list", "data": [{"id": "qwen3-tts-voicedesign", "object": "model"},
+                                   {"id": "qwen3-tts-voiceclone", "object": "model"}]}

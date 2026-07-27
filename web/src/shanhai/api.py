@@ -16,15 +16,16 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from shanhai import editing, export, runtime_config, store
+from shanhai import editing, export, ffmpeg, runtime_config, store, uploads
 from shanhai.auth import current_user, is_admin, verify_login
 from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _clients,
                          resolve_stage_clients)
@@ -56,6 +57,60 @@ _CORS_ORIGINS = [o.strip() for o in os.getenv("SHANHAI_CORS_ORIGINS", "*").split
 # 只读模式(公网暴露用):关闭 POST 新建生成,访客仅能浏览已有作品,不触发上游/烧额度。
 _READONLY = os.getenv("SHANHAI_READONLY", "").strip().lower() in ("1", "true", "yes", "on")
 
+class BodySizeLimitMiddleware:
+    """在 FastAPI 解析请求体**之前**按大小拒绝,纯 ASGI 层。
+
+    为什么必须在这一层:FastAPI 的路由 handler 在被调用前就已经 `await request.form()`
+    把整个 multipart 解析完、spool 到临时文件了,而且这发生在 solve_dependencies 之前——
+    也就是说 **连未登录请求的 body 也会先完整落盘,再返回 401**。实测灌 200 MiB 分块请求,
+    服务端会老老实实全部写进临时文件才回 413。写在 handler 里的任何上限(包括
+    uploads.read_limited 和读 Content-Length 的快速失败)都晚了一步,挡不住任何字节。
+
+    两道判据:Content-Length 命中直接拒(省掉整趟传输);没有这个头的分块传输则包住
+    receive、累计计数,超限即拒。只对声明了 body 的请求生效,GET 等不受影响。"""
+
+    def __init__(self, app, max_bytes: int) -> None:  # noqa: ANN001 — ASGI 约定
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send) -> None:  # noqa: ANN001
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get("headers") or [])
+        declared = headers.get(b"content-length")
+        if declared and declared.isdigit() and int(declared) > self.max_bytes:
+            return await self._too_large(send)
+        received = 0
+
+        async def counting_receive():
+            nonlocal received
+            msg = await receive()
+            if msg["type"] == "http.request":
+                received += len(msg.get("body", b""))
+                if received > self.max_bytes:
+                    # 断流:后续 body 不再交给下游,下游解析器会因请求体不完整而报错;
+                    # 但此时我们已经先把 413 发出去了,客户端看到的是明确的拒绝。
+                    raise _BodyTooLarge
+            return msg
+
+        try:
+            await self.app(scope, counting_receive, send)
+        except _BodyTooLarge:
+            await self._too_large(send)
+
+    async def _too_large(self, send) -> None:  # noqa: ANN001
+        mib = self.max_bytes // 1024 // 1024
+        body = json.dumps({"detail": f"请求体超过 {mib} MiB 上限"}).encode()
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
+class _BodyTooLarge(Exception):
+    """内部信号:body 累计超限,由 BodySizeLimitMiddleware 自己捕获,不外泄。"""
+
+
 app.add_middleware(
     CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"],
 )
@@ -72,6 +127,11 @@ if not _SESSION_SECRET:
 # 若未来接 HTTPS(反代终止 TLS 或直连 HTTPS),置 SHANHAI_SESSION_HTTPS_ONLY=true 收紧。
 _SESSION_HTTPS_ONLY = os.getenv("SHANHAI_SESSION_HTTPS_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
 app.add_middleware(SessionMiddleware, secret_key=_SESSION_SECRET, https_only=_SESSION_HTTPS_ONLY)
+
+# 最后 add 的 middleware 在最外层,也就是最先看到请求——body 上限必须在最外层,
+# 否则 CORS/Session 之后、路由解析 form 之前的窗口仍会让超大 body 落盘。
+# 留出 multipart 边界与表单字段的开销,故略高于 uploads.MAX_UPLOAD_BYTES。
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=uploads.MAX_UPLOAD_BYTES + (1 << 20))
 
 # 云端环节可真并行,本地 Spark 端点的串行化交给 providers/_http.py 的
 # local_backend_guard 全局锁(按物理 GPU 排队,不按线程池排队)。
@@ -194,22 +254,86 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _mark_step_started(p: Project, name: str) -> float:
-    """记录该环节开始的墙上时间——只在第一次启动时记录,续跑不覆盖(开始时间应该是
-    这个环节第一次被启动的时刻,不是每次续跑都前移);单调时钟仍每次都取,用于算这一次
-    续跑自己的耗时增量。"""
-    p.status.setdefault(f"{name}_started_at", _now_iso())
-    return time.monotonic()
+# 会做"已有产物就跳过"的环节:只有它们可能整轮空转,也只有它们需要空跑守卫。
+# s0/s1/s2 每次都真的重写文本(产物只落在 project.json 里,文件指纹看不见),
+# track_*/未知环节同理——都不设守卫,一律照实记耗时。
+_SKIPPABLE_STEPS = frozenset({"s3", "s4", "s5", "s6"})
 
 
-def _mark_step_elapsed(p: Project, name: str, t0: float) -> None:
-    """该环节耗时:S3/S4/S5 这类"只处理剩余子项"的环节,续跑几次就该把每次的耗时
-    加起来,而不是拿最后一次续跑的耗时覆盖掉之前几轮已经花掉的时间。"""
-    prev = float(p.status.get(f"{name}_elapsed_s") or 0)
-    p.status[f"{name}_elapsed_s"] = f"{prev + (time.monotonic() - t0):.1f}"
-    p.status[f"{name}_finished_at"] = _now_iso()   # 每次真实完成/暂停的墙钟时刻,前端
-    # 直接读这个字段展示"结束"时间,不再用 开始时间+elapsed 现算(那样在开始时间不变、
-    # elapsed 累加之后会算出一个虚假的、远晚于实际完成时刻的"结束"时间)。
+def _artifact_fingerprint(workdir: Path) -> tuple[int, int, int]:
+    """项目产物目录的指纹:(文件数, 最新 mtime_ns, 总字节数)。任何一个产物文件被写过,指纹就变。
+
+    为什么不按环节数产物个数(第一版就是那么写的,被审计推翻):重跑时"计数能代表增量"这个
+    前提对四个环节没有一个成立——s6_compose 完全不幂等、每次全量重编码却写回同名的
+    output["mp4"];s5 的 BGM 每轮无条件重烧、静音兜底页会被真人音轨原地替换;s4 重画失败页
+    时 cell.image 前后都是真值;s3 对第 5 个及以后的角色每次都重算。数个数一个都抓不住,
+    直接问文件系统"这一轮到底有没有文件被写过"才是可靠的判据。
+
+    排除 project.json:它是我们自己每步都要落盘的状态文件,算进来指纹必变、守卫永远失效。
+    已知取舍:s3 对超出 MAX_TURNAROUND 的角色只重算 feature_prompt(写进 project.json、
+    不落文件),这种"只改数据不产文件"的重跑会被判成空跑而不记耗时——够边缘,不为它加复杂度。"""
+    count = size = 0
+    newest = 0
+    for root, _dirs, files in os.walk(workdir):
+        for fn in files:
+            if root == str(workdir) and fn == "project.json":
+                continue
+            try:
+                st = os.stat(os.path.join(root, fn))
+            except OSError:      # 并发删改导致的瞬时缺失:跳过即可,指纹只需"够敏感"
+                continue
+            count += 1
+            size += st.st_size
+            newest = max(newest, st.st_mtime_ns)
+    return count, newest, size
+
+
+class _StepStart(NamedTuple):
+    """一次环节运行的凭证:_mark_step_started 造,原样交给 _mark_step_elapsed。
+    started_at 只揣在内存里,等收尾时和另外两个键一起原子写入(理由见 _mark_step_started)。"""
+    t0: float
+    started_at: str
+    fingerprint: tuple[int, int, int] | None   # None = 该环节不设空跑守卫
+
+
+def _mark_step_started(p: Project, name: str, workdir: Path) -> _StepStart:
+    """标记该环节"本次运行"开始。
+
+    {name}_started_at / _finished_at / _elapsed_s 三个键描述同一次运行,而且是**最近一次**真实
+    运行、不是历史累计——用户拍板的语义:总时长 = 各步骤最后一次耗时相加。
+
+    **这三个键一律等到 _mark_step_elapsed 里一次性写入,开工时一个都不碰**。第一版是开工就
+    改写 started_at、顺手 pop 掉 finished_at,被审计打回:紧跟着就有一次无条件落盘,若步骤体
+    抛异常或进程被杀,盘上会留下"本轮的 started_at + 上一轮的 elapsed_s + 没有 finished_at"
+    这种分属两次运行的错配状态,前端会永久显示"进行中"却同时列着上一轮的耗时,而且下一次
+    空跑还会把它原样还原、自锁住。改成收尾时原子写入后,中途死掉只是保留上一轮的完整记录
+    (陈旧但自洽),不会产生有毒状态,守卫也退化成"什么都不写"这一个动作。
+
+    运行期间的"进行中"显示改用单独的 {name}_running_since:它不属于那三个自洽键,前端只在
+    pipeline 正在跑时才认它,残留一个陈旧值无害。"""
+    p.status[f"{name}_running_since"] = _now_iso()
+    fp = _artifact_fingerprint(workdir) if name in _SKIPPABLE_STEPS else None
+    return _StepStart(time.monotonic(), _now_iso(), fp)
+
+
+def _mark_step_elapsed(p: Project, name: str, start: _StepStart, workdir: Path) -> bool:
+    """原子写入该环节本次运行的起止与耗时,直接覆盖上一轮的值(不累加)。返回是否真的记了。
+
+    空跑守卫:产物指纹与开工时完全一致、且此前已有耗时记录 → 本轮被幂等逻辑全量跳过、
+    一个文件都没写,三个计时键原样不动(实测:DGX 上 5 个 s5_elapsed_s=2.0 的作品,每页音频
+    都在盘上、一页没重做,那 2 秒纯粹是加载遍历的空转;把真实的十几分钟覆盖成 2 秒,正是
+    用户报的那个 bug)。指纹必须在这里重算——环节函数返回的是新的 p、产物也刚落盘。
+
+    返回值给调用方判断要不要走"下游产物已过期"的级联:本轮什么都没重做,下游自然也没过期。"""
+    p.status.pop(f"{name}_running_since", None)
+    if start.fingerprint is not None and f"{name}_elapsed_s" in p.status \
+            and _artifact_fingerprint(workdir) == start.fingerprint:
+        return False
+    p.status[f"{name}_started_at"] = start.started_at
+    p.status[f"{name}_elapsed_s"] = f"{time.monotonic() - start.t0:.1f}"
+    p.status[f"{name}_finished_at"] = _now_iso()   # 本次真实完成的墙钟时刻,前端直接读它展示
+    # "结束"时间,不用 开始时间+elapsed 现算(两者中间可能隔着排队/取消,现算会偏)。
+    return True
 
 
 def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
@@ -232,19 +356,19 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
         _locked_save(p)
-        t0 = _mark_step_started(p, "s0")
+        s0_start = _mark_step_started(p, "s0", workdir)
         if story is not None:
             p = s0_legend.from_text(p, clients["s0"][0], story)
         else:
             p = s0_legend.run(p, clients["s0"][0])
             if not p.legend_candidates:
-                _mark_step_elapsed(p, "s0", t0)
+                _mark_step_elapsed(p, "s0", s0_start, workdir)
                 p.status["pipeline"] = "error: 未检索到可靠传说,请提供自备故事"
                 p.status["pipeline_finished_at"] = _now_iso()
                 _locked_save(p)
                 return
             p.legend = p.legend_candidates[0]
-        _mark_step_elapsed(p, "s0", t0)
+        _mark_step_elapsed(p, "s0", s0_start, workdir)
         _locked_save(p)
         stages = [
             ("s1", lambda: s1_script.run(p, clients["s1"][0],
@@ -271,9 +395,9 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
                 p.status["pipeline_finished_at"] = _now_iso()
                 _locked_save(p)
                 return
-            step_t0 = _mark_step_started(p, _name)
+            step_start = _mark_step_started(p, _name, workdir)
             fn()
-            _mark_step_elapsed(p, _name, step_t0)
+            _mark_step_elapsed(p, _name, step_start, workdir)
             _locked_save(p)
         p.status["pipeline"] = _deliverable_status(p)
         p.status["pipeline_finished_at"] = _now_iso()
@@ -333,6 +457,7 @@ def _serialize(p: Project) -> dict:
     characters = [{
         "name": c.name, "role": c.role,
         "image": _file_url(p.project_id, c.turnaround_image, workdir),
+        "reference_image": _file_url(p.project_id, c.reference_image, workdir),
     } for c in (p.script.characters if p.script else [])]
     return {
         "project_id": p.project_id,
@@ -717,6 +842,106 @@ def redraw_character(project_id: str, name: str, user: str = Depends(current_use
     return _serialize(p)
 
 
+@app.post("/api/projects/{project_id}/characters/{name}/reference")
+async def upload_character_reference(project_id: str, name: str, request: Request,
+                                     file: UploadFile = File(...),
+                                     user: str = Depends(current_user)) -> dict:
+    """上传角色参考图:净化后落盘,并标记该角色需重绘(前端随后自动触发 S3)。"""
+    # 真正的落盘护栏是 BodySizeLimitMiddleware(在 form 解析之前);这里只是解析后的兜底。
+    # 解码+重编码放在取锁之前:纯计算,Pillow 几百毫秒不该占着 per-project 锁
+    raw = await uploads.read_limited(file)
+    png = uploads.to_reference_png(raw)
+
+    rel = uploads.reference_rel_path()   # 带随机盐,每次上传都是新路径
+    with _project_lock(project_id):
+        p = _editable(project_id, user)
+        # 先按名字精确匹配确认角色存在——匹配成功后才落盘。
+        # 路径本身由服务端随机生成、完全不含用户字节,故路径穿越无从谈起;这一步守的是
+        # "别给不存在的角色凭空造文件"。
+        card = next((c for c in (p.script.characters if p.script else []) if c.name == name), None)
+        if card is None:
+            raise HTTPException(404, f"角色不存在:{name}")
+        old = card.reference_image
+        uploads.atomic_write(store.project_dir(project_id) / rel, png)
+        card.reference_image = rel
+        # 路径带随机盐 → 换图不再覆盖同名文件,旧的必须显式删掉,否则每换一次就留一个孤儿
+        if old and old != rel:
+            (store.project_dir(project_id) / old).unlink(missing_ok=True)
+        # 不清 turnaround_image:清了卡片立刻变"未生成",S3 跑起来之前那段空窗很难看;
+        # S3 成功时本来就会覆写同名文件。
+        editing.mark_character_redraw(p, name)
+        store.save(p)
+    return _serialize(p)
+
+
+@app.delete("/api/projects/{project_id}/characters/{name}/reference")
+def delete_character_reference(project_id: str, name: str,
+                               user: str = Depends(current_user)) -> dict:
+    """删除角色参考图,幂等:本来就没有也返回 200。"""
+    with _project_lock(project_id):
+        p = _editable(project_id, user)
+        card = next((c for c in (p.script.characters if p.script else []) if c.name == name), None)
+        if card is None:
+            raise HTTPException(404, f"角色不存在:{name}")
+        if card.reference_image:
+            (store.project_dir(project_id) / card.reference_image).unlink(missing_ok=True)
+            card.reference_image = ""
+        editing.mark_character_redraw(p, name)
+        store.save(p)
+    return _serialize(p)
+
+
+# ---------- 自定义音色(录音 → 音色克隆) ----------
+
+@app.post("/api/voice-samples")
+async def upload_voice_sample(file: UploadFile = File(...),
+                              user: str = Depends(current_user)) -> dict:
+    """上传一段录音,注册成可直接当 voice 用的音色句柄。
+
+    **不绑定任何 project**:录音入口同时在「新建作品表单」(那时还没有 project_id)和
+    「作品详情页」,共用这一个端点、这一份存储,只在上传完成后由前端分叉成"建作品"或"改 params"。
+    因此这里不取 project 锁,只做 _READONLY 与登录校验。
+
+    顺序是「先注册、后落盘」:注册要打 TTS 后端,失败的概率远高于写本地文件,先做能快速失败、
+    不留孤儿。本地这份 wav 保留是为了可回听、可溯源,以及上游 input 目录被清理时能重新注册。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止上传")
+    raw = await uploads.read_limited_audio(file)
+    wav = uploads.to_voice_sample_wav(raw, file.content_type or "")
+
+    s = resolve_settings("s5")   # 音色归 S5 用,须按 S5 实际生效的 TTS 端点注册
+    _l, _i, tts, _m = _clients(s)
+    try:
+        voice = tts.register_clone_voice(wav)
+    except Exception as e:  # noqa: BLE001 —— 上游任何失败都转成用户能看懂的 502
+        raise HTTPException(502, f"音色注册失败,TTS 后端不可用:{e}") from e
+
+    rel = uploads.voice_sample_rel_path()
+    out = store.voice_sample_dir() / rel
+    uploads.atomic_write(out, wav)
+    return {"voice": voice, "sample_url": f"/files/{store.VOICE_SAMPLE_DIRNAME}/{rel}",
+            "duration_ms": ffmpeg.probe_duration_ms(out)}
+
+
+class VoiceParams(BaseModel):
+    voice: str = Field(default="", max_length=200)
+
+
+@app.patch("/api/projects/{project_id}/params/voice")
+def update_project_voice(project_id: str, body: VoiceParams,
+                         user: str = Depends(current_user)) -> dict:
+    """换作品的配音音色。**只放 voice 这一个字段**——做成通用的 params 编辑会立刻牵出
+    "改了 duration_min 要不要重跑 S2"之类一串问题,不值得。
+
+    换音色 = 所有已生成的配音都念错了嗓子,故走与编辑正文同一套下游作废。"""
+    with _project_lock(project_id):
+        p = _editable(project_id, user)
+        p.params.voice = body.voice
+        editing.invalidate_from(p, "s5")
+        store.save(p)
+    return _serialize(p)
+
+
 # ---------- 单步重跑(编辑后局部重生成) ----------
 
 _STEP_NAMES = ("s2", "s3", "s4", "s5", "s6")
@@ -740,7 +965,7 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
             p.status["pipeline_finished_at"] = _now_iso()
             _locked_save(p)
             return
-        step_t0 = _mark_step_started(p, name)
+        step_start = _mark_step_started(p, name, workdir)
         # 清掉该环节自己的陈旧终态(如上次成功的 done):否则重跑期间磁盘上仍是旧值,
         # 前端 currentIdx(非 done/非 partial 才算"当前步")会判定错位,动感显示不到这一格。
         p.status.pop(name, None)
@@ -761,21 +986,23 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
                               cancel_check=lambda: _is_cancelled(project_id))
         elif name == "s6":
             p = s6_compose.run(p, workdir)
-        _mark_step_elapsed(p, name, step_t0)
+        regenerated = _mark_step_elapsed(p, name, step_start, workdir)
         if _check_cancelled(project_id):  # 协作式取消:s3/s4/s5 环节内部提前收尾后在此消费标记,
             # 避免明明是用户主动取消却被 _deliverable_status 判成普通 partial/error,状态失真。
             p.status["pipeline"] = "cancelled"
             p.status["pipeline_finished_at"] = _now_iso()
             _locked_save(p)
             return
-        if name != "s6":
+        # 本轮一个产物文件都没重写(全被幂等逻辑跳过)时不走级联:什么都没变,下游自然没过期。
+        # 这一条顺带修掉一个既有 bug——在已出片的项目上点"重新生成 S4",哪怕一页都没重做,
+        # 原先也会无条件 p.output.clear() 把 mp4/zip/pdf 全毁掉,用户白白丢一次成片。
+        if name != "s6" and regenerated:
             p.output.clear()   # 重跑上游步骤使已合成的 mp4/zip/pdf 失效,清掉避免残留"假成片"
             # 级联:重跑上游环节使其下游环节产物过期,清掉下游 status 键避免残留"假完成"标记。
             # name 恒在 _STEP_NAMES 内(run_step 已校验),故按 _STEP_NAMES 顺序取其后即为下游。
             idx = _STEP_NAMES.index(name)
             for step in _STEP_NAMES[idx + 1:]:
-                for key in (step, f"{step}_started_at", f"{step}_elapsed_s"):
-                    p.status.pop(key, None)
+                editing.clear_step_keys(p.status, step)
         _locked_save(p)
         p.status["pipeline"] = _deliverable_status(p)
         p.status["pipeline_finished_at"] = _now_iso()
@@ -832,7 +1059,7 @@ def _run_track(project_id: str, lang: str, cfg: AppConfig) -> None:
             p.status["pipeline_finished_at"] = _now_iso()
             _locked_save(p)
             return
-        t0 = _mark_step_started(p, f"track_{lang}")
+        track_start = _mark_step_started(p, f"track_{lang}", workdir)
         p.status.pop(f"track_{lang}", None)
         _locked_save(p)
 
@@ -849,7 +1076,7 @@ def _run_track(project_id: str, lang: str, cfg: AppConfig) -> None:
         _locked_save(p)
 
         p = s6_compose.run(p, workdir, lang=lang)
-        _mark_step_elapsed(p, f"track_{lang}", t0)
+        _mark_step_elapsed(p, f"track_{lang}", track_start, workdir)
         p.status[f"track_{lang}"] = "done" if p.output.get(f"mp4_{lang}") else "partial"
         _locked_save(p)
         if _check_cancelled(project_id):

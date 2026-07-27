@@ -9,6 +9,18 @@ from shanhai.schema import Project
 
 DEFAULT_ROOT = Path("projects")
 
+# 用户录制的音色样本目录。刻意**不**放进某个 project 目录:录音入口同时存在于「新建作品
+# 表单」(那一刻还没有 project_id、没有目录)和「作品详情页」,放用户级才能让两个入口共用
+# 同一个上传端点与同一份存储,只在上传完成后分叉成"建作品"或"改 params"。
+# 但它放在 projects/ **内部**——为的是复用现成的 /files 静态挂载,用户才能回听自己录的样本;
+# 下划线前缀 + 真实 project_id 恒为 uuid4 hex[:8],不会撞名。
+# 已知欠账:删作品不会连带清掉样本(20 秒 16k 单声道约 640KB,量级可忽略)。
+VOICE_SAMPLE_DIRNAME = "_voice_samples"
+
+
+def voice_sample_dir(root: Path = DEFAULT_ROOT) -> Path:
+    return root / VOICE_SAMPLE_DIRNAME
+
 # project_id 形状校验:仅允许字母数字下划线短横线,堵住路径遍历(../、/、空白等)。
 _PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 

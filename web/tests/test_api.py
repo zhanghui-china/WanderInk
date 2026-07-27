@@ -3,6 +3,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import Future
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -845,7 +846,10 @@ def test_pipeline_records_step_and_total_timing():
     assert p.status["pipeline_finished_at"]
     for step in ("s0", "s1", "s2", "s3", "s4", "s5", "s6"):
         assert p.status[f"{step}_started_at"]
+        assert p.status[f"{step}_finished_at"]
         float(p.status[f"{step}_elapsed_s"])   # 能转成 float,解析失败即测试失败
+        # 自洽性:结束时刻不早于开始时刻(ISO 8601 字符串可直接按字典序/datetime 比较)。
+        assert p.status[f"{step}_finished_at"] >= p.status[f"{step}_started_at"]
 
 
 def test_pipeline_use_hermes_agent_false_falls_back_to_global_llm():
@@ -901,27 +905,44 @@ def test_run_step_records_step_timing(_settings):
         api._run_step("stepTimingId", "s6", runtime_config.AppConfig())
 
     assert p.status["s6_started_at"]
+    assert p.status["s6_finished_at"]
     float(p.status["s6_elapsed_s"])
+    assert p.status["s6_finished_at"] >= p.status["s6_started_at"]   # 自洽性:结束不早于开始
     assert p.status["pipeline_started_at"]
     assert p.status["pipeline_finished_at"]
 
 
 @patch("shanhai.api.Settings")
-def test_run_step_accumulates_elapsed_across_reruns(_settings):
-    # 回归:S3/S4/S5 这类"只处理剩余子项"的环节续跑多次时,elapsed_s 须是每轮耗时之和
-    # (如 17s + 7s = 24s),不能被最后一轮的耗时覆盖掉;started_at 须保持第一轮的时间不
-    # 前移,新增的 finished_at 才是每轮真实完成的墙钟时刻。
+def test_run_step_reflects_latest_run_only(_settings, tmp_path: Path):
+    # 用户拍板语义:elapsed_s 是**最近一次**运行的耗时,不是历史累计(回退了 445fcaa 的累加逻辑)。
+    # 续跑两轮(17s、7s)后,elapsed_s 须是第二轮的 7.0,而不是两轮之和 24.0;started_at 须
+    # 跟着第二轮前移(不再固定第一轮时刻),finished_at 随每轮真实完成更新。
+    #
+    # ⚠️ mock 必须让 s4_pages.run 真的**往 workdir 里写文件**——空跑守卫的判据是产物目录的
+    # 文件指纹,只改内存里的 cell.image 骗不过它,会被判成没做事、三个计时键原样不动、断言全空。
+    # 该守卫本身是为了修另一个故障(配音第一次就生成好了,重跑只显示 2s):见
+    # test_run_step_skips_timing_when_nothing_regenerated。
     from unittest.mock import MagicMock
     p = Project(project_id="accumTimingId", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page(index=1), _imaged_page(index=2, image="")]
+    pages = tmp_path / "pages"
+    pages.mkdir()
     # 第一轮:t0=100 → 结束时 monotonic()=117,耗时 17s;第二轮:t0=200 → 结束时 207,耗时 7s。
     monotonic_values = iter([100.0, 117.0, 200.0, 207.0])
+    written = iter(["page_02.png", "page_03.png"])
+
+    def _write_a_page(*_args, **_kwargs):
+        (pages / next(written)).write_bytes(b"png")   # 真的产出文件,指纹随之变化
+        return p
+
     with patch("shanhai.api.store.load", return_value=p), \
          patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
          patch("shanhai.api._clients",
                return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
          patch("shanhai.api.s4_pages") as s4, \
          patch("shanhai.api.time.monotonic", side_effect=monotonic_values):
-        s4.run.return_value = p
+        s4.run.side_effect = _write_a_page
         api._run_step("accumTimingId", "s4", runtime_config.AppConfig())
         first_started_at = p.status["s4_started_at"]
         assert p.status["s4_elapsed_s"] == "17.0"
@@ -929,9 +950,69 @@ def test_run_step_accumulates_elapsed_across_reruns(_settings):
 
         api._run_step("accumTimingId", "s4", runtime_config.AppConfig())
 
-    assert p.status["s4_started_at"] == first_started_at   # 开始时间不因续跑前移
-    assert p.status["s4_elapsed_s"] == "24.0"               # 17 + 7 累加,不是被 7 覆盖
+    assert p.status["s4_started_at"] != first_started_at   # 开始时间随续跑前移,不再固定首跑
+    assert p.status["s4_elapsed_s"] == "7.0"                # 只反映第二轮,不与首轮累加
     assert p.status["s4_finished_at"] != first_finished_at  # 结束时间随每轮真实完成更新
+
+
+@patch("shanhai.api.Settings")
+def test_run_step_skips_timing_when_nothing_regenerated(_settings, tmp_path: Path):
+    # 「配音 2s」故障的回归测试:DGX 上实测过 5 个作品的 s5_elapsed_s 全变成 2.0——每页音频
+    # 其实早就在盘上、一页没重做,那 2 秒纯粹是 s5_audio.run 幂等跳过全部子项的空转开销,
+    # 却把此前真实的十几分钟覆盖掉了。本轮一个产物文件都没重写时,三个计时键必须一字不动。
+    from unittest.mock import MagicMock
+    p = Project(project_id="skipTimingId", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    p.output = {"mp4": "output/final.mp4"}   # 已出片,用来验证空跑不会误毁成片
+    p.status = {
+        "s5_started_at": "2020-01-01T00:00:00+00:00",
+        "s5_finished_at": "2020-01-01T00:15:00+00:00",
+        "s5_elapsed_s": "900.0",
+        "s6_elapsed_s": "300.0",
+    }
+    (tmp_path / "audio").mkdir()
+    (tmp_path / "audio" / "page_01.mp3").write_bytes(b"mp3")   # 产物已在盘上,本轮不会被重写
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s5_audio") as s5:
+        s5.run.return_value = p   # 原样返回:模拟全部子项因已有音频被幂等跳过,无新产物
+        api._run_step("skipTimingId", "s5", runtime_config.AppConfig())
+
+    assert p.status["s5_started_at"] == "2020-01-01T00:00:00+00:00"    # 三个计时键一字未动
+    assert p.status["s5_finished_at"] == "2020-01-01T00:15:00+00:00"
+    assert p.status["s5_elapsed_s"] == "900.0"
+    assert "s5_running_since" not in p.status                          # 进行中标记要收干净
+    # 空跑不触发下游级联:什么都没重做,下游就没过期。这一条同时守着一个既有 bug——
+    # 原先 p.output.clear() 是无条件的,在已出片的项目上点重新生成会白白毁掉 mp4/zip/pdf。
+    assert p.output == {"mp4": "output/final.mp4"}
+    assert p.status["s6_elapsed_s"] == "300.0"
+
+
+def test_mark_step_writes_three_timing_keys_only_at_the_end(tmp_path: Path):
+    # 三个计时键必须在收尾时**原子写入**,开工时一个都不碰。
+    # 反例(第一版就是这么写的,被审计打回):开工就改写 started_at、pop 掉 finished_at,
+    # 紧接着一次落盘;此时步骤体若抛异常或进程被杀,盘上会留下"本轮的 started_at +
+    # 上一轮的 elapsed_s + 没有 finished_at"这种分属两次运行的错配状态,前端永久显示"进行中"
+    # 却同时列着上一轮的耗时,而且下一次空跑会把它原样还原、自锁住。
+    p = Project(project_id="markstartid", scenic_spot="雷峰塔")
+    p.status.update({"s4_started_at": "2020-01-01T00:00:00+00:00",
+                     "s4_finished_at": "2020-01-01T00:05:00+00:00",
+                     "s4_elapsed_s": "300.0"})
+    start = api._mark_step_started(p, "s4", tmp_path)
+    # 开工阶段(= 中途崩溃时盘上的样子):上一轮的三个键完整保留,自洽且不含错配
+    assert p.status["s4_started_at"] == "2020-01-01T00:00:00+00:00"
+    assert p.status["s4_finished_at"] == "2020-01-01T00:05:00+00:00"
+    assert p.status["s4_elapsed_s"] == "300.0"
+    assert p.status["s4_running_since"]        # 进行中改用单独的键,不污染那三个
+
+    (tmp_path / "new.png").write_bytes(b"png")   # 本轮真的产出了东西
+    assert api._mark_step_elapsed(p, "s4", start, tmp_path) is True
+    assert p.status["s4_started_at"] != "2020-01-01T00:00:00+00:00"
+    assert p.status["s4_finished_at"] != "2020-01-01T00:05:00+00:00"
+    assert "s4_running_since" not in p.status
 
 
 def test_run_step_marks_cancelled_when_flag_set_during_step():
@@ -971,7 +1052,8 @@ def test_run_step_cascades_clears_downstream_status():
     from shanhai.config import Settings
     p = Project(project_id="cascadeId", scenic_spot="雷峰塔")
     p.storyboard = [_imaged_page()]
-    p.status = {"s4": "done", "s5": "done", "s5_elapsed_s": "2.0", "s6": "done"}
+    p.status = {"s4": "done", "s5": "done", "s5_elapsed_s": "2.0",
+                "s5_finished_at": "2020-01-01T00:00:00+00:00", "s6": "done"}
     fake = Settings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
     with patch("shanhai.api.resolve_settings", return_value=fake), \
          patch("shanhai.api.store.load", return_value=p), \
@@ -986,6 +1068,7 @@ def test_run_step_cascades_clears_downstream_status():
         api._run_step("cascadeId", "s4", runtime_config.AppConfig())
     assert "s5" not in p.status and "s6" not in p.status   # 下游被级联清除
     assert "s5_elapsed_s" not in p.status                  # 下游计时键一并清除
+    assert "s5_finished_at" not in p.status                # 三个计时键同进同退,不留孤儿
     assert p.status["s4"] == "done"                        # 本环节自身不被级联清除
     assert p.output == {}                                  # 上游重跑,旧成片失效
 
@@ -1457,3 +1540,173 @@ def test_create_project_validates_settings_before_creating(monkeypatch):
     with pytest.raises(RuntimeError):
         client.post("/api/projects", json={"scenic_spot": "测试景区"})
     assert created == []   # Settings 校验先于建项目 → 未落盘任何项目
+
+
+@patch("shanhai.api.Settings")
+def test_run_step_s6_rerun_is_never_treated_as_noop(_settings, tmp_path: Path):
+    """S6 重跑必须记下真实耗时——这是空跑守卫第一版最严重的漏判(三路对抗审计一致命中)。
+
+    s6_compose.run 完全不幂等:每次都重新排版、逐页 ffmpeg 编码、xfade 拼接、封字幕,
+    几分钟起步,但写回的永远是同名的 output["mp4"]。第一版守卫拿 tuple(sorted(p.output))
+    当指纹,开工前 == 收工后,于是每一次 S6 重跑的耗时都被吞掉,用户等了十分钟、
+    界面上数字纹丝不动。改成按产物文件指纹判定后,重编码必然改动文件、守卫不再误命中。
+    """
+    from unittest.mock import MagicMock
+    p = Project(project_id="s6rerunid", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    p.output = {"mp4": "output/final.mp4", "zip": "output/pages.zip", "pdf": "output/book.pdf"}
+    p.status = {"s6_started_at": "2020-01-01T00:00:00+00:00",
+                "s6_finished_at": "2020-01-01T00:02:00+00:00",
+                "s6_elapsed_s": "120.0"}
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "final.mp4").write_bytes(b"old")
+
+    def _reencode(*_args, **_kwargs):
+        (out / "final.mp4").write_bytes(b"newly encoded")   # 同名文件被重写,output 键集合不变
+        return p
+
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s6_compose") as s6:
+        s6.run.side_effect = _reencode
+        api._run_step("s6rerunid", "s6", runtime_config.AppConfig())
+
+    assert p.status["s6_elapsed_s"] != "120.0"                          # 本轮耗时被如实记下
+    assert p.status["s6_started_at"] != "2020-01-01T00:00:00+00:00"
+    assert p.status["s6_finished_at"] != "2020-01-01T00:02:00+00:00"
+
+
+# ---------- 角色参考图上传/删除 ----------
+
+def _jpeg_bytes(w=800, h=1200, color=(200, 50, 50)) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+    im = Image.new("RGB", (w, h), color)
+    buf = BytesIO()
+    im.save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def _ref_project(owner: str = "") -> Project:
+    p = Project(project_id="refid", scenic_spot="雷峰塔", owner=owner)
+    p.script = Script(title="t", theme="th", acts=[], characters=[
+        CharacterCard(name="白娘子", role="蛇仙", personality="p", appearance="a",
+                     turnaround_image="characters/白娘子.png", locked=True)])
+    p.status = {"pipeline": "done", "s3": "done"}
+    return p
+
+
+def test_upload_reference_success(tmp_path: Path):
+    p = _ref_project()
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.post("/api/projects/refid/characters/白娘子/reference",
+                        files={"file": ("photo.jpg", _jpeg_bytes(), "image/jpeg")})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["characters"][0]["reference_image"]                # 非空 URL
+    assert body["characters"][0]["image"] is not None               # 未清 turnaround_image
+    assert "s3" not in body["status"]                                # mark_character_redraw 令下游失效
+    assert p.script.characters[0].locked is False                   # 解锁待重绘
+    saved = list((tmp_path / "characters" / "refs").iterdir())
+    assert len(saved) == 1
+    from PIL import Image
+    im = Image.open(saved[0])
+    assert im.format == "PNG"                                        # 真的重新编码成 PNG 落盘
+    assert max(im.size) <= 768
+
+
+def test_upload_reference_rejects_oversize(tmp_path: Path):
+    p = _ref_project()
+    data = b"\x00" * (9 * 1024 * 1024)
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.post("/api/projects/refid/characters/白娘子/reference",
+                        files={"file": ("big.jpg", data, "image/jpeg")})
+    assert r.status_code == 413
+    refs = tmp_path / "characters" / "refs"
+    assert not refs.exists() or not any(refs.iterdir())              # 没有半成品落盘
+
+
+def test_upload_reference_rejects_non_image_despite_content_type(tmp_path: Path):
+    p = _ref_project()
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.post("/api/projects/refid/characters/白娘子/reference",
+                        files={"file": ("fake.png", b"not an image", "image/png")})
+    assert r.status_code == 400                                      # 不信 content_type,只信解码结果
+
+
+def test_upload_reference_unknown_character_404(tmp_path: Path):
+    p = _ref_project()
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.post("/api/projects/refid/characters/不存在的角色/reference",
+                        files={"file": ("photo.jpg", _jpeg_bytes(), "image/jpeg")})
+    assert r.status_code == 404
+    assert not (tmp_path / "characters").exists()                    # 角色名不存在,未写任何文件
+
+
+def test_upload_reference_blocked_in_readonly(monkeypatch):
+    monkeypatch.setattr(api, "_READONLY", True)
+    r = client.post("/api/projects/refid/characters/白娘子/reference",
+                    files={"file": ("photo.jpg", _jpeg_bytes(), "image/jpeg")})
+    assert r.status_code == 403
+
+
+def test_upload_reference_rejects_non_owner(tmp_path: Path):
+    p = _ref_project(owner="someoneelse")
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.post("/api/projects/refid/characters/白娘子/reference",
+                        files={"file": ("photo.jpg", _jpeg_bytes(), "image/jpeg")})
+    assert r.status_code == 403
+
+
+def test_upload_reference_rejects_when_job_pending():
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f = Future()
+    api._JOBS["refid"] = f
+    try:
+        r = client.post("/api/projects/refid/characters/白娘子/reference",
+                        files={"file": ("photo.jpg", _jpeg_bytes(), "image/jpeg")})
+        assert r.status_code == 409
+    finally:
+        f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
+def test_delete_reference_removes_file_and_is_idempotent(tmp_path: Path):
+    p = _ref_project()
+    ref_path = tmp_path / "characters" / "refs" / "ref_x.png"
+    ref_path.parent.mkdir(parents=True)
+    ref_path.write_bytes(b"png")
+    p.script.characters[0].reference_image = "characters/refs/ref_x.png"
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r1 = client.delete("/api/projects/refid/characters/白娘子/reference")
+        assert r1.status_code == 200
+        assert not ref_path.exists()
+        assert p.script.characters[0].reference_image == ""
+        r2 = client.delete("/api/projects/refid/characters/白娘子/reference")  # 再删一次仍 200
+    assert r2.status_code == 200
+
+
+def test_delete_reference_unknown_character_404(tmp_path: Path):
+    p = _ref_project()
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.delete("/api/projects/refid/characters/不存在的角色/reference")
+    assert r.status_code == 404

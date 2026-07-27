@@ -156,14 +156,17 @@ def test_update_bad_index_raises(tmp_path: Path):
 
 def test_page_edit_invalidates_pipeline_and_downstream_status(tmp_path: Path):
     # 联动诚实化:页级编辑(改画面)使 s4 起的下游产物过期 —— pipeline 打回 partial、
-    # s4/s5/s6(含其 _elapsed_s 计时键)复位,s4 之前的上游环节(s3)保持不动,output 清空。
+    # s4/s5/s6(含其三个计时键 started_at/finished_at/elapsed_s)复位,s4 之前的上游环节
+    # (s3)保持不动,output 清空。
     p = _project(tmp_path)
     p.status = {"pipeline": "done", "s3": "done", "s4": "done", "s4_elapsed_s": "1.0",
-                "s5": "done", "s6": "done"}
+                "s4_finished_at": "2020-01-01T00:00:00+00:00",
+                "s5": "done", "s5_finished_at": "2020-01-01T00:00:00+00:00", "s6": "done"}
     editing.update_cell(p, 2, visual_desc="新画面")
     assert p.status["pipeline"] == "partial: 已编辑,待重新生成"
     assert "s4" not in p.status and "s5" not in p.status and "s6" not in p.status
     assert "s4_elapsed_s" not in p.status                  # 计时键一并复位,不留陈旧耗时
+    assert "s4_finished_at" not in p.status and "s5_finished_at" not in p.status
     assert p.status["s3"] == "done"                        # s4 上游不受影响
     assert p.output == {}
 
@@ -191,6 +194,18 @@ def test_mark_character_redraw(tmp_path: Path):
     assert p.output == {}
     with pytest.raises(ValueError):
         editing.mark_character_redraw(p, "查无此人")
+
+
+def test_mark_character_redraw_keeps_reference_image(tmp_path: Path):
+    # mark_* 只清产物不清输入:reference_image 是用户上传的输入,重绘标记不该把它清掉,
+    # 否则上传参考图后触发的自动重绘反而会把刚上传的参考图丢了。
+    p = _project(tmp_path, n=1)
+    p.script = Script(title="t", theme="th", acts=[], characters=[
+        CharacterCard(name="白素贞", role="r", personality="p", appearance="a",
+                      reference_image="characters/refs/ref_x.png",
+                      turnaround_image="characters/白素贞.png", locked=True)])
+    editing.mark_character_redraw(p, "白素贞")
+    assert p.script.characters[0].reference_image == "characters/refs/ref_x.png"
 
 
 def test_update_visual_desc_voids_panels(tmp_path: Path):
@@ -243,3 +258,21 @@ def test_delete_removes_panel_files(tmp_path: Path):
     # 被删页的每格图都 unlink
     for i in range(1, 4):
         assert not (tmp_path / "pages" / f"page_02_panel{i}.png").exists()
+
+
+def test_update_track_caption_clears_track_finished_at(tmp_path: Path):
+    # 语种轨计时键回归:旧代码手写键名时漏清 track_{lang}_finished_at,悬停会残留旧的
+    # 结束时刻。校对译文使该语种成片过期,须连 track_{lang} 的三个计时键一并清掉。
+    p = _project(tmp_path, n=1)
+    p.status = {
+        "track_en_started_at": "2020-01-01T00:00:00+00:00",
+        "track_en_finished_at": "2020-01-01T00:01:00+00:00",
+        "track_en_elapsed_s": "60.0",
+        "s6_en": "done",
+    }
+    p.output["mp4_en"] = "output/final_en.mp4"
+    editing.update_track_caption(p, 1, "en", "new caption")
+    assert p.storyboard[0].tracks["en"].caption == "new caption"
+    assert "mp4_en" not in p.output and "s6_en" not in p.status
+    assert "track_en_started_at" not in p.status and "track_en_elapsed_s" not in p.status
+    assert "track_en_finished_at" not in p.status   # 曾经漏清的那一个

@@ -61,6 +61,8 @@ export interface Character {
   name: string
   role: string
   image: string | null
+  // 上传的参考图;后端 _file_url 为空串时归一为 null
+  reference_image: string | null
 }
 
 export interface ProjectDetail {
@@ -68,7 +70,7 @@ export interface ProjectDetail {
   scenic_spot: string
   owner: string
   style_preset: string
-  params: { duration_min: number; audience: string; tone: string }
+  params: { duration_min: number; audience: string; tone: string; voice?: string }
   status: Record<string, string>
   pipeline: string
   legend: { title: string; summary: string; source_type: string } | null

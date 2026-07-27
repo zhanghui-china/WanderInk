@@ -1,11 +1,15 @@
-import { Fragment, useState } from 'react'
-import { api } from '../api'
+import { Fragment, useEffect, useState } from 'react'
+import { api, characterReferenceTarget, voiceSampleTarget, type VoiceSample } from '../api'
 import { STYLE_LABEL } from '../styles'
+import { useUpload } from '../useUpload'
 import type { Meta, ProjectDetail as Detail, Character, Page } from '../types'
 import { CardHead, Seal, mountFrame } from './decor'
 import { CharacterRedrawDialog } from './CharacterRedrawDialog'
 import { ImageLightbox } from './ImageLightbox'
+import { ImagePicker } from './ImagePicker'
 import { ProgressSteps } from './ProgressSteps'
+import { VoiceRecorder } from './VoiceRecorder'
+import { UploadDialog } from './UploadDialog'
 
 const EMOTION_STYLE: Record<string, string> = {
   温情: 'bg-[#dfeadf] text-jade',
@@ -66,6 +70,10 @@ export function ProjectDetailView({
   const [stepBusy, setStepBusy] = useState<string | null>(null)
   const [trackBusy, setTrackBusy] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [voiceOpen, setVoiceOpen] = useState(false)
+  const [voicePicked, setVoicePicked] = useState<{ blob: Blob; filename: string } | null>(null)
+  const [voiceBusy, setVoiceBusy] = useState(false)
+  const voiceUpload = useUpload<VoiceSample>()
 
   const generating = project.pipeline === 'queued' || project.pipeline === 'running'
   const editable = !meta?.readonly && !generating
@@ -147,12 +155,22 @@ export function ProjectDetailView({
               {project.scenic_spot} · {STYLE_LABEL[project.style_preset] ?? project.style_preset} ·{' '}
               {project.params.duration_min} 分钟 ·{' '}
               {project.params.audience} · {project.params.tone}
+              {project.params.voice && (
+                <> · 音色 {project.params.voice.startsWith('clone:') ? '自定义' : project.params.voice}</>
+              )}
             </p>
           </div>
         </div>
-        <button type="button" onClick={copyLink} className={ghostBtn}>
-          {copied ? '已复制' : '复制链接'}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {!meta?.readonly && (
+            <button type="button" onClick={() => setVoiceOpen(true)} className={ghostBtn}>
+              换音色
+            </button>
+          )}
+          <button type="button" onClick={copyLink} className={ghostBtn}>
+            {copied ? '已复制' : '复制链接'}
+          </button>
+        </div>
       </div>
 
       <ProgressSteps project={project} />
@@ -338,6 +356,55 @@ export function ProjectDetailView({
           <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
         </div>
       )}
+      {voiceOpen && (
+        <UploadDialog
+          title="更换配音音色"
+          glyph="音"
+          hint="念一段 5–20 秒的话,系统会克隆这个音色重新配音。已生成的配音会作废。"
+          picker={
+            <VoiceRecorder
+              onPicked={(b, f) => setVoicePicked({ blob: b, filename: f })}
+              disabled={voiceBusy || voiceUpload.phase === 'uploading' || voiceUpload.phase === 'processing'}
+            />
+          }
+          ready={!!voicePicked && !voiceBusy}
+          phase={voiceUpload.phase}
+          progress={voiceUpload.progress}
+          indeterminate={voiceUpload.indeterminate}
+          error={voiceUpload.error}
+          confirmLabel="用这个音色"
+          phaseLabels={{ processing: '转码并注册音色…', done: '音色已就绪' }}
+          onConfirm={() => {
+            if (!voicePicked) return
+            void voiceUpload
+              .start(voiceSampleTarget(), voicePicked.blob, voicePicked.filename)
+              .then(async (r) => {
+                if (!r) return   // 失败信息已在 voiceUpload.error 里,弹窗自己显示
+                setVoiceBusy(true)
+                try {
+                  await api.updateProjectVoice(project.project_id, r.voice)
+                } finally {
+                  setVoiceBusy(false)
+                  setVoiceOpen(false)
+                  setVoicePicked(null)
+                  voiceUpload.reset()
+                  onChanged()   // 换音色会作废下游,一律重拉以服务端为准
+                }
+              })
+          }}
+          onCancel={() => {
+            const inFlight =
+              voiceUpload.phase === 'uploading' || voiceUpload.phase === 'processing'
+            voiceUpload.cancel()
+            voiceUpload.reset()
+            setVoiceOpen(false)
+            setVoicePicked(null)
+            // 与参考图同理:取消只切客户端,服务端可能已经注册完了,一律重拉对齐
+            if (inFlight) onChanged()
+          }}
+        />
+      )}
+
     </div>
   )
 }
@@ -408,6 +475,15 @@ function CharacterCard({
   const [busy, setBusy] = useState(false)
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
+  // 弹窗由两处触发,复用同一个 CharacterRedrawDialog:手动点"重绘"走 doRedraw,
+  // 上传参考图成功后自动弹出则走 afterUpload(不再重新生成设定图,只决定是否连带重绘旧页)
+  const [dialogMode, setDialogMode] = useState<'manual' | 'upload'>('manual')
+  const [uploadOpen, setUploadOpen] = useState(false)
+  // ImagePicker 选完先本地预览、确认后才真正上传,故此处只是"待上传"的暂存
+  const [picked, setPicked] = useState<{ blob: Blob; filename: string } | null>(null)
+  // 上传成功但应用(s3)被后端 409/429 挡住时的柔和提示;不能当错误弹出,否则用户会误以为要重传
+  const [applyNotice, setApplyNotice] = useState<string | null>(null)
+  const upload = useUpload<Detail>()
 
   // 独立于 toolBtn 定义(不叠加覆盖字号):卡片变宽后两个按钮各占一半、居中、不换行
   const charBtn =
@@ -424,6 +500,7 @@ function CharacterCard({
       void doRedraw(false)
       return
     }
+    setDialogMode('manual')
     setDialogOpen(true)
   }
 
@@ -445,6 +522,54 @@ function CharacterCard({
     }
   }
 
+  // 上传参考图成功后自动触发:按需连带重绘旧页,再应用新参考图(s3)。
+  // s3 若因作业冲突/队列满失败,只留柔和提示,不当错误弹窗——上传本身已经成功了。
+  async function afterUpload(cascade: boolean) {
+    setDialogOpen(false)
+    setBusy(true)
+    setApplyNotice(null)
+    try {
+      // 级联标记与 runStep 一样要接住错误:有作业在跑时 redrawCell 同样会 409,
+      // 而它是**循环 N 次**、暴露面比 runStep 更大。此前只护住了 runStep,结果是第 k 页
+      // 409 就整条链 reject —— 调用点是 void 调用,变成未处理的 rejection:弹窗关了、
+      // busy 复位、既没有错误也没有提示、onChanged 也没跑,用户界面上什么都没发生,
+      // 而前 k-1 页其实已经被标记重绘了。
+      try {
+        if (cascade) {
+          for (const pg of affected) {
+            await api.redrawCell(projectId, pg.index)
+          }
+        }
+        await api.runStep(projectId, 's3')
+      } catch {
+        setApplyNotice('参考图已保存;当前有作业在跑,稍后点"按参考图重绘"即可应用')
+      }
+      onChanged()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // 上传成功(phase 变 done)后:关闭上传弹窗,有受影响页则弹重绘确认,否则直接应用s3
+  useEffect(() => {
+    if (upload.phase !== 'done') return
+    // 驻留一下再关窗:弹窗在 done 相渲染的是「参考图已保存,正在重新生成三视图…」,
+    // 立刻关掉的话 effect 在 paint 之后跑、这句话最多闪现一帧,用户拿不到成功确认,
+    // 也不知道自己刚才那一下触发了几分钟的后台生成。
+    const t = setTimeout(() => {
+      setUploadOpen(false)
+      setPicked(null)
+      upload.reset()
+      if (affected.length > 0) {
+        setDialogMode('upload')
+        setDialogOpen(true)
+      } else {
+        void afterUpload(false)
+      }
+    }, 400)
+    return () => clearTimeout(t)
+  }, [upload.phase])
+
   return (
     <figure className="overflow-hidden rounded-xl border border-line bg-white/60">
       <div className={`aspect-[3/2] bg-gradient-to-b from-kraft to-rice-deep ${mountFrame}`}>
@@ -455,12 +580,28 @@ function CharacterCard({
             <span className="font-scrawl text-2xl text-band">未生成</span>
           </div>
         )}
-        <span className="absolute left-2 top-2 rounded-full bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
-          三视图
+        <span className="absolute left-2 top-2 flex gap-1">
+          <span className="rounded-full bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
+            三视图
+          </span>
+          {c.reference_image && (
+            <span className="rounded-full bg-gold/85 px-2 py-0.5 text-[10px] tracking-wide text-rice">
+              参考图
+            </span>
+          )}
         </span>
         <span className="absolute right-2 top-2 rounded bg-cinnabar/85 px-1.5 py-0.5 font-serif text-[10px] text-rice">
           正·侧·背
         </span>
+        {editable && (
+          <button
+            type="button"
+            onClick={() => setUploadOpen(true)}
+            className="absolute bottom-2 right-2 rounded-full bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice transition hover:bg-cinnabar/85"
+          >
+            {c.reference_image ? '换参考图' : '上传参考图'}
+          </button>
+        )}
       </div>
       <figcaption className="px-3 py-2.5">
         <div className="font-serif text-sm font-semibold tracking-wide text-ink">{c.name}</div>
@@ -473,10 +614,11 @@ function CharacterCard({
           )}
           {editable && (
             <button type="button" onClick={redraw} disabled={busy} className={charBtn}>
-              {busy ? '重绘中…' : '重绘设定图'}
+              {busy ? '重绘中…' : c.reference_image ? '按参考图重绘' : '重绘设定图'}
             </button>
           )}
         </div>
+        {applyNotice && <div className="mt-1.5 text-[10px] text-muted">{applyNotice}</div>}
       </figcaption>
       {lightboxOpen && c.image && (
         <ImageLightbox src={c.image} alt={c.name} onClose={() => setLightboxOpen(false)} />
@@ -486,8 +628,82 @@ function CharacterCard({
           characterName={c.name}
           affectedPages={affected.map((p) => ({ index: p.index, caption: p.caption }))}
           busy={busy}
-          onConfirm={(cascade) => void doRedraw(cascade)}
-          onCancel={() => setDialogOpen(false)}
+          title={dialogMode === 'upload' ? `「${c.name}」参考图已上传` : undefined}
+          intro={
+            dialogMode === 'upload'
+              ? `参考图已保存。以下 ${affected.length} 页漫画页是按旧设定图生成的,若不一并重绘,画面中该角色的形象会与新设定图不一致。`
+              : undefined
+          }
+          onConfirm={(cascade) => void (dialogMode === 'upload' ? afterUpload(cascade) : doRedraw(cascade))}
+          onCancel={() => {
+            setDialogOpen(false)
+            // 上传那条路必须刷新:此刻服务端已经落盘并解锁了该角色,而管线空闲时前端
+            // 不轮询(App.tsx 只在 pipeline 活跃时续跑),不刷就一直显示旧数据——
+            // 没有参考图徽标、按钮还是"重绘设定图",用户会以为上传根本没生效。
+            if (dialogMode === 'upload') onChanged()
+          }}
+        />
+      )}
+      {uploadOpen && (
+        <UploadDialog
+          title={c.reference_image ? '换参考图' : '上传参考图'}
+          glyph="人"
+          hint="上传一张该角色的全身参考图,将以此为基础重新生成三视图设定图"
+          // UploadDialog 没有独立的 children 插槽,"移除参考图" 借 picker 这个 ReactNode 槽
+          // 一并塞进弹窗内容区,不在角色卡上占常驻位置。
+          picker={
+            <>
+              <ImagePicker
+                onPicked={(blob, filename) => setPicked({ blob, filename })}
+                disabled={upload.phase === 'uploading' || upload.phase === 'processing'}
+              />
+              {c.reference_image && (
+                <button
+                  type="button"
+                  className={`${ghostBtn} mt-2`}
+                  disabled={upload.phase === 'uploading' || upload.phase === 'processing'}
+                  onClick={async () => {
+                    if (!window.confirm('确定移除该角色的参考图?后续重绘将改回文生图。')) return
+                    setUploadOpen(false)
+                    setBusy(true)
+                    try {
+                      await api.removeCharacterReference(projectId, c.name)
+                      onChanged()
+                    } catch (e) {
+                      alert(e instanceof Error ? e.message : String(e))
+                    } finally {
+                      setBusy(false)
+                    }
+                  }}
+                >
+                  移除参考图
+                </button>
+              )}
+            </>
+          }
+          ready={picked != null}
+          phase={upload.phase}
+          progress={upload.progress}
+          indeterminate={upload.indeterminate}
+          error={upload.error}
+          confirmLabel={c.reference_image ? '换参考图' : '上传参考图'}
+          onConfirm={() => {
+            if (!picked) return
+            void upload.start(characterReferenceTarget(projectId, c.name), picked.blob, picked.filename)
+          }}
+          onCancel={() => {
+            // reset 而非只 cancel:cancel 只中断请求、phase 停在 error、error 字符串还在,
+            // 关窗再打开会带着上一次的红色错误条,而此时用户一张图都还没选。
+            const wasInFlight = upload.phase === 'uploading' || upload.phase === 'processing'
+            upload.cancel()
+            upload.reset()
+            setUploadOpen(false)
+            setPicked(null)
+            // processing 相意味着字节已全部发出、服务端正在解码落盘,而 xhr.abort() 只切
+            // 客户端——后端会照常写完文件并解锁角色。此时装作"什么都没发生"会与服务端
+            // 不一致,所以一律重拉一次,以服务端为准。
+            if (wasInFlight) onChanged()
+          }}
         />
       )}
     </figure>
@@ -551,7 +767,7 @@ function TrackRow({
       <div className="flex items-center gap-2">
         <span className="text-[10px] tracking-[2px] text-muted">{label}</span>
         {track?.duration_ms ? (
-          <span className="text-[11px] text-muted">{(track.duration_ms / 1000).toFixed(1)}s</span>
+          <span className="text-[11px] text-muted">配音 {(track.duration_ms / 1000).toFixed(1)}s</span>
         ) : null}
         {editable && !editing && (
           <div className="ml-auto flex gap-1.5">
@@ -948,7 +1164,7 @@ function PageCard({
               {pg.emotion}
             </span>
             {pg.duration_ms > 0 && (
-              <span className="text-muted">{(pg.duration_ms / 1000).toFixed(1)}s</span>
+              <span className="text-muted">配音 {(pg.duration_ms / 1000).toFixed(1)}s</span>
             )}
             {pg.image_gen_ms > 0 && (
               <span className="text-muted">生成 {(pg.image_gen_ms / 1000).toFixed(1)}s</span>
