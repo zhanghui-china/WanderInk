@@ -9,6 +9,7 @@ import type {
   ProjectSummary,
   QueueItem,
 } from './types'
+import { xhrUpload, type UploadTarget } from './upload'
 
 // 携带 HTTP 状态码的错误,供调用方区分永久错误(404/401)与瞬时错误(退避重试)。
 export class ApiError extends Error {
@@ -20,27 +21,42 @@ export class ApiError extends Error {
   }
 }
 
+// 从错误响应体文本还原 ApiError。抽成纯函数是为了让 fetch 和 XHR(上传要进度事件,只能用 XHR)
+// 两条路径共用同一套错误语义,否则同一个后端错误在两处会给出不同 message。
+// HTTP/2 下 statusText 恒为空串(非 nullish,?? 兜底不触发);FastAPI 422 的 detail 是
+// 校验错误对象数组(直接塞进 Error 会变 "[object Object]")。故显式判空串、非字符串序列化。
+export function apiErrorFrom(bodyText: string | null, status: number): ApiError {
+  let body: { detail?: unknown } | null = null
+  try {
+    body = bodyText === null ? null : JSON.parse(bodyText)
+  } catch {
+    body = null
+  }
+  const detail = body?.detail
+  const msg =
+    typeof detail === 'string' && detail !== ''
+      ? detail
+      : detail != null
+        ? JSON.stringify(detail)
+        : `HTTP ${status}`
+  return new ApiError(msg, status)
+}
+
 // 同源部署时前端由后端托管;dev 期由 Vite 代理 /api → :8080。故 base 留空。
 // credentials 用 'same-origin':登录态是 Starlette 签名 cookie,同源(含 Vite 代理转发)
 // 请求需带上;dev 代理让浏览器仍视 /api 为同源,故不需要跨源的 'include'。
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    // HTTP/2 下 statusText 恒为空串(非 nullish,?? 兜底不触发);FastAPI 422 的 detail 是
-    // 校验错误对象数组(直接塞进 Error 会变 "[object Object]")。故显式判空串、非字符串序列化。
-    const body = await res.json().catch(() => null)
-    const detail = body?.detail
-    const msg =
-      typeof detail === 'string' && detail !== ''
-        ? detail
-        : detail != null
-          ? JSON.stringify(detail)
-          : `HTTP ${res.status}`
-    throw new ApiError(msg, res.status)
+    throw apiErrorFrom(await res.text().catch(() => null), res.status)
   }
   return res.json() as Promise<T>
 }
 
 const CREDS: RequestInit = { credentials: 'same-origin' }
+
+export const characterReferenceTarget = (id: string, name: string): UploadTarget => ({
+  url: `/api/projects/${id}/characters/${encodeURIComponent(name)}/reference`,
+})
 
 export const api = {
   login: (username: string, password: string) =>
@@ -143,6 +159,23 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ order }),
+    }).then((r) => j<ProjectDetail>(r)),
+
+  // 角色参考图:上传后端会解码/旋正/缩放并落盘,返回更新后的 ProjectDetail。
+  // 走 xhrUpload 而非 fetch,因为要给弹窗上报上传进度。
+  // 用 useUpload 托管状态的调用方直接把 characterReferenceTarget(id, name) 交给 start(),
+  // URL 只在 characterReferenceTarget 一处拼,两条路径不会走偏。
+  uploadCharacterReference: (
+    id: string,
+    name: string,
+    file: File,
+    onProgress: (loaded: number, total: number, lengthComputable: boolean) => void,
+  ) => xhrUpload<ProjectDetail>(characterReferenceTarget(id, name), file, file.name, onProgress),
+
+  removeCharacterReference: (id: string, name: string) =>
+    fetch(`/api/projects/${id}/characters/${encodeURIComponent(name)}/reference`, {
+      ...CREDS,
+      method: 'DELETE',
     }).then((r) => j<ProjectDetail>(r)),
 
   redrawCharacter: (id: string, name: string) =>

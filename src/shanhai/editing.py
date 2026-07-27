@@ -230,7 +230,10 @@ def reorder_cells(project: Project, workdir: Path, order: list[int]) -> None:
 
 
 def mark_character_redraw(project: Project, name: str) -> None:
-    """标记角色需重绘:解锁(s3 只重画非 locked 角色,据此重出三视图)。"""
+    """标记角色需重绘:解锁(s3 只重画非 locked 角色,据此重出三视图)。
+    刻意保留 reference_image——它是用户上传的输入而非产物,和 mark_redraw 保留
+    visual_desc、mark_revoice 保留 caption 是同一套原则(mark_* 只清产物不清输入);
+    真要换掉参考图,前端有显式的移除按钮,不需要靠"重绘"顺带清空。"""
     if project.script is None:
         raise ValueError("项目尚无剧本")
     for c in project.script.characters:

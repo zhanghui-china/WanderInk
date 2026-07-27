@@ -1578,3 +1578,135 @@ def test_run_step_s6_rerun_is_never_treated_as_noop(_settings, tmp_path: Path):
     assert p.status["s6_elapsed_s"] != "120.0"                          # 本轮耗时被如实记下
     assert p.status["s6_started_at"] != "2020-01-01T00:00:00+00:00"
     assert p.status["s6_finished_at"] != "2020-01-01T00:02:00+00:00"
+
+
+# ---------- 角色参考图上传/删除 ----------
+
+def _jpeg_bytes(w=800, h=1200, color=(200, 50, 50)) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+    im = Image.new("RGB", (w, h), color)
+    buf = BytesIO()
+    im.save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def _ref_project(owner: str = "") -> Project:
+    p = Project(project_id="refid", scenic_spot="雷峰塔", owner=owner)
+    p.script = Script(title="t", theme="th", acts=[], characters=[
+        CharacterCard(name="白娘子", role="蛇仙", personality="p", appearance="a",
+                     turnaround_image="characters/白娘子.png", locked=True)])
+    p.status = {"pipeline": "done", "s3": "done"}
+    return p
+
+
+def test_upload_reference_success(tmp_path: Path):
+    p = _ref_project()
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.post("/api/projects/refid/characters/白娘子/reference",
+                        files={"file": ("photo.jpg", _jpeg_bytes(), "image/jpeg")})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["characters"][0]["reference_image"]                # 非空 URL
+    assert body["characters"][0]["image"] is not None               # 未清 turnaround_image
+    assert "s3" not in body["status"]                                # mark_character_redraw 令下游失效
+    assert p.script.characters[0].locked is False                   # 解锁待重绘
+    saved = list((tmp_path / "characters" / "refs").iterdir())
+    assert len(saved) == 1
+    from PIL import Image
+    im = Image.open(saved[0])
+    assert im.format == "PNG"                                        # 真的重新编码成 PNG 落盘
+    assert max(im.size) <= 768
+
+
+def test_upload_reference_rejects_oversize(tmp_path: Path):
+    p = _ref_project()
+    data = b"\x00" * (9 * 1024 * 1024)
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.post("/api/projects/refid/characters/白娘子/reference",
+                        files={"file": ("big.jpg", data, "image/jpeg")})
+    assert r.status_code == 413
+    refs = tmp_path / "characters" / "refs"
+    assert not refs.exists() or not any(refs.iterdir())              # 没有半成品落盘
+
+
+def test_upload_reference_rejects_non_image_despite_content_type(tmp_path: Path):
+    p = _ref_project()
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.post("/api/projects/refid/characters/白娘子/reference",
+                        files={"file": ("fake.png", b"not an image", "image/png")})
+    assert r.status_code == 400                                      # 不信 content_type,只信解码结果
+
+
+def test_upload_reference_unknown_character_404(tmp_path: Path):
+    p = _ref_project()
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.post("/api/projects/refid/characters/不存在的角色/reference",
+                        files={"file": ("photo.jpg", _jpeg_bytes(), "image/jpeg")})
+    assert r.status_code == 404
+    assert not (tmp_path / "characters").exists()                    # 角色名不存在,未写任何文件
+
+
+def test_upload_reference_blocked_in_readonly(monkeypatch):
+    monkeypatch.setattr(api, "_READONLY", True)
+    r = client.post("/api/projects/refid/characters/白娘子/reference",
+                    files={"file": ("photo.jpg", _jpeg_bytes(), "image/jpeg")})
+    assert r.status_code == 403
+
+
+def test_upload_reference_rejects_non_owner(tmp_path: Path):
+    p = _ref_project(owner="someoneelse")
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.post("/api/projects/refid/characters/白娘子/reference",
+                        files={"file": ("photo.jpg", _jpeg_bytes(), "image/jpeg")})
+    assert r.status_code == 403
+
+
+def test_upload_reference_rejects_when_job_pending():
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f = Future()
+    api._JOBS["refid"] = f
+    try:
+        r = client.post("/api/projects/refid/characters/白娘子/reference",
+                        files={"file": ("photo.jpg", _jpeg_bytes(), "image/jpeg")})
+        assert r.status_code == 409
+    finally:
+        f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
+def test_delete_reference_removes_file_and_is_idempotent(tmp_path: Path):
+    p = _ref_project()
+    ref_path = tmp_path / "characters" / "refs" / "ref_x.png"
+    ref_path.parent.mkdir(parents=True)
+    ref_path.write_bytes(b"png")
+    p.script.characters[0].reference_image = "characters/refs/ref_x.png"
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r1 = client.delete("/api/projects/refid/characters/白娘子/reference")
+        assert r1.status_code == 200
+        assert not ref_path.exists()
+        assert p.script.characters[0].reference_image == ""
+        r2 = client.delete("/api/projects/refid/characters/白娘子/reference")  # 再删一次仍 200
+    assert r2.status_code == 200
+
+
+def test_delete_reference_unknown_character_404(tmp_path: Path):
+    p = _ref_project()
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        r = client.delete("/api/projects/refid/characters/不存在的角色/reference")
+    assert r.status_code == 404

@@ -18,14 +18,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from shanhai import editing, export, runtime_config, store
+from shanhai import editing, export, runtime_config, store, uploads
 from shanhai.auth import current_user, is_admin, verify_login
 from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _clients,
                          resolve_stage_clients)
@@ -57,6 +57,60 @@ _CORS_ORIGINS = [o.strip() for o in os.getenv("SHANHAI_CORS_ORIGINS", "*").split
 # 只读模式(公网暴露用):关闭 POST 新建生成,访客仅能浏览已有作品,不触发上游/烧额度。
 _READONLY = os.getenv("SHANHAI_READONLY", "").strip().lower() in ("1", "true", "yes", "on")
 
+class BodySizeLimitMiddleware:
+    """在 FastAPI 解析请求体**之前**按大小拒绝,纯 ASGI 层。
+
+    为什么必须在这一层:FastAPI 的路由 handler 在被调用前就已经 `await request.form()`
+    把整个 multipart 解析完、spool 到临时文件了,而且这发生在 solve_dependencies 之前——
+    也就是说 **连未登录请求的 body 也会先完整落盘,再返回 401**。实测灌 200 MiB 分块请求,
+    服务端会老老实实全部写进临时文件才回 413。写在 handler 里的任何上限(包括
+    uploads.read_limited 和读 Content-Length 的快速失败)都晚了一步,挡不住任何字节。
+
+    两道判据:Content-Length 命中直接拒(省掉整趟传输);没有这个头的分块传输则包住
+    receive、累计计数,超限即拒。只对声明了 body 的请求生效,GET 等不受影响。"""
+
+    def __init__(self, app, max_bytes: int) -> None:  # noqa: ANN001 — ASGI 约定
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send) -> None:  # noqa: ANN001
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get("headers") or [])
+        declared = headers.get(b"content-length")
+        if declared and declared.isdigit() and int(declared) > self.max_bytes:
+            return await self._too_large(send)
+        received = 0
+
+        async def counting_receive():
+            nonlocal received
+            msg = await receive()
+            if msg["type"] == "http.request":
+                received += len(msg.get("body", b""))
+                if received > self.max_bytes:
+                    # 断流:后续 body 不再交给下游,下游解析器会因请求体不完整而报错;
+                    # 但此时我们已经先把 413 发出去了,客户端看到的是明确的拒绝。
+                    raise _BodyTooLarge
+            return msg
+
+        try:
+            await self.app(scope, counting_receive, send)
+        except _BodyTooLarge:
+            await self._too_large(send)
+
+    async def _too_large(self, send) -> None:  # noqa: ANN001
+        mib = self.max_bytes // 1024 // 1024
+        body = json.dumps({"detail": f"请求体超过 {mib} MiB 上限"}).encode()
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
+class _BodyTooLarge(Exception):
+    """内部信号:body 累计超限,由 BodySizeLimitMiddleware 自己捕获,不外泄。"""
+
+
 app.add_middleware(
     CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"],
 )
@@ -73,6 +127,11 @@ if not _SESSION_SECRET:
 # 若未来接 HTTPS(反代终止 TLS 或直连 HTTPS),置 SHANHAI_SESSION_HTTPS_ONLY=true 收紧。
 _SESSION_HTTPS_ONLY = os.getenv("SHANHAI_SESSION_HTTPS_ONLY", "").strip().lower() in ("1", "true", "yes", "on")
 app.add_middleware(SessionMiddleware, secret_key=_SESSION_SECRET, https_only=_SESSION_HTTPS_ONLY)
+
+# 最后 add 的 middleware 在最外层,也就是最先看到请求——body 上限必须在最外层,
+# 否则 CORS/Session 之后、路由解析 form 之前的窗口仍会让超大 body 落盘。
+# 留出 multipart 边界与表单字段的开销,故略高于 uploads.MAX_UPLOAD_BYTES。
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=uploads.MAX_UPLOAD_BYTES + (1 << 20))
 
 # 云端环节可真并行,本地 Spark 端点的串行化交给 providers/_http.py 的
 # local_backend_guard 全局锁(按物理 GPU 排队,不按线程池排队)。
@@ -398,6 +457,7 @@ def _serialize(p: Project) -> dict:
     characters = [{
         "name": c.name, "role": c.role,
         "image": _file_url(p.project_id, c.turnaround_image, workdir),
+        "reference_image": _file_url(p.project_id, c.reference_image, workdir),
     } for c in (p.script.characters if p.script else [])]
     return {
         "project_id": p.project_id,
@@ -778,6 +838,55 @@ def redraw_character(project_id: str, name: str, user: str = Depends(current_use
             editing.mark_character_redraw(p, name)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        store.save(p)
+    return _serialize(p)
+
+
+@app.post("/api/projects/{project_id}/characters/{name}/reference")
+async def upload_character_reference(project_id: str, name: str, request: Request,
+                                     file: UploadFile = File(...),
+                                     user: str = Depends(current_user)) -> dict:
+    """上传角色参考图:净化后落盘,并标记该角色需重绘(前端随后自动触发 S3)。"""
+    # 真正的落盘护栏是 BodySizeLimitMiddleware(在 form 解析之前);这里只是解析后的兜底。
+    # 解码+重编码放在取锁之前:纯计算,Pillow 几百毫秒不该占着 per-project 锁
+    raw = await uploads.read_limited(file)
+    png = uploads.to_reference_png(raw)
+
+    rel = uploads.reference_rel_path()   # 带随机盐,每次上传都是新路径
+    with _project_lock(project_id):
+        p = _editable(project_id, user)
+        # 先按名字精确匹配确认角色存在——匹配成功后才落盘。
+        # 路径本身由服务端随机生成、完全不含用户字节,故路径穿越无从谈起;这一步守的是
+        # "别给不存在的角色凭空造文件"。
+        card = next((c for c in (p.script.characters if p.script else []) if c.name == name), None)
+        if card is None:
+            raise HTTPException(404, f"角色不存在:{name}")
+        old = card.reference_image
+        uploads.atomic_write(store.project_dir(project_id) / rel, png)
+        card.reference_image = rel
+        # 路径带随机盐 → 换图不再覆盖同名文件,旧的必须显式删掉,否则每换一次就留一个孤儿
+        if old and old != rel:
+            (store.project_dir(project_id) / old).unlink(missing_ok=True)
+        # 不清 turnaround_image:清了卡片立刻变"未生成",S3 跑起来之前那段空窗很难看;
+        # S3 成功时本来就会覆写同名文件。
+        editing.mark_character_redraw(p, name)
+        store.save(p)
+    return _serialize(p)
+
+
+@app.delete("/api/projects/{project_id}/characters/{name}/reference")
+def delete_character_reference(project_id: str, name: str,
+                               user: str = Depends(current_user)) -> dict:
+    """删除角色参考图,幂等:本来就没有也返回 200。"""
+    with _project_lock(project_id):
+        p = _editable(project_id, user)
+        card = next((c for c in (p.script.characters if p.script else []) if c.name == name), None)
+        if card is None:
+            raise HTTPException(404, f"角色不存在:{name}")
+        if card.reference_image:
+            (store.project_dir(project_id) / card.reference_image).unlink(missing_ok=True)
+            card.reference_image = ""
+        editing.mark_character_redraw(p, name)
         store.save(p)
     return _serialize(p)
 

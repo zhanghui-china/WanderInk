@@ -14,12 +14,17 @@ export function CharacterRedrawDialog({
   characterName,
   affectedPages,
   busy,
+  title,
+  intro,
   onConfirm,
   onCancel,
 }: {
   characterName: string
   affectedPages: { index: number; caption: string }[]
   busy: boolean
+  // 可选:供上传参考图后复用本弹窗时覆盖文案,不传则与原文案一字不差
+  title?: string
+  intro?: string
   onConfirm: (cascade: boolean) => void
   onCancel: () => void
 }) {
@@ -44,11 +49,12 @@ export function CharacterRedrawDialog({
         className="w-full max-w-md rounded-2xl border border-band bg-paper p-5 shadow-paper-lg"
       >
         <h3 className="font-serif text-sm font-semibold tracking-wide text-ink">
-          重绘「{characterName}」设定图
+          {title ?? `重绘「${characterName}」设定图`}
         </h3>
         <p className="mt-2 text-xs text-ink-soft">
-          以下 {affectedPages.length} 页漫画页是按旧设定图生成的,设定图重绘后若不一并重绘,
-          画面中该角色的形象会与新设定图不一致。
+          {intro ??
+            `以下 ${affectedPages.length} 页漫画页是按旧设定图生成的,设定图重绘后若不一并重绘,
+          画面中该角色的形象会与新设定图不一致。`}
         </p>
         <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-line bg-white/50 px-3 py-2 text-[11px] text-ink-soft">
           {shown.map((p) => (

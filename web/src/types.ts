@@ -61,6 +61,8 @@ export interface Character {
   name: string
   role: string
   image: string | null
+  // 上传的参考图;后端 _file_url 为空串时归一为 null
+  reference_image: string | null
 }
 
 export interface ProjectDetail {

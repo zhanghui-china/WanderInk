@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from shanhai.schema import Legend, Panel, Project, StoryboardCell
+from shanhai.schema import CharacterCard, Legend, Panel, Project, StoryboardCell
 
 
 def test_project_roundtrip():
@@ -30,6 +30,13 @@ def test_storyboard_cell_panels_default_empty():
     c = StoryboardCell(index=1, scene_ref="1-1", visual_desc="x",
                        characters=[], caption="c", emotion="宁静")
     assert c.panels == []
+
+
+def test_character_card_reference_image_defaults_empty_for_legacy_json():
+    # 老 project.json 没有 reference_image 字段,加载不应报错,须零迁移地补出默认值。
+    legacy = '{"name": "白素贞", "role": "蛇仙", "personality": "p", "appearance": "a"}'
+    c = CharacterCard.model_validate_json(legacy)
+    assert c.reference_image == ""
 
 
 def test_storyboard_cell_panels_roundtrip():

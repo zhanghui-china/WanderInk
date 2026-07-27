@@ -154,6 +154,162 @@ def test_s3_cancel_check_stops_early(tmp_path: Path):
     assert p.status["s3"] == "partial"
 
 
+# ---------- 参考图驱动的三视图编辑(0→1 张参考图新增能力) ----------
+
+def test_turnaround_tmpl_wording_unchanged():
+    # 老模板是 DGX 实测过的资产,不能被后人顺手改坏措辞。
+    assert s3_characters.TURNAROUND_TMPL == (
+        "{style}。角色三视图设定图:同一角色的正面、侧面、背面全身像并排排列,"
+        "纯白背景,画面中不要出现任何文字。角色:{feature}"
+    )
+
+
+def test_s3_with_reference_uses_edit_template_and_passes_references(tmp_path: Path):
+    ref_dir = tmp_path / "characters" / "refs"
+    ref_dir.mkdir(parents=True)
+    ref_path = ref_dir / "ref_0.png"
+    ref_path.write_bytes(b"ref")
+    chars = [CharacterCard(name="角色0", role="r", personality="p", appearance="白衣",
+                           reference_image="characters/refs/ref_0.png")]
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock(); image.generate.return_value = b"png"
+    s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    args, kwargs = image.generate.call_args
+    assert kwargs["references"] == [ref_path]
+    assert "以参考图中的角色为准" in args[0]        # 走 TURNAROUND_REF_TMPL
+    assert "{style}" not in args[0]                # ref 模板不含 style 占位
+
+
+def test_s3_without_reference_uses_old_template_and_no_references(tmp_path: Path):
+    chars = [CharacterCard(name="角色0", role="r", personality="p", appearance="白衣")]
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock(); image.generate.return_value = b"png"
+    s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    args, kwargs = image.generate.call_args
+    assert "references" not in kwargs
+    assert "角色三视图设定图" in args[0]            # 走老的 TURNAROUND_TMPL
+
+
+def test_fifth_character_with_reference_breaks_max_turnaround(tmp_path: Path):
+    # MAX_TURNAROUND=4,第 5 个角色(index=4)默认不画,但传了参考图应突破限制。
+    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance="白衣")
+             for i in range(5)]
+    ref_dir = tmp_path / "characters" / "refs"
+    ref_dir.mkdir(parents=True)
+    (ref_dir / "ref_4.png").write_bytes(b"ref")
+    chars[4].reference_image = "characters/refs/ref_4.png"
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock(); image.generate.return_value = b"png"
+    s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 5
+    assert p.script.characters[4].turnaround_image != ""
+    assert p.status["s3"] == "done"
+
+
+def test_fifth_character_without_reference_not_drawn(tmp_path: Path):
+    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance="白衣")
+             for i in range(5)]
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock(); image.generate.return_value = b"png"
+    s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 4
+    assert p.script.characters[4].turnaround_image == ""
+    assert p.status["s3"] == "done"                # 次要角色不参与 done 判定
+
+
+def test_reference_edit_failure_falls_back_to_text_to_image(tmp_path: Path):
+    ref_dir = tmp_path / "characters" / "refs"
+    ref_dir.mkdir(parents=True)
+    (ref_dir / "ref_0.png").write_bytes(b"ref")
+    chars = [CharacterCard(name="角色0", role="r", personality="p", appearance="白衣",
+                          reference_image="characters/refs/ref_0.png")]
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock()
+    image.generate.side_effect = [RuntimeError("编辑失败"), b"png"]
+    s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 2
+    assert "references" not in image.generate.call_args_list[1].kwargs   # 第二次是纯文生图重试
+    assert p.script.characters[0].locked is True
+    assert p.script.characters[0].turnaround_image != ""
+    assert p.status["s3"] == "done"
+
+
+def test_reference_and_fallback_both_fail_keeps_reference_image(tmp_path: Path, capsys):
+    ref_dir = tmp_path / "characters" / "refs"
+    ref_dir.mkdir(parents=True)
+    (ref_dir / "ref_0.png").write_bytes(b"ref")
+    chars = [CharacterCard(name="角色0", role="r", personality="p", appearance="白衣",
+                          reference_image="characters/refs/ref_0.png")]
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock(); image.generate.side_effect = RuntimeError("boom")
+    s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 2                     # 编辑 1 次 + 文生图兜底 1 次,均失败
+    assert p.script.characters[0].turnaround_image == ""
+    assert p.script.characters[0].locked is False
+    assert p.script.characters[0].reference_image == "characters/refs/ref_0.png"  # 用户上传不因失败被丢
+    assert "两条路径均失败" in capsys.readouterr().out
+    assert p.status["s3"] == "partial"
+
+
+def test_fifth_character_with_reference_failure_marks_partial(tmp_path: Path):
+    # 报告点名的最容易漏判的一行:有参考图的次要角色(突破 MAX_TURNAROUND)生成失败,
+    # status["s3"] 必须是 partial,不能因为它本是"次要角色"就被 _draw_flags 豁免判定。
+    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance="白衣")
+             for i in range(5)]
+    ref_dir = tmp_path / "characters" / "refs"
+    ref_dir.mkdir(parents=True)
+    (ref_dir / "ref_4.png").write_bytes(b"ref")
+    chars[4].reference_image = "characters/refs/ref_4.png"
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock()
+    llm.chat.side_effect = lambda _sys, user: f"特征-{user.splitlines()[0]}"   # 特征含角色名,可定向失败
+
+    def gen(prompt, **kw):
+        if "角色4" in prompt:
+            raise RuntimeError("boom")
+        return b"png"
+    image = MagicMock(); image.generate.side_effect = gen
+    s3_characters.run(p, llm, image, tmp_path, "1536x1024", concurrency=1)
+    assert p.script.characters[4].turnaround_image == ""
+    assert all(c.turnaround_image for c in chars[:4])          # 其余角色不受影响
+    assert p.status["s3"] == "partial"
+
+
+def test_max_turnaround_total_caps_candidates(tmp_path: Path):
+    # 4 个默认主角 + 10 个带参考图角色,候选总数 14 超过 MAX_TURNAROUND_TOTAL=12,
+    # 超额的排在最后的 2 个角色不画。
+    n_ref = 10
+    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance="白衣")
+             for i in range(4 + n_ref)]
+    ref_dir = tmp_path / "characters" / "refs"
+    ref_dir.mkdir(parents=True)
+    for i in range(4, 4 + n_ref):
+        (ref_dir / f"ref_{i}.png").write_bytes(b"ref")
+        chars[i].reference_image = f"characters/refs/ref_{i}.png"
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock(); image.generate.return_value = b"png"
+    s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    assert image.generate.call_count == s3_characters.MAX_TURNAROUND_TOTAL
+    assert chars[-1].turnaround_image == ""
+    assert chars[-2].turnaround_image == ""
+    assert p.status["s3"] == "done"
+
+
 def test_feature_system_handles_non_human_characters():
     """FEATURE_SYSTEM 需要求先判断人类/非人类,非人类角色需先点出物种/形体。"""
     system = s3_characters.FEATURE_SYSTEM
@@ -161,3 +317,39 @@ def test_feature_system_handles_non_human_characters():
     assert "物种" in system or "形体" in system
     # 人类分支的原有槽位不能丢,回归保护
     assert "发型发色" in system and "服饰" in system
+
+
+def test_s3_budget_not_consumed_by_already_locked_characters(tmp_path: Path):
+    """已定稿的角色不该占掉 MAX_TURNAROUND_TOTAL 的名额。
+
+    对抗审计发现的静默故障:前 4 个主角上一轮已 locked、本轮会被幂等跳过、一次生图请求
+    都不发,但旧版 _draw_flags 照样给它们扣名额。于是"前 4 个已完成 + 用户给第 5~16 个
+    角色都传了参考图"这个场景里,后面几个传了图的角色**永远画不出来**,而 status 仍是
+    done、界面上没有任何异常,重跑多少次都一样(_draw_flags 是纯函数,不可自愈)。
+    """
+    total = s3_characters.MAX_TURNAROUND_TOTAL
+    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance="白衣")
+             for i in range(total + 4)]
+    (tmp_path / "characters").mkdir(parents=True)
+    (tmp_path / "characters" / "refs").mkdir()
+    # 前 4 个主角已定稿(有图、有文件、locked)
+    for i in range(4):
+        (tmp_path / "characters" / f"角色{i}.png").write_bytes(b"png")
+        chars[i].turnaround_image = f"characters/角色{i}.png"
+        chars[i].locked = True
+    # 其余全部传了参考图 → 都是候选,且都还没画
+    for i in range(4, len(chars)):
+        rel = f"characters/refs/ref_{i}.png"
+        (tmp_path / rel).write_bytes(b"png")
+        chars[i].reference_image = rel
+
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock(); image.generate.return_value = b"png"
+    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+
+    # 名额全部留给真正需要生图的角色,而不是被那 4 个已定稿的白占
+    assert image.generate.call_count == total
+    for i in range(4, 4 + total):
+        assert p.script.characters[i].locked is True, f"角色{i} 传了参考图却没画出来"

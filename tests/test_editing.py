@@ -196,6 +196,18 @@ def test_mark_character_redraw(tmp_path: Path):
         editing.mark_character_redraw(p, "查无此人")
 
 
+def test_mark_character_redraw_keeps_reference_image(tmp_path: Path):
+    # mark_* 只清产物不清输入:reference_image 是用户上传的输入,重绘标记不该把它清掉,
+    # 否则上传参考图后触发的自动重绘反而会把刚上传的参考图丢了。
+    p = _project(tmp_path, n=1)
+    p.script = Script(title="t", theme="th", acts=[], characters=[
+        CharacterCard(name="白素贞", role="r", personality="p", appearance="a",
+                      reference_image="characters/refs/ref_x.png",
+                      turnaround_image="characters/白素贞.png", locked=True)])
+    editing.mark_character_redraw(p, "白素贞")
+    assert p.script.characters[0].reference_image == "characters/refs/ref_x.png"
+
+
 def test_update_visual_desc_voids_panels(tmp_path: Path):
     # 分格页改画面描述 → 作废分格,回退单图整页重生成(s4 单图分支)。
     p = _project(tmp_path, n=3)
