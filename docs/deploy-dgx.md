@@ -42,6 +42,8 @@
 - **代码真源 = Mac** `/Users/nativeas/Work/shanhai`(唯一 git,无远程)。开发/测试/提交只在 Mac。
 - **DGX = 部署目标** `~/shanhai`(rsync 快照)。**绝不在 DGX 改代码**;DGX `.env` 机器专属、不入 git。
 - **发布流程**:Mac 改+测+commit → rsync(**必须 `--exclude .env --exclude projects`**,否则覆盖 DGX 配置/数据)→ 确认无管线在跑(`/api/projects` 无 running/queued)→ `systemctl --user restart shanhai-web`。
+- ⚠️ **rsync 一定要加 `--exclude __pycache__`**:不加会把 Mac 编译的 `.pyc` 连同 mtime 一起传过去,DGX 上 traceback 会诡异地显示 Mac 路径(2026-07-27 踩过)。
+- ⚠️ **家目录 2026-07-26 从 `/home1/huntun` 改到了 `/home/huntun`**(管理员改 `/etc/passwd`),两份是**独立副本不是软链**。`~` 与运行中的服务都指新的 `/home/huntun`,改 `/home1` 那份完全无效。副作用:`.venv/bin/` 里的 console script shebang 仍写死旧绝对路径,`uv sync` 只会重建它自己管的那几个(`shanhai-web`/`shanhai`),`pytest`/`uvicorn` 等 12 个不会——**表现是 `uv run pytest` 跑的是旧代码、测试结果与线上不符**。排查:`grep -l "^#!/home1" .venv/bin/*`;修复:`sed -i "1s|/home1/|/home/|" ` 这些文件,或 `uv sync --reinstall`。三个 shim 的 venv 同样中招。
 - Mac 同一工作树还跑着两个实例(公网只读 :10000、本机编辑 :8081):重启前确认工作树是已提交可上线状态。
 - 作品数据各自生长:DGX `projects/`(生产)与 Mac `projects/`(展示)不互通、不互相 rsync 覆盖。
 
