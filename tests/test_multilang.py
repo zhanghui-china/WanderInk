@@ -6,7 +6,7 @@ import pytest
 
 from shanhai import editing, subtitles
 from shanhai.ffmpeg import XFADE_S, mux_subtitles_cmd, xfade_offsets
-from shanhai.schema import LocalizedTrack, Project, StoryboardCell
+from shanhai.schema import TRACK_CAPTION_MAX, LocalizedTrack, Project, StoryboardCell
 from shanhai.steps import s5_audio, s5t_translate
 
 
@@ -34,11 +34,13 @@ def test_old_project_json_without_tracks_still_loads():
 
 
 def test_localized_track_caption_allows_longer_english():
-    # 英文同义内容约为中文 2~2.5 倍,主语言那条 80 的上限装不下
-    long_en = "A" * 240
+    # 英文同义内容约为中文 2~2.5 倍,主语言那条上限装不下。
+    # 跟着主语言 80→120 一起从 240 放宽到 300:一条 120 字的中文译成英文约 280 字,
+    # 只放宽中文那头会让 S5t 撞上旧的 240、把整批翻译判失败(与 S2 那次同一形态)。
+    long_en = "A" * 300
     assert LocalizedTrack(caption=long_en).caption == long_en
     with pytest.raises(ValueError):
-        LocalizedTrack(caption="A" * 241)
+        LocalizedTrack(caption="A" * 301)
 
 
 # ---------- 每字节奏按语言取值 ----------
@@ -109,10 +111,12 @@ def test_translate_rejects_unknown_language():
 
 
 def test_translate_truncates_overlong_model_output():
-    # 模型不保证守约,超长译文必须先截断,否则撞 LocalizedTrack 的 240 上限直接抛
+    # 模型不保证守约,超长译文必须先截断,否则撞 LocalizedTrack 的上限直接抛。
+    # 断言用 schema 的常量而不是字面量:上限调整时这条测试要跟着走,而不是变成
+    # "锁死一个已经不对的数字"。
     p = _project(1)
-    p = s5t_translate.run(p, _fake_llm({1: "A" * 400}), lang="en")
-    assert len(p.storyboard[0].tracks["en"].caption) == 240
+    p = s5t_translate.run(p, _fake_llm({1: "A" * 999}), lang="en")
+    assert len(p.storyboard[0].tracks["en"].caption) == TRACK_CAPTION_MAX
 
 
 # ---------- 编辑:改译文只作废该语种,不动中文 ----------

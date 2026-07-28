@@ -78,3 +78,20 @@ def test_title_and_credits(tmp_path: Path):
     typeset.credits_card(["来源:《警世通言》", "本片为 AI 生成内容"], tmp_path / "c.png")
     assert Image.open(tmp_path / "t.png").size == (1920, 1080)
     assert Image.open(tmp_path / "c.png").size == (1920, 1080)
+
+
+def test_overlay_burns_three_lines_for_long_caption(tmp_path: Path):
+    """caption 上限放宽到 120 后,烧录必须能出三行——两行只装 84 字,超出部分会被
+    _wrap(...)[:n] **静默吞掉**,导出的 PDF/ZIP 里就是半句话。这条守住那个耦合。
+
+    判据用"最高的那行白像素在哪":字幕整体贴着底边往上排,y0 = 高 - 20 - 56×行数,
+    两行是 948、三行是 892。数白像素"带"的条数不行——汉字笔画自带横向空隙,
+    一行字会被数成好几条(实测 3 行数出 9 条)。"""
+    out = tmp_path / "o.png"
+    typeset.overlay_layer("字" * 120, out)
+    im = Image.open(out).convert("RGBA")
+    w, h = im.size
+    top = next(y for y in range(h - typeset.CAPTION_GRAD_H, h)
+               if any(im.getpixel((x, y))[:3] == (255, 255, 255) for x in range(120, w - 120, 4)))
+    expected = h - 20 - 56 * 3
+    assert abs(top - expected) < 20, f"字幕顶在 {top},三行应在 {expected} 附近(两行会是 {h - 20 - 56 * 2})"

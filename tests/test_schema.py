@@ -10,10 +10,14 @@ def test_project_roundtrip():
     assert p2.scenic_spot == "雷峰塔" and p2.params.duration_min == 3
 
 
-def test_caption_max_80():
+def test_caption_max_120():
+    # 上限 80→120(见 StoryboardCell.caption 的注释:80 会让模型偶尔写飞的一句
+    # 把整批分镜判失败)。120 仍是硬熔断,且与 typeset 三行烧录容量(126 字)对齐。
+    StoryboardCell(index=1, scene_ref="1-1", visual_desc="x",
+                   characters=[], caption="字" * 120, emotion="宁静")   # 恰好 120:通过
     with pytest.raises(ValidationError):
         StoryboardCell(index=1, scene_ref="1-1", visual_desc="x",
-                       characters=[], caption="字" * 81, emotion="宁静")
+                       characters=[], caption="字" * 121, emotion="宁静")
 
 
 def test_source_type_enum():

@@ -59,7 +59,11 @@ def overlay_image(caption: str) -> Image.Image:
             alpha = round(200 * i / (CAPTION_GRAD_H - 1))
             draw.line([(0, grad_top + i), (FRAME[0], grad_top + i)], fill=(0, 0, 0, alpha))
         font = _font(40)
-        lines = _wrap(caption, font, FRAME[0] - 240)[:2]
+        # 三行(原来两行)。caption 的上限从 80 放宽到 120 后,两行(容量 84 字)会把超过
+        # 84 字的那部分**静默吞掉**——导出的 PDF/ZIP 里就是半句话。三行容量 126 字,兜得住 120。
+        # 三行占 168px,仍装得进 240px 的 CAPTION_GRAD_H,遮罩不用动。
+        # 注意视频不走这条路(成片已改软字幕轨、传空 caption),这里只影响 export 的 PDF/ZIP。
+        lines = _wrap(caption, font, FRAME[0] - 240)[:3]
         line_h = 56
         y0 = FRAME[1] - 20 - line_h * len(lines)
         for i, line in enumerate(lines):

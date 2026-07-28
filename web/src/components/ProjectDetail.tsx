@@ -920,7 +920,7 @@ function TrackRow({
           <textarea
             className={`${fieldCls} h-16 resize-none`}
             value={text}
-            maxLength={240}
+            maxLength={300}
             onChange={(e) => setText(e.target.value)}
           />
           <div className="flex items-center gap-1.5">
@@ -993,7 +993,7 @@ function InsertPageForm({
       <textarea
         className={`${fieldCls} h-14 resize-none`}
         placeholder="旁白"
-        maxLength={80}
+        maxLength={120}
         value={caption}
         onChange={(e) => setCaption(e.target.value)}
       />
@@ -1206,7 +1206,7 @@ function PageCard({
             <span className="text-[10px] tracking-[2px] text-muted">旁白</span>
             <textarea
               className={`${fieldCls} mt-0.5 h-16 resize-none`}
-              maxLength={80}
+              maxLength={120}
               draggable={false}
               onMouseDown={(e) => e.stopPropagation()}
               value={caption}

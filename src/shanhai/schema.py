@@ -4,6 +4,23 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SourceType = Literal["正史", "地方志", "民间传说", "文学作品", "原创演绎"]
 
+# 单页解说文案的**硬熔断**长度(不是给模型的目标,S2/S5t 的提示词里另有更保守的目标值)。
+#
+# CAPTION_MAX 从 80 放宽到 120。80 不是随手定的:它精确对应 typeset 烧录字幕的两行容量
+#(Noto 40px、可用宽 1680px → 每行 42 字 → 两行 84)。但线上实测 664 条 caption 中位数
+# 才 39 字、90 分位 55,模型只是偶尔写飞一句——而写飞一句会让**整个 S2 结构化输出判失败、
+# 整批分镜全废**(「石坊温热」就是这么挂的:cells.23.caption 超长 → 22 页分镜一起没了,
+# 且 llm.structured 的 3 次重试全部撞同一堵墙)。120 给离群值留余量。
+# ⚠️ 与 typeset.overlay_image 的行数上限强耦合:120 字要三行(三行容量 126 字),那边的
+# [:2] 已同步改成 [:3]。再往上调必须先确认烧录容量跟得上,否则导出的 PDF/ZIP 会**静默截断**。
+#
+# TRACK_CAPTION_MAX(附加语种)必须跟着一起放宽:英文同义内容约为中文 2~2.5 倍,
+# 一条 120 字的中文译成英文约 280 字,只放宽中文那头会让 S5t 撞上旧的 240、
+# 把整批翻译判失败——与 S2 那次同一形态。s5t_translate 的提示词与硬截断都引用这个常量,
+# 不再各写一个字面量(那正是这类数字迟早漂移的成因)。
+CAPTION_MAX = 120
+TRACK_CAPTION_MAX = 300
+
 
 class Legend(BaseModel):
     title: str
@@ -64,8 +81,7 @@ class LocalizedTrack(BaseModel):
     多语种只是旁挂上来的一层。"""
     model_config = ConfigDict(validate_assignment=True)
 
-    # 英文表达同义内容的字符数约为中文的 2~2.5 倍,主语言那条 80 的上限不够用。
-    caption: str = Field(default="", max_length=240)
+    caption: str = Field(default="", max_length=TRACK_CAPTION_MAX)
     audio: str = ""
     duration_ms: int = 0
     silent: bool = False
@@ -80,7 +96,9 @@ class StoryboardCell(BaseModel):
     scene_ref: str
     visual_desc: str
     characters: list[str]
-    caption: str = Field(max_length=80)
+    # 熔断值与理由见文件顶部的 CAPTION_MAX。提示词里仍写"不超过 80 字"
+    #(s2_storyboard.SYSTEM):那是给模型的**目标**,这里是熔断,两个数字不同是有意的。
+    caption: str = Field(max_length=CAPTION_MAX)
     emotion: str
     image: str = ""
     audio: str = ""
