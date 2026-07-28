@@ -514,6 +514,14 @@ def _serialize(p: Project) -> dict:
         "subtitles": {lg: _file_url(p.project_id, f"output/final.{lg}.vtt", workdir)
                       for lg in (MAIN_LANG, *TRACK_LANGS)
                       if (workdir / "output" / f"final.{lg}.vtt").exists()},
+        # 附加语种成片有**自己一整套**字幕:每页画面停留多久由该成片的配音决定,
+        # 中英配音长短不同 → 两条成片的时间轴不同 → 字幕文件必须按成片分开。
+        # 拿主片那套挂到英文播放器上,末页字幕会超出片长永远不显示(实测偏差累积到 24 秒)。
+        "track_subtitles": {
+            tl: {lg: _file_url(p.project_id, f"output/final.{tl}.{lg}.vtt", workdir)
+                 for lg in (MAIN_LANG, *TRACK_LANGS)
+                 if (workdir / "output" / f"final.{tl}.{lg}.vtt").exists()}
+            for tl in TRACK_LANGS if p.output.get(f"mp4_{tl}")},
     }
 
 

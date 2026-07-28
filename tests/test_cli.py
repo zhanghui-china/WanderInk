@@ -1,4 +1,5 @@
 from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -293,3 +294,81 @@ def test_clients_lora_none_when_unset():
     s = Settings(_env_file=None, base_url="http://127.0.0.1:8091/v1", api_key="x")
     _llm, image, _tts, _music = cli._clients(s)
     assert image.lora_model is None
+
+
+def _subtitles_project():
+    p = _proj_with_candidates(1)
+    p.status = {"s6": "done"}
+    return p
+
+
+@patch("shanhai.cli.ffmpeg")
+@patch("shanhai.cli.s6_compose")
+@patch("shanhai.cli.store")
+def test_subtitles_remuxes_with_copy_codec(store, s6, mock_ffmpeg, tmp_path):
+    p = _subtitles_project()
+    store.load.return_value = p
+    store.project_dir.return_value = tmp_path
+    out_dir = tmp_path / "output"
+    out_dir.mkdir(parents=True)
+    (out_dir / "final.mp4").write_bytes(b"v")
+    (out_dir / "final.en.mp4").write_bytes(b"v")
+    s6._write_subtitles.return_value = [(out_dir / "final.zh.srt", "zho")]
+    s6.SUB_LANG_TAGS = {"zh": "zho", "en": "eng"}
+    # cmd 内含真实 out 路径,便于按语种区分;sh 的副作用是产出对应 staged 文件供 os.replace 用
+    sh_cmds = []
+
+    def fake_mux(video, subs, out, default_lang=""):
+        return ["ffmpeg", "-c:v", "copy", "-c:a", "copy", str(out)]
+    mock_ffmpeg.mux_subtitles_cmd.side_effect = fake_mux
+
+    def fake_sh(cmd):
+        sh_cmds.append(cmd)
+        Path(cmd[-1]).write_bytes(b"new")
+    mock_ffmpeg.sh.side_effect = fake_sh
+
+    result = runner.invoke(app, ["subtitles", "ab12cd34"])
+    assert result.exit_code == 0
+    assert len(sh_cmds) == 2                                # zh、en 各 mux 一次
+    assert all("copy" in cmd for cmd in sh_cmds)             # 纯 copy,没重编码
+    assert not (out_dir / "final.remux.mp4").exists()       # 原子替换后 staged 文件已不在
+    assert not (out_dir / "final.en.remux.mp4").exists()
+
+
+@patch("shanhai.cli.ffmpeg")
+@patch("shanhai.cli.s6_compose")
+@patch("shanhai.cli.store")
+def test_subtitles_skips_missing_final(store, s6, mock_ffmpeg, tmp_path):
+    p = _subtitles_project()
+    store.load.return_value = p
+    store.project_dir.return_value = tmp_path
+    (tmp_path / "output").mkdir(parents=True)
+    s6._write_subtitles.return_value = [(tmp_path / "output" / "final.zh.srt", "zho")]
+    s6.SUB_LANG_TAGS = {"zh": "zho", "en": "eng"}
+
+    result = runner.invoke(app, ["subtitles", "ab12cd34"])
+    assert result.exit_code == 0
+    mock_ffmpeg.sh.assert_not_called()                      # 成片不存在,不该去 mux
+    assert "跳过" in result.output
+
+
+@patch("shanhai.cli.ffmpeg")
+@patch("shanhai.cli.s6_compose")
+@patch("shanhai.cli.store")
+def test_subtitles_mux_failure_keeps_original(store, s6, mock_ffmpeg, tmp_path):
+    p = _subtitles_project()
+    store.load.return_value = p
+    store.project_dir.return_value = tmp_path
+    out_dir = tmp_path / "output"
+    out_dir.mkdir(parents=True)
+    final = out_dir / "final.mp4"
+    final.write_bytes(b"original")
+    s6._write_subtitles.return_value = [(out_dir / "final.zh.srt", "zho")]
+    s6.SUB_LANG_TAGS = {"zh": "zho", "en": "eng"}
+    mock_ffmpeg.mux_subtitles_cmd.return_value = ["ffmpeg", "-c:v", "copy"]
+    mock_ffmpeg.sh.side_effect = RuntimeError("ffmpeg 失败")
+
+    result = runner.invoke(app, ["subtitles", "ab12cd34"])
+    assert result.exit_code == 0
+    assert final.read_bytes() == b"original"                # 原子替换失败,原成片未被破坏
+    assert not (out_dir / "final.remux.mp4").exists()        # 没留下半成品

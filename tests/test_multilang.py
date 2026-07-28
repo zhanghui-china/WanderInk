@@ -279,3 +279,162 @@ def test_subtitle_langs_puts_current_lang_first():
     # 没有任何译文时只剩主语言
     p.storyboard[0].tracks = {}
     assert _subtitle_langs(p, "zh") == ["zh"]
+
+
+# ---------- 每个语种各算各的时间轴(本次「中文字幕与声音不同步」的根因回归) ----------
+
+def _bilingual(tmp_path: Path, n: int = 3, en_pages: tuple[int, ...] = (1, 2, 3)) -> Project:
+    """n 页中文齐备,en_pages 那几页另有英文译文+配音。中英每页时长故意不同,
+    这样"用错语种的时长"会立刻在字幕时间戳上显形。"""
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    (tmp_path / "pages").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "audio").mkdir(exist_ok=True)
+    cells = []
+    for i in range(1, n + 1):
+        (tmp_path / f"pages/page_{i:02d}.png").write_bytes(b"png")
+        (tmp_path / f"audio/page_{i:02d}.mp3").write_bytes(b"mp3")
+        cell = StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc="v", characters=[],
+                              caption=f"第{i}页。", emotion="宁静",
+                              image=f"pages/page_{i:02d}.png",
+                              audio=f"audio/page_{i:02d}.mp3",
+                              duration_ms=6000, status="confirmed")
+        if i in en_pages:
+            (tmp_path / f"audio/page_{i:02d}.en.mp3").write_bytes(b"mp3")
+            cell.tracks["en"] = LocalizedTrack(caption=f"Page {i}.",
+                                               audio=f"audio/page_{i:02d}.en.mp3",
+                                               duration_ms=9000)
+        cells.append(cell)
+    p.storyboard = cells
+    return p
+
+
+def _run_s6(project: Project, workdir: Path, lang: str):
+    from shanhai.steps import s6_compose
+    with patch("shanhai.steps.s6_compose.ffmpeg.sh"), \
+         patch("shanhai.steps.s6_compose.typeset.title_card"), \
+         patch("shanhai.steps.s6_compose.typeset.credits_card"), \
+         patch("shanhai.steps.s6_compose.typeset.overlay_layer"), \
+         patch("shanhai.steps.s6_compose.export.build_exports"):
+        return s6_compose.run(project, workdir, lang=lang)
+
+
+def _cue_starts(srt: Path) -> list[float]:
+    out = []
+    for line in srt.read_text(encoding="utf-8").splitlines():
+        if "-->" not in line:
+            continue
+        h, m, rest = line.split(" --> ")[0].split(":")
+        s, ms = rest.split(",")
+        out.append(int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000)
+    return out
+
+
+def test_english_round_does_not_rewrite_chinese_subtitles(tmp_path: Path):
+    """本次故障的直接回归:字幕文件名不带 suffix,英文那轮会原地覆盖 final.zh.srt。
+    此前时间轴一律取本轮 lang 的画面时长,中文字幕遂被按英文时长重写,偏差随页数
+    累积到二十多秒——用户看到的就是"中文对不上口型、英文却是准的"。"""
+    from shanhai.steps import s6_compose
+    p = _bilingual(tmp_path)
+    zh_srt = tmp_path / "output" / "final.zh.srt"
+
+    _run_s6(p, tmp_path, "zh")
+    before = zh_srt.read_text(encoding="utf-8")
+    _run_s6(p, tmp_path, "en")
+    assert zh_srt.read_text(encoding="utf-8") == before   # 英文轮一字未动中文字幕
+
+    # 且这些起点确实由**中文** durations 算出(英文那份会明显靠后)
+    _, zh_durations = s6_compose._timeline(p, tmp_path, "zh")
+    _, en_durations = s6_compose._timeline(p, tmp_path, "en")
+    zh_starts = subtitles.clip_start_times(zh_durations)
+    en_starts = subtitles.clip_start_times(en_durations)
+    got = _cue_starts(zh_srt)
+    for i in range(len(p.storyboard)):
+        assert zh_starts[i + 1] in got
+    assert en_starts[-2] not in got                        # 末页没被算成英文时长
+
+
+def test_timeline_durations_match_real_encoding(tmp_path: Path):
+    """_timeline 是纯函数、不编码,但字幕时间轴全靠它——它必须与真实编码出的每段
+    时长逐项相等,否则字幕又会与画面脱钩(只是换个更隐蔽的方式)。"""
+    from shanhai import ffmpeg as real_ffmpeg
+    from shanhai.steps import s6_compose
+    p = _bilingual(tmp_path)
+    captured: list[list[float]] = []
+    real_concat = real_ffmpeg.xfade_concat_cmd   # 先取实函数,否则 patch 后自我递归
+
+    def _spy(clips, durations_s, out, *a, **kw):
+        captured.append(list(durations_s))
+        return real_concat(clips, durations_s, out, *a, **kw)
+
+    with patch("shanhai.steps.s6_compose.ffmpeg.xfade_concat_cmd", side_effect=_spy):
+        _run_s6(p, tmp_path, "en")
+
+    _, predicted = s6_compose._timeline(p, tmp_path, "en")
+    assert captured[0] == predicted
+
+
+def test_english_round_keeps_pages_missing_from_english_track(tmp_path: Path):
+    """某页没有英文译文/配音时,它在英文轮的 cells 里被剔除。字幕若跟着本轮 cells 走,
+    重写后的中文字幕里这一页就直接消失、后续页索引还整体前移。"""
+    p = _bilingual(tmp_path, n=3, en_pages=(1, 3))
+    zh_srt = tmp_path / "output" / "final.zh.srt"
+    _run_s6(p, tmp_path, "zh")
+    _run_s6(p, tmp_path, "en")
+    text = zh_srt.read_text(encoding="utf-8")
+    assert "第2页" in text                                  # 缺英文的那页,中文字幕仍在
+    assert len(_cue_starts(zh_srt)) >= 3
+
+
+# ---------- 字幕属于「成片」而不是「语种」(对抗审计发现的镜像 bug) ----------
+
+def test_each_film_carries_its_own_timeline_for_all_langs(tmp_path: Path):
+    """同一条成片里的所有语种轨必须共用**这条成片**的时间轴,只有文本按语种取。
+
+    第一版修复矫枉过正:让每个语种各按自己那条成片算时间轴,中文字幕对了,但中文成片里的
+    英文轨变成了英文成片的时间轴——中文页 6s、英文页 9s,偏差逐页累积,末页 cue 起点会
+    超出中文成片总长、永远不显示。审计在真实数据上量到 +23.75s。这条守住它。"""
+    p = _bilingual(tmp_path, n=3, en_pages=(1, 2, 3))
+    _run_s6(p, tmp_path, "zh")
+    out = tmp_path / "output"
+    # 主片的两条轨:起点必须逐条相同(同一条成片、同一套页边界)
+    assert _cue_starts(out / "final.zh.srt")[:1] == _cue_starts(out / "final.en.srt")[:1]
+    zh_first = _cue_starts(out / "final.zh.srt")
+    en_first = _cue_starts(out / "final.en.srt")
+    # 每页第一条 cue 的起点应一一对应(切分后每页可能有多条,取各页首条比对)
+    assert zh_first[0] == en_first[0]
+    assert max(en_first) <= max(zh_first) + 1e-6, "英文轨越出了中文成片的时间轴"
+
+
+def test_track_film_writes_its_own_subtitle_set(tmp_path: Path):
+    """英文成片写 final.en.{lang}.srt,**不碰**主片那套 final.{lang}.srt。
+    文件名带成片 suffix 是"字幕属于成片"这条设计的落地形式。"""
+    p = _bilingual(tmp_path, n=3, en_pages=(1, 2, 3))
+    _run_s6(p, tmp_path, "zh")
+    out = tmp_path / "output"
+    before = {f.name: f.read_text(encoding="utf-8") for f in out.glob("final.??.srt")}
+    _run_s6(p, tmp_path, "en")
+    after = {f.name: f.read_text(encoding="utf-8") for f in out.glob("final.??.srt")}
+    assert before == after, "英文轮改动了主片的字幕文件"
+    assert (out / "final.en.zh.srt").exists() and (out / "final.en.en.srt").exists()
+
+
+def test_cues_abut_across_pages(tmp_path: Path):
+    """页间不变量:BUFFER_MS 与 XFADE_S 数值相等,使相邻页起点间隔恰为解说时长,
+    于是下一页首条 cue 的 start 精确等于上一页末条 cue 的 end——零重叠零空隙。
+    切分只要保证末条 end == start+span,这条就自动继承。反过来说,一旦有人把 span
+    改回"该语种自己的 duration_ms",跨语种轨立刻开始重叠——这条会先炸。"""
+    p = _bilingual(tmp_path, n=3, en_pages=(1, 2, 3))
+    _run_s6(p, tmp_path, "zh")
+    text = (tmp_path / "output" / "final.en.srt").read_text(encoding="utf-8")
+    spans = []
+    for line in text.splitlines():
+        if "-->" not in line:
+            continue
+        a, b = line.split(" --> ")
+        def _sec(t: str) -> float:
+            h, m, rest = t.split(":")
+            s, ms = rest.split(",")
+            return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+        spans.append((_sec(a), _sec(b)))
+    for (_, end), (nxt, _) in zip(spans, spans[1:]):
+        assert nxt == pytest.approx(end, abs=1e-3), f"cue 之间有重叠或空隙:{end} → {nxt}"

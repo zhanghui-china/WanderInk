@@ -96,6 +96,9 @@ export interface ProjectDetail {
   // 网页播放器用的 WebVTT 外挂字幕 {lang: url}。MP4 里那几条 mov_text 内嵌轨
   // 浏览器根本不解析,网页显示字幕只能靠 <track> + VTT。
   subtitles?: Record<string, string | null>
+  // 附加语种成片各自的字幕(键是成片语种,值是该片内各语种轨):
+  // {"en": {"zh": "...", "en": "..."}}。与 subtitles(主片那套)不能混用。
+  track_subtitles?: Record<string, Record<string, string | null>>
 }
 
 export interface CellPatch {
