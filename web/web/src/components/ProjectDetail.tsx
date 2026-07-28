@@ -334,7 +334,9 @@ export function ProjectDetailView({
           >
             <SubTracks subtitles={project.subtitles} defaultLang="zh" />
           </video>
-          <BgmNote status={project.status['bgm']} />
+          {/* 配乐状态原先在这里,但它挂在 `{project.mp4 && ...}` 里面 —— 没出片的作品完全
+              看不到,包括最该被看到的 failed(S5 跑完、S6 还没跑的那段)。已挪到「生成进度」
+              卡的「配音」那一行(配乐本来就是在 S5 里跑的),那里常驻可见。 */}
           <ExportButtons project={project} />
         </div>
       )}
@@ -531,24 +533,6 @@ export function ProjectDetailView({
       )}
 
     </div>
-  )
-}
-
-// 配乐结果只用一行小字说明,不做弹窗/红色告警——BGM 是非关键增强,失败不该打断用户。
-// 但也不能像改造前那样完全静默:正是因为一个字都不说,music-shim 的模板路径写错攒了
-// 33 个无配乐的作品才被用户发现。
-const BGM_NOTE: Record<string, { text: string; alarm?: boolean }> = {
-  ai: { text: '已配乐(AI 生成)' },
-  manifest: { text: '已配乐(曲库选曲)' },
-  skipped: { text: '未配乐(建作品时未勾选)' },
-  failed: { text: '配乐生成失败,本片无背景音乐', alarm: true },
-}
-
-function BgmNote({ status }: { status?: string }) {
-  const note = status ? BGM_NOTE[status] : undefined
-  if (!note) return null   // 老作品没有这个键,不显示比瞎猜好
-  return (
-    <p className={`mt-2 text-[11px] ${note.alarm ? 'text-alarm' : 'text-muted'}`}>{note.text}</p>
   )
 }
 
@@ -936,7 +920,7 @@ function TrackRow({
           <textarea
             className={`${fieldCls} h-16 resize-none`}
             value={text}
-            maxLength={240}
+            maxLength={300}
             onChange={(e) => setText(e.target.value)}
           />
           <div className="flex items-center gap-1.5">
@@ -1009,7 +993,7 @@ function InsertPageForm({
       <textarea
         className={`${fieldCls} h-14 resize-none`}
         placeholder="旁白"
-        maxLength={80}
+        maxLength={120}
         value={caption}
         onChange={(e) => setCaption(e.target.value)}
       />
@@ -1222,7 +1206,7 @@ function PageCard({
             <span className="text-[10px] tracking-[2px] text-muted">旁白</span>
             <textarea
               className={`${fieldCls} mt-0.5 h-16 resize-none`}
-              maxLength={80}
+              maxLength={120}
               draggable={false}
               onMouseDown={(e) => e.stopPropagation()}
               value={caption}
