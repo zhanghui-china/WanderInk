@@ -81,13 +81,45 @@ def _subtitle_langs(project: Project, lang: str = DEFAULT_LANG) -> list[str]:
     return [lang] + [x for x in langs if x != lang] if lang in langs else langs
 
 
-def _write_subtitles(project: Project, cells: list[StoryboardCell], durations: list[float],
+def _timeline(project: Project, workdir: Path,
+              lang: str = DEFAULT_LANG) -> tuple[list[StoryboardCell], list[float]]:
+    """某语种成片的"入选页 + 逐段时长(含片头/片尾)",纯函数、不编码。
+
+    时长用的是 `_encode_page_clip` 返回值那**同一个** clip_duration_s,所以这份预测
+    与真实编码结果必然一致——字幕时间轴要能脱离编码流程独立算出来,否则就只能沿用
+    "本轮编码顺手产生的 durations",而那正是跨语种串轨的病根(见 _write_subtitles)。"""
+    cells = _content_cells(project, workdir, lang)
+    durations = [ffmpeg.clip_duration_s(TITLE_MS, has_audio=False)]
+    durations += [ffmpeg.clip_duration_s(track_of(cell, lang).duration_ms, has_audio=True)
+                  for cell in cells]
+    durations.append(ffmpeg.clip_duration_s(CREDITS_MS, has_audio=False))
+    return cells, durations
+
+
+def _write_subtitles(project: Project, workdir: Path,
                      out_dir: Path, lang: str = DEFAULT_LANG) -> list[tuple[Path, str]]:
     """为每个可用语种各写一份 SRT 与 VTT,返回 [(srt 路径, ISO639-2 标签)]。
     时间轴按 clip 起点算——cells[i] 对应 clips[i+1](clips[0] 是片头卡)。
 
     两种格式各有其用、缺一不可:SRT 喂给 ffmpeg 封成 mov_text 内嵌轨(下载后用 VLC/
-    景区播放设备看);VTT 给网页——浏览器**不解析 MP4 内的字幕轨**,只认 <track> 外挂 VTT。"""
+    景区播放设备看);VTT 给网页——浏览器**不解析 MP4 内的字幕轨**,只认 <track> 外挂 VTT。
+
+    ⚠️ **字幕属于「成片」,不属于「语种」**——这是本次两个 bug 的共同根。一条成片里每页画面
+    停留多久,只由**这条成片的语种**(lang)的配音时长决定;塞进它的所有语种轨都必须用
+    **同一条**时间轴,只有文本按 sub_lang 取。两个曾经踩过的反面:
+
+    - 原实现让 `starts` 走本轮 lang、`span` 却取 sub_lang 的 `duration_ms`,一条 cue 的
+      起点和长度来自两个语种;又因为文件名不带 suffix,英文那轮把 `final.zh.srt` 按英文
+      时长原地覆盖,中文字幕偏差随页数累积到二十多秒(用户报的正是这个)。
+    - 第一版修复矫枉过正:让每个 sub_lang 各按**自己那条成片**算时间轴。中文字幕是对了,
+      但中文成片里的英文轨变成了英文成片的时间轴——末页 cue 起点 90.83s 超出中文成片
+      77s 的总长,永远不显示;英文成片里的中文轨则在 67s 就播完。症状镜像,同样是错的。
+
+    所以:时间轴取 `_timeline(lang)` 一次,文件名带 `suffix` 按成片区分。主片 suffix 为空,
+    文件名与历史一致(`final.zh.srt`),`api._remux_main_subtitles` 与 `_serialize` 不受影响。
+    """
+    suffix = "" if lang == DEFAULT_LANG else f".{lang}"
+    cells, durations = _timeline(project, workdir, lang)
     starts = subtitles.clip_start_times(durations)
     written: list[tuple[Path, str]] = []
     for sub_lang in _subtitle_langs(project, lang):
@@ -95,17 +127,21 @@ def _write_subtitles(project: Project, cells: list[StoryboardCell], durations: l
         for i, cell in enumerate(cells):
             track = track_of(cell, sub_lang)
             if not track.caption.strip():
-                continue
-            start = starts[i + 1]
-            # 字幕跟着这一页的解说走,不占用 page_clip 尾部那 0.5s 缓冲。
-            # 该语种没配过音时(duration_ms=0)退而用本页画面时长,免得字幕瞬闪。
-            span = (track.duration_ms or round(durations[i + 1] * 1000)) / 1000
-            cues.append((start, start + span, track.caption))
+                continue   # 该页没有这个语种的译文:跳过它一条 cue,不影响其余页的索引
+            # 字幕跟着这一页的**画面**走,扣掉 page_clip 尾部那 0.5s 缓冲。
+            # 这一步同时守住页间不变量:相邻页起点间隔恰为 durations[i+1] - BUFFER,
+            # 即下一页首条 cue 的 start 精确等于本页末条 cue 的 end,零重叠零空隙。
+            # 注意判据必须是画面时长而**不是** track.duration_ms —— 后者是该语种自己配音
+            # 的长度,在跨语种轨上与本片画面无关(那正是上面说的第一个反面)。
+            span = durations[i + 1] - ffmpeg.BUFFER_MS / 1000
+            # 整段解说切成若干条按口播时间推进,不再一次性糊满屏幕
+            cues.extend(subtitles.spread(subtitles.split_caption(track.caption, sub_lang),
+                                         starts[i + 1], span))
         if not cues:
             continue
-        path = out_dir / f"final.{sub_lang}.srt"
+        path = out_dir / f"final{suffix}.{sub_lang}.srt"
         subtitles.build_srt(cues, path)
-        subtitles.build_vtt(cues, out_dir / f"final.{sub_lang}.vtt")
+        subtitles.build_vtt(cues, out_dir / f"final{suffix}.{sub_lang}.vtt")
         written.append((path, SUB_LANG_TAGS.get(sub_lang, sub_lang)))
     return written
 
@@ -164,7 +200,8 @@ def run(project: Project, workdir: Path, lang: str = DEFAULT_LANG) -> Project:
     ffmpeg.sh(ffmpeg.xfade_concat_cmd(clips, durations, merged))
     final = out_dir / f"final{suffix}.mp4"
     bgm = Path(project.bgm) if project.bgm else None
-    subs = _write_subtitles(project, content_cells, durations, out_dir, lang)
+    # 字幕不吃这份 durations:那是本轮 lang 的画面时长,每个语种要按自己的时间轴算
+    subs = _write_subtitles(project, workdir, out_dir, lang)
     if subs:
         # 先做 BGM/响度,再单独一趟 copy 封字幕轨(见 ffmpeg.mux_subtitles_cmd 的取舍说明)
         staged = out_dir / f"final{suffix}.nosub.mp4"

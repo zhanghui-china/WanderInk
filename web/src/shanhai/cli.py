@@ -1,9 +1,10 @@
+import os
 import time
 from pathlib import Path
 
 import typer
 
-from shanhai import auth, store
+from shanhai import auth, ffmpeg, store
 from shanhai.config import Settings
 from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig,
                                      image_concurrency, resolve_settings)
@@ -12,8 +13,10 @@ from shanhai.providers.llm import LLMClient
 from shanhai.providers.music import MusicClient
 from shanhai.providers.tts import TTSClient
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
-                           s4_pages, s5_audio, s6_compose)
+                           s4_pages, s5_audio, s5t_translate, s6_compose)
 from shanhai.styles import STYLE_PRESETS
+
+_TRACK_LANGS = tuple(s5t_translate.LANGUAGES)  # 主语言之外的附加语种,与 api.TRACK_LANGS 同源
 
 app = typer.Typer(help="WanderInk:景区传说有声连环画生成器(CLI 骨架)")
 
@@ -228,3 +231,38 @@ def status(project_id: str):
         typer.echo(f"  {k}: {p.status.get(k, 'pending')}")
     if p.output:
         typer.echo(f"  输出: {p.output}")
+
+
+@app.command()
+def subtitles(project_id: str):
+    """存量作品的字幕轻量修复:不重跑 S5/S6,只重算各语种 SRT/VTT 并把已存在的成片
+    纯 copy 重封字幕轨(见需求背景:中文字幕曾被英文轮的时间轴覆盖)。"""
+    p = store.load(project_id)
+    workdir = store.project_dir(project_id)
+    out_dir = workdir / "output"
+    for lang in (s5_audio.DEFAULT_LANG, *_TRACK_LANGS):
+        is_main = lang == s5_audio.DEFAULT_LANG
+        mp4 = out_dir / ("final.mp4" if is_main else f"final.{lang}.mp4")
+        # 先判成片存在再写字幕:反过来的话,没出过片的项目会因为 output/ 目录不存在
+        # 直接抛 FileNotFoundError(_write_subtitles 不 mkdir),而这条命令本该是安全的。
+        if not mp4.exists():
+            typer.echo(f"{lang}: 成片不存在,跳过({mp4})")
+            continue
+        subs = s6_compose._write_subtitles(p, workdir, out_dir, lang)
+        if not subs:
+            typer.echo(f"{lang}: 无字幕可封装,跳过")
+            continue
+        # staged 名字刻意与 api._remux_main_subtitles 的 final.remux.mp4 **错开**:
+        # Web 后台正在跑英文轨时手工执行本命令,两边会互写同一个临时文件,
+        # 存在把半成品 os.replace 成成片的窗口。CLI 拿不到 _project_lock,只能靠错名规避。
+        staged = out_dir / (f"final{'' if is_main else '.' + lang}.cli-remux.mp4")
+        try:
+            ffmpeg.sh(ffmpeg.mux_subtitles_cmd(
+                mp4, subs, staged, default_lang=s6_compose.SUB_LANG_TAGS.get(lang, lang)))
+            os.replace(staged, mp4)  # 原子替换:mux 失败时原成片不受影响
+        except Exception as e:  # noqa: BLE001 —— 一个语种重封失败不阻断其余语种
+            # ffmpeg 半途失败常常已经写了部分字节,不清掉会在 output/ 里留一个假成片
+            staged.unlink(missing_ok=True)
+            typer.echo(f"{lang}: 字幕重封失败,原成片保留:{e}")
+            continue
+        typer.echo(f"{lang}: 已重写字幕并重封 {mp4}")

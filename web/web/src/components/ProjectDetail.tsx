@@ -323,7 +323,13 @@ export function ProjectDetailView({
                         crossOrigin="anonymous"
                         className="w-full rounded-xl border border-line bg-black"
                       >
-                        <SubTracks subtitles={project.subtitles} defaultLang={lang} />
+                        {/* 用该语种成片**自己那套**字幕:两条成片的每页画面时长不同
+                            (中英配音长短不同),拿主片那套挂过来末页会超出片长永不显示。
+                            老作品没有 track_subtitles 时回落主片那套——不完美但比没有强。 */}
+                        <SubTracks
+                          subtitles={project.track_subtitles?.[lang] ?? project.subtitles}
+                          defaultLang={lang}
+                        />
                       </video>
                       <a href={url} download className={ghostBtn}>
                         下载{label}成片
