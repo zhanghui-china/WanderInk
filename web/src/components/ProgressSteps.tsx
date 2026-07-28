@@ -1,3 +1,4 @@
+import { BGM_NOTE } from '../bgm'
 import { CardHeadInline } from './decor'
 import { GeneratingBars } from './GeneratingBars'
 import { STAGES } from '../stages'
@@ -204,6 +205,12 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
           const pageProgress =
             counter && counter[1] > 0 ? `${counter[0]}/${counter[1]} ${counter[2]}` : null
 
+          // 配乐没有独立环节:它在 s5_audio 里与逐页 TTS 并行跑,所以状态挂在「配音」这一行。
+          // 刻意**不**复用上面 counters 那张表——那个只在 isCurrent(正在跑)时显示,而配乐
+          // 结果恰恰是跑完之后才是主要观看时机。老作品没有这个键 → 查表落空 → 什么都不渲染
+          //(不显示比瞎猜成"未配乐"好)。
+          const bgm = s.key === 's5' ? BGM_NOTE[project.status['bgm'] ?? ''] : undefined
+
           return (
             <li key={s.key} className="group relative flex items-center gap-3">
               <span
@@ -218,6 +225,14 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
                 <span className={`text-[9px] tracking-[2px] ${c.sub}`}>{s.sub}</span>
                 {pageProgress && (
                   <span className="text-xs tabular-nums text-cinnabar">{pageProgress}</span>
+                )}
+                {bgm && (
+                  <span
+                    title={bgm.text}
+                    className={`text-xs ${bgm.alarm ? 'text-alarm' : 'text-muted'}`}
+                  >
+                    ♪ {bgm.short}
+                  </span>
                 )}
               </span>
               {timeText && <span className="text-xs tabular-nums text-muted">{timeText}</span>}
