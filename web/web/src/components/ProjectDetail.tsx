@@ -517,7 +517,7 @@ export function ProjectDetailView({
         <UploadDialog
           title="更换配音音色"
           glyph="音"
-          hint="念一段 5–20 秒的话,系统会克隆这个音色重新配音。已生成的配音会作废。"
+          hint="念一段 5–20 秒的话,或上传一段 wav / mp3。系统会克隆这个音色重新配音,已生成的配音会作废。"
           picker={
             <VoiceRecorder
               onPicked={(b, f) => setVoicePicked({ blob: b, filename: f })}

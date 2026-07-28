@@ -36,10 +36,14 @@ export function VoiceRecorder({
   const [blocked] = useState(micBlockedReason)
   const [recording, setRecording] = useState(false)
   const [elapsed, setElapsed] = useState(0)
-  const [preview, setPreview] = useState<{ url: string; seconds: number } | null>(null)
+  // name 只有"上传文件"这一路有值;seconds=0 表示读不出时长(不拦,交给后端判)
+  const [preview, setPreview] = useState<
+    { url: string; seconds: number; name?: string } | null
+  >(null)
   const [error, setError] = useState('')
 
   const recRef = useRef<MediaRecorder | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
   // elapsed 同时用 ref 存一份:onstop 是闭包捕获的旧 state,只有 ref 能拿到最新值
   const elapsedRef = useRef(0)
   const urlRef = useRef<string | null>(null)
@@ -115,12 +119,85 @@ export function VoiceRecorder({
   }
 
 
+  /** 本地读时长:纯粹为了在上传前把"这文件多长"告诉用户。读不出返回 0——
+   *  元数据缺失的文件不少见,这里不拦,后端的 probe_duration_ms 才是判据。 */
+  function probeSeconds(url: string): Promise<number> {
+    return new Promise((resolve) => {
+      const a = new Audio()
+      a.preload = 'metadata'
+      a.onloadedmetadata = () => resolve(Number.isFinite(a.duration) ? a.duration : 0)
+      a.onerror = () => resolve(0)
+      a.src = url
+    })
+  }
+
+  async function takeFile(file: File | undefined) {
+    if (!file) return
+    setError('')
+    // 录音与上传互斥:选了文件就把录音那份丢掉,免得两个来源都有值、不知道用哪个
+    if (recording) recRef.current?.stop()
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current)   // 换一次 revoke 一次(同 ImagePicker)
+    const url = URL.createObjectURL(file)
+    urlRef.current = url
+    const seconds = await probeSeconds(url)
+    if (seconds && seconds < MIN_SECONDS) {
+      // 前端这层不是闸门(后端 MIN_VOICE_MS 才是),只是省用户一次白传和一趟往返
+      URL.revokeObjectURL(url)
+      urlRef.current = null
+      setPreview(null)
+      setError(`这段音频只有 ${seconds.toFixed(1)} 秒,至少需要 ${MIN_SECONDS} 秒才能克隆出像的音色`)
+      return
+    }
+    setPreview({ url, seconds, name: file.name })
+    // filename 与 blob 分开传:File 本身就带 name,但契约统一成显式传,与录音那路一致
+    onPicked(file, file.name, url)
+  }
+
   const pct = Math.min(100, (elapsed / MAX_SECONDS) * 100)
+
+  // 文件上传入口。**blocked 分支也必须有它**:getUserMedia 需要安全上下文,
+  // 而线上是内网 HTTP 直连,浏览器会直接拒掉麦克风——那种部署下上传是唯一的出路。
+  const fileInput = (
+    <input
+      ref={fileRef}
+      type="file"
+      accept="audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,.wav,.mp3,.m4a"
+      className="hidden"
+      onChange={(e) => {
+        void takeFile(e.target.files?.[0])
+        e.target.value = ''   // 清空,否则连着选同一个文件不会再触发 change
+      }}
+    />
+  )
+  const uploadBtn = (
+    <button
+      type="button"
+      disabled={disabled || recording}
+      onClick={() => fileRef.current?.click()}
+      className="shrink-0 rounded-lg border border-line bg-white/60 px-3 py-1.5 text-xs text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      上传文件
+    </button>
+  )
 
   if (blocked) {
     return (
-      <div className="rounded-lg border border-line bg-white/40 px-3 py-4 text-center text-[11px] text-muted">
-        {blocked}
+      <div className="rounded-lg border border-line bg-white/40 p-3">
+        <div className="text-[11px] text-muted">{blocked}</div>
+        <div className="mt-2 flex items-center gap-2">
+          {uploadBtn}
+          <span className="min-w-0 flex-1 text-[11px] text-muted">
+            {preview ? preview.name : `可改为上传一段 ${MIN_SECONDS}–${MAX_SECONDS} 秒的 wav / mp3`}
+          </span>
+        </div>
+        {preview && <audio src={preview.url} controls className="mt-2 h-8 w-full" />}
+        {preview && preview.seconds > MAX_SECONDS && (
+          <div className="mt-1 text-[11px] text-cinnabar">
+            这段有 {preview.seconds.toFixed(0)} 秒,将只使用前 {MAX_SECONDS} 秒
+          </div>
+        )}
+        {error && <div className="mt-2 text-[11px] text-alarm">{error}</div>}
+        {fileInput}
       </div>
     )
   }
@@ -141,6 +218,7 @@ export function VoiceRecorder({
         >
           {recording ? '■' : '●'}
         </button>
+        {uploadBtn}
         <div className="min-w-0 flex-1">
           {recording ? (
             <>
@@ -160,23 +238,32 @@ export function VoiceRecorder({
           ) : preview ? (
             <div className="flex items-center gap-2">
               <audio src={preview.url} controls className="h-8 min-w-0 flex-1" />
-              <span className="shrink-0 tabular-nums text-[11px] text-muted">
-                {preview.seconds.toFixed(0)}s
+              <span className="shrink-0 truncate tabular-nums text-[11px] text-muted">
+                {preview.name ? `${preview.name} · ` : ''}
+                {preview.seconds ? `${preview.seconds.toFixed(0)}s` : '时长未知'}
               </span>
             </div>
           ) : (
             <div className="text-[11px] text-muted">
-              点左侧按钮开始录音,念一段 {MIN_SECONDS}–{MAX_SECONDS} 秒的话即可
+              点红色按钮录一段 {MIN_SECONDS}–{MAX_SECONDS} 秒的话,或「上传文件」选一个 wav / mp3
             </div>
           )}
         </div>
       </div>
       {error && <div className="mt-2 text-[11px] text-alarm">{error}</div>}
-      {preview && !recording && (
-        <div className="mt-2 text-[11px] text-muted">
-          试听满意后点下方按钮上传;不满意可再点一次麦克风重录。
+      {preview && !recording && preview.seconds > MAX_SECONDS && (
+        // 后端的 -t 20 是硬截断、取的是**前** 20 秒。上传一首歌只用开头 20 秒会很意外,
+        // 所以在这里明说,而不是让服务端悄悄切掉。
+        <div className="mt-2 text-[11px] text-cinnabar">
+          这段有 {preview.seconds.toFixed(0)} 秒,将只使用前 {MAX_SECONDS} 秒
         </div>
       )}
+      {preview && !recording && (
+        <div className="mt-2 text-[11px] text-muted">
+          试听满意后点下方按钮上传;不满意可重录或换一个文件。
+        </div>
+      )}
+      {fileInput}
     </div>
   )
 }
