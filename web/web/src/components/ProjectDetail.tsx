@@ -395,7 +395,16 @@ export function ProjectDetailView({
               + 插入首页
             </button>
           )}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {/* auto-rows-fr:容器高度不定时 1fr 会把**所有行**拉到最高那一行的高度,这是"全部
+              等高"的标准做法,不必用 JS 量高度。Grid 默认就 stretch,所以同一行内本来已经等高;
+              参差只出在行与行之间——驱动是「画面」「旁白」的折行数(实测单个作品内 28~105 字)。
+              has-[textarea]:auto-rows-auto:任一卡片展开时退回自动行高,否则一张卡进编辑态会把
+              整片一起撑高。用 :has() 而不是把 editing 状态上提到父层,是因为全文 5 处 <textarea>
+              都只在展开态出现(PageCard 2 处、TrackRow 1 处在 {editing ? ...} 内,InsertPageForm
+              2 处只在插页表单打开时渲染),判据精确等价且零 prop 改动,还顺带覆盖了译文编辑与
+              插页表单这两种同样会撑高的情形。:has() 需 Chrome 105+/Safari 15.4+/Firefox 121+,
+              老浏览器上这条不生效 → 编辑时仍等高,是降级不是损坏。 */}
+          <div className="grid grid-cols-1 auto-rows-fr gap-4 has-[textarea]:auto-rows-auto sm:grid-cols-2">
             {insertAfter === 0 && (
               <InsertPageForm
                 projectId={project.project_id}
