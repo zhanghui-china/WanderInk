@@ -1,3 +1,4 @@
+import type { BuildInfo } from './version'
 import type {
   AppConfigInput,
   AppConfigView,
@@ -82,6 +83,9 @@ export const api = {
   me: () => fetch('/api/me', CREDS).then((r) => j<{ username: string; is_admin: boolean }>(r)),
 
   meta: () => fetch('/api/meta', CREDS).then((r) => j<Meta>(r)),
+
+  // 后端构建标识。免鉴权,登录页之前就能拉(用来和前端 __BUILD__ 比对是否只部署了一半)
+  version: () => fetch('/api/version', CREDS).then((r) => j<BuildInfo>(r)),
 
   list: () => fetch('/api/projects', CREDS).then((r) => j<ProjectSummary[]>(r)),
 

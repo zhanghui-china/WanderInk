@@ -40,6 +40,7 @@ from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s5t_translate, s6_compose)
 from shanhai.loras import LORA_PRESETS
 from shanhai.styles import STYLE_PRESETS
+from shanhai.version import build_info
 
 # 可产出的附加语种轨(主语言中文不在其中,它走原有流水线)。加一门语言只需扩 s5t_translate.LANGUAGES。
 TRACK_LANGS = tuple(s5t_translate.LANGUAGES)
@@ -1254,6 +1255,19 @@ def revoice_cell_track(project_id: str, index: int, lang: str,
             raise HTTPException(400, str(e)) from e
         store.save(p)
     return _serialize(p)
+
+
+@app.get("/api/version")
+def version() -> dict:
+    """当前部署的构建标识。**刻意免鉴权**,两个理由:
+    ①部署脚本要靠 curl 它自证"线上正在跑的进程"确实是刚传上去的那一版——原先
+      docs/ops-dgx.md 的验证只有 curl -w '%{http_code}',证明不了任何事;
+    ②前端要在登录页之前就拿到它(App.tsx 的 `if (!user) return <LoginPage/>` 是提前返回)。
+    泄露面仅一个 commit id,内网+隧道的内部工具,不是凭据。
+
+    ⚠️ 位置有讲究:必须声明在文件末尾那个 app.mount("/", StaticFiles(html=True)) **之前**,
+    那是兜底 catch-all,写在它后面的路由永远命中不到。"""
+    return build_info()
 
 
 @app.get("/api/meta")

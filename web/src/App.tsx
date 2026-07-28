@@ -7,12 +7,14 @@ import { ProjectList } from './components/ProjectList'
 import { QueuePanel } from './components/QueuePanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { InkScape, Seal } from './components/decor'
+import { type BuildInfo, fmtBuild, isDrifted } from './version'
 import type { Meta, ProjectDetail, ProjectSummary } from './types'
 
 const ACTIVE = new Set(['queued', 'running'])
 
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null)
+  const [backendBuild, setBackendBuild] = useState<BuildInfo | null>(null)
   const [list, setList] = useState<ProjectSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(
     () => new URLSearchParams(window.location.search).get('project'),
@@ -42,6 +44,12 @@ export default function App() {
       })
       .catch(() => setUser(null))
       .finally(() => setAuthChecked(true))
+  }, [])
+
+  // 后端构建标识:免鉴权端点,故意**不**放进下面那个 `if (!user) return` 的 effect——
+  // 前后端版本比对与登录状态无关,拉一次就够(部署期间不会变)。
+  useEffect(() => {
+    api.version().then(setBackendBuild).catch(() => {})
   }, [])
 
   // 已登录才加载表单枚举与作品列表
@@ -141,6 +149,8 @@ export default function App() {
   const activeCount = list.filter((p) => ACTIVE.has(p.pipeline)).length
 
   if (!authChecked) return null // 登录态未知前先不渲染,避免闪现登录页
+  const drifted = isDrifted(__BUILD__, backendBuild)
+
   if (!user) return <LoginPage onLoggedIn={onLoggedIn} />
 
   return (
@@ -162,6 +172,14 @@ export default function App() {
                   WanderInk
                 </span>
                 <span className="font-brush text-base text-gold-pale">拾遗</span>
+                <span
+                  title={drifted ? '前后端版本不一致,可能只部署了一半' : `构建于 ${__BUILD__.stamped_at || '未知时间'}`}
+                  className={`rounded-full px-2 py-0.5 text-[10px] tabular-nums ${
+                    drifted ? 'bg-alarm/80 text-rice' : 'bg-rice/10 text-gold-pale/70'
+                  }`}
+                >
+                  {fmtBuild(__BUILD__)}
+                </span>
               </div>
               <span className="text-[11px] leading-none tracking-[3px] text-gold-pale/70">
                 景区传说 · 有声连环画
@@ -234,8 +252,18 @@ export default function App() {
       </div>
 
       <div className="meander mt-6 opacity-60" />
-      <div className="pb-8 pt-5 text-center text-[11px] tracking-[3px] text-muted">
+      <div className="pt-5 text-center text-[11px] tracking-[3px] text-muted">
         山 川 入 卷 · 传 说 成 画 —— WanderInk
+      </div>
+      {/* 前后端分两次 rsync,真会漂移(曾经代码传输超时中断而 dist 成功,线上成了新前端+旧后端),
+          所以两个版本号分开列、不一致标红。后端拉不到时(未部署/端点 404)只显示前端那半。 */}
+      <div
+        className={`pb-8 pt-1.5 text-center text-[10px] tabular-nums ${drifted ? 'text-alarm' : 'text-band'}`}
+        title={drifted ? '前后端版本不一致,可能只部署了一半' : undefined}
+      >
+        前端 {fmtBuild(__BUILD__)}
+        {backendBuild && <> · 后端 {fmtBuild(backendBuild)}</>}
+        {drifted && ' · 版本不一致'}
       </div>
     </div>
   )

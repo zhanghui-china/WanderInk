@@ -1846,3 +1846,23 @@ def test_run_step_skips_timing_on_first_noop_without_prior_record(_settings, tmp
     assert "s5_started_at" not in p.status
     assert "s5_finished_at" not in p.status
     assert "s5_running_since" not in p.status       # 进行中标记仍要收干净
+
+
+def test_version_endpoint_is_unauthenticated():
+    # /api/version 刻意免鉴权:部署脚本靠 curl 它自证"线上正在跑的进程"确实是刚传上去的那版
+    # (原先 ops-dgx.md 的验证只有 curl -w '%{http_code}',证明不了任何事),
+    # 前端也要在登录页之前就拿到它。将来谁顺手给它加了 Depends(current_user),这条会炸。
+    api.app.dependency_overrides.clear()          # 去掉本文件 autouse 的"已登录"覆盖
+    r = client.get("/api/version")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == {"build", "sha", "dirty", "stamped_at"}
+    assert isinstance(body["build"], int)
+
+
+def test_version_route_not_swallowed_by_static_catch_all():
+    # api.py 末尾把 web/dist 挂在 "/" 上做 SPA 兜底(html=True)。任何声明在它**之后**的路由
+    # 永远命中不到,只会拿到 index.html。这条守住 /api/version 的声明位置。
+    r = client.get("/api/version")
+    assert r.headers["content-type"].startswith("application/json")
+    assert "<!doctype html" not in r.text.lower()

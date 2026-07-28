@@ -13,9 +13,10 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
+    "@types/node": "^26.1.2",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
     "postcss": "^8.4.39",

@@ -84,7 +84,10 @@ def test_every_api_route_requires_login_except_login_logout():
     # Depends(current_user) 时才生效——若某端点漏加该依赖,override 是空操作,测试仍会全绿。
     # 用反射枚举全部 /api 路由的真实依赖树,而不是硬编码路径清单(硬编码列表本身不会随新端点
     # 增长,起不到兜底作用)。
-    exempt = {("POST", "/api/login"), ("POST", "/api/logout")}
+    # 豁免名单必须逐条有理由,不是"加进来让测试变绿":
+    # login/logout 是登录流程本身;version 是部署脚本的自证端点(curl 无 cookie 也要能拿到,
+    # 且前端在登录页之前就要读它比对前后端版本),泄露面只有一个 commit id。
+    exempt = {("POST", "/api/login"), ("POST", "/api/logout"), ("GET", "/api/version")}
     checked = 0
     for route in api.app.routes:
         path = getattr(route, "path", None)
