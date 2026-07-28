@@ -117,7 +117,7 @@ def test_vtt_has_style_block_and_cue_setting(tmp_path: Path):
     text = out.read_text(encoding="utf-8")
     assert text.startswith("WEBVTT\n\n")
     assert "STYLE" in text and "::cue" in text
-    assert "00:00:00.000 --> 00:00:02.000 line:-2" in text
+    assert "00:00:00.000 --> 00:00:02.000 align:center" in text
 
 
 def test_srt_has_no_style_and_no_cue_setting(tmp_path: Path):
@@ -168,3 +168,10 @@ def test_vtt_font_size_is_reduced_not_enlarged():
     import re
     m = re.search(r"font-size:\s*([\d.]+)em", subtitles._VTT_STYLE)
     assert m and float(m.group(1)) < 1.0, subtitles._VTT_STYLE
+
+
+def test_vtt_cue_is_bottom_aligned_not_lifted():
+    """字幕必须贴着画面底部。曾经写过 `line:-2` 把它往上抬两行,理由是"免得压住画面下沿的
+    落款与水印"——而水印其实画在**右上角**(typeset.overlay_image 的 y=20),下沿是干净的,
+    用户随即反馈"字幕有点高"。这条钉住方向,和 font-size < 1.0em 那条同款用意。"""
+    assert "line:" not in subtitles._VTT_CUE_SETTING, subtitles._VTT_CUE_SETTING

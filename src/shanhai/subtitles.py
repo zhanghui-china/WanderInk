@@ -233,8 +233,17 @@ def _blocks(cues: list[Cue], sep: str, setting: str = "") -> list[str]:
 
 # 网页播放器的字幕排版。用户明确要求"高度调低一点",所以字号是**往下调**的(0.82em)。
 # 第一版实现写成 1.05em、把字号调大了 5%,方向与需求相反,是审计抓出来的。
-# line:-2 把字幕从最底一行往上抬两行,免得压住画面下沿的落款与水印。
-# ⚠️ 只对网页有效:SRT / mov_text 是纯文本格式,带不了任何样式——下载下来用 VLC 看时,
+#
+# 位置:**不写 line**,走 WebVTT 默认的 line:auto——浏览器把字幕贴在底部并自带一小段边距,
+# 也就是 YouTube/Netflix 那种标准位置。
+# ⚠️ 曾经写过 `line:-2`(把字幕往上抬两行),理由写的是"免得压住画面下沿的落款与水印"
+# ——**那个理由是错的**:overlay_image 把水印画在 (宽-文字宽-24, y=20),也就是**右上角**;
+# 底部那段文字绘制包在 `if caption:` 里,而成片走 overlay_layer("") 空 caption、根本不执行。
+# 视频画面的下沿是干净的,当时等于为了躲一个不存在的东西把字幕抬了起来,用户随即反馈"太高"。
+# 也别改成 `line:-1`:负数行号遇到多行 cue 时,规范要求渲染器再做一次"溢出就往上挪"的
+# 重定位,各浏览器表现不一致;默认 auto 本来就把单行/多行两种情况都处理好了。
+#
+# ⚠️ 只对网页有效:SRT / mov_text 是纯文本格式,带不了任何样式与位置——下载下来用 VLC 看时,
 # 字号与位置一律由播放器自己的设置决定,这里改什么都没用。
 _VTT_STYLE = """STYLE
 ::cue {
@@ -243,7 +252,7 @@ _VTT_STYLE = """STYLE
   background: rgba(0, 0, 0, 0.55);
 }
 """
-_VTT_CUE_SETTING = "line:-2 align:center"
+_VTT_CUE_SETTING = "align:center"
 
 
 def build_srt(cues: list[Cue], out: Path) -> None:
