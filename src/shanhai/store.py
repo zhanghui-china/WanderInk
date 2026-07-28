@@ -18,21 +18,26 @@ DEFAULT_ROOT = Path("projects")
 VOICE_SAMPLE_DIRNAME = "_voice_samples"
 
 
-def voice_sample_dir(root: Path = DEFAULT_ROOT) -> Path:
-    return root / VOICE_SAMPLE_DIRNAME
+# ⚠️ 以下几个函数的 root 一律写成 `None` 再在函数体里取 DEFAULT_ROOT,**不能**写成
+# `root: Path = DEFAULT_ROOT`——默认值在函数定义时就求值绑死了,测试里
+# `monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)` 改的是模块属性,对已绑死的默认值
+# 完全无效。那个写法曾让 4 条 api 测试自以为隔离、实际全在往真实 projects/ 里写,
+# 在 DGX 上跑一次 pytest 就往线上作品目录塞了一个假作品 s2fail。
+def voice_sample_dir(root: Path | None = None) -> Path:
+    return (root or DEFAULT_ROOT) / VOICE_SAMPLE_DIRNAME
 
 # project_id 形状校验:仅允许字母数字下划线短横线,堵住路径遍历(../、/、空白等)。
 _PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
-def project_dir(project_id: str, root: Path = DEFAULT_ROOT) -> Path:
+def project_dir(project_id: str, root: Path | None = None) -> Path:
     """project_id 落盘路径的唯一入口:load/save/create 均经此函数,故此处校验一劳永逸。"""
     if not _PROJECT_ID_RE.fullmatch(project_id):
         raise ValueError(f"非法 project_id: {project_id!r}")
-    return root / project_id
+    return (root or DEFAULT_ROOT) / project_id
 
 
-def create_project(scenic_spot: str, root: Path = DEFAULT_ROOT) -> Project:
+def create_project(scenic_spot: str, root: Path | None = None) -> Project:
     p = Project(
         project_id=uuid.uuid4().hex[:8],
         scenic_spot=scenic_spot,
@@ -52,10 +57,10 @@ def atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def save(p: Project, root: Path = DEFAULT_ROOT) -> None:
+def save(p: Project, root: Path | None = None) -> None:
     atomic_write_text(project_dir(p.project_id, root) / "project.json", p.model_dump_json(indent=2))
 
 
-def load(project_id: str, root: Path = DEFAULT_ROOT) -> Project:
+def load(project_id: str, root: Path | None = None) -> Project:
     text = (project_dir(project_id, root) / "project.json").read_text(encoding="utf-8")
     return Project.model_validate_json(text)
