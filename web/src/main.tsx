@@ -2,11 +2,9 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import './index.css'
-import { fmtBuild } from './version'
 
-// 标签页标题带上前端构建号(标签页本来就是前端那一半)。放这里而不是 index.html:
-// vite 的 %VAR% 只替换 env 变量,拿不到 __BUILD__ 这个对象。
-document.title = `WanderInk · 景区传说有声连环画 · ${fmtBuild(__BUILD__)}`
+// 标签页标题里的构建号由 vite.config.ts 的 titleWithBuild 插件在构建期写进 index.html,
+// 不在这里改 document.title —— 那样会有一帧闪烁,且 curl/链接预览看不到。
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

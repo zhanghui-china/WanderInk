@@ -14,9 +14,21 @@ function buildInfo() {
   }
 }
 
+// 构建期把版本写进 <title>。比在 main.tsx 里改 document.title 好三点:无闪烁、
+// curl/链接预览/书签都能看到、不依赖 JS 执行。
+function titleWithBuild() {
+  const b = buildInfo()
+  const tag = b.sha === 'dev' ? 'dev' : `b${b.build}·${b.sha}${b.dirty ? '·dirty' : ''}`
+  return {
+    name: 'title-with-build',
+    transformIndexHtml: (html: string) =>
+      html.replace(/<title>(.*?)<\/title>/, `<title>$1 · ${tag}</title>`),
+  }
+}
+
 // dev 期把 /api 与 /files 代理到 FastAPI 后端(shanhai-web,:8080)
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), titleWithBuild()],
   define: { __BUILD__: JSON.stringify(buildInfo()) },
   server: {
     proxy: {
