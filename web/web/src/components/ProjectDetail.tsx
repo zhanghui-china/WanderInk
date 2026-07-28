@@ -1175,7 +1175,15 @@ function PageCard({
             {pg.scene_ref}
           </span>
         )}
-        <span className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md border border-rice/60 font-brush text-lg text-rice">
+        {/* 页码是这张卡上唯一没有底板的角标,而它钉死在右上角——正是国风水墨最常留白的位置。
+            实测本机 50 张真实漫画页,右上角平均亮度 ≥200 的有 10 张(rice 自身 241),最亮那张
+            246.4 比角标还白;占位态更糟:图框渐变 from-kraft via-rice to-rice-deep 的右上角
+            恰好落在 via-rice 那一档,与旧的 text-rice 一模一样,对比度 1.00:1、整个消失。
+            改成 85% 不透明的宣纸底 + 墨字后与底图彻底解耦,纯黑底图上最差也有 10.7:1。
+            ⚠️ 和同卡另外三个角标(scene_ref/拖拽柄/编辑键,都是 bg-ink/70 深底浅字)配色相反,
+            这是有意的:那三个是**控件**,该浮在画面之上;页码是**内容标签**,该像盖在纸上的印记。
+            描金内环沿用 decor.mountFrame 的 ring-gold 语言,不是新造的样式。 */}
+        <span className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md bg-rice/85 font-brush text-lg text-ink ring-1 ring-inset ring-gold/30">
           {pg.index}
         </span>
         {editable && (
