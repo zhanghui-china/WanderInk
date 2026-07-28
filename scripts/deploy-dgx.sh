@@ -63,13 +63,16 @@ rsync -az --delete --timeout=90 -e "ssh ${SSH_OPTS[*]}" web/dist/ "$HOST:$REMOTE
 
 # ---- 6. 依赖 + 测试(失败即中止,不重启,让旧版继续服务) ----
 say "远端 uv sync + pytest"
-ssh "${SSH_OPTS[@]}" "$HOST" \
-  # ⚠️ `set -o pipefail` 必须写在**远端**这条命令里。本脚本开头的 `set -euo pipefail` 只管
-  # 本机;`pytest | tail -3` 这个管道跑在 ssh 的远端 shell 里,远端没有 pipefail 时退出码取
-  # tail 的(恒 0),ssh 便返回 0,本机 set -e 看到的是"成功"。
-  # 2026-07-28 实测踩到:DGX 上一条测试失败,脚本照样往下重启了服务——
-  # "测试失败即中止、不重启"这个保证当时是假的。
-  "set -o pipefail; export PATH=\$HOME/.local/bin:\$PATH; cd $REMOTE && uv sync -q && uv run pytest -q 2>&1 | tail -3"
+# ⚠️ `set -o pipefail` 必须写在**远端**这条命令里。本脚本开头的 `set -euo pipefail` 只管
+# 本机;`pytest | tail -3` 这个管道跑在 ssh 的远端 shell 里,远端没有 pipefail 时退出码取
+# tail 的(恒 0),ssh 便返回 0,本机 set -e 看到的是"成功"。
+# 2026-07-28 实测踩到:DGX 上一条测试失败,脚本照样往下重启了服务——
+# "测试失败即中止、不重启"这个保证当时是假的。
+# ⚠️⚠️ 注释必须写在这里,**不能**插进 `ssh ... \` 与后面那个字符串之间:续行符后跟注释
+# 会把命令就地截断,ssh 变成"不带命令地登录一次",随后那个字符串被当成可执行文件名。
+# 同一天第二次踩到,所以留这条。
+REMOTE_TEST="set -o pipefail; export PATH=\$HOME/.local/bin:\$PATH; cd $REMOTE && uv sync -q && uv run pytest -q 2>&1 | tail -3"
+ssh "${SSH_OPTS[@]}" "$HOST" "$REMOTE_TEST"
 
 # ---- 7. 重启 ----
 say "重启 shanhai-web"
