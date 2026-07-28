@@ -75,7 +75,31 @@ function stepReady(name: string, project: Detail): boolean {
   return hasPages
 }
 
-const card = 'rounded-2xl border border-band bg-paper p-5 shadow-paper'
+// 图还没出来时的占位。生成期间脉动、文案改成"生成中…",让用户在内容区也看得出在跑
+//(此前三种状态——从没跑过 / 正在为它生图 / 跑失败了——视觉上完全一样)。
+//
+// ⚠️ 只能表达"待生成/生成中"这个**合并态**:S3/S4 都是并发跑的(CONCURRENCY=3),
+// 前端只知道"哪些已经有图",无从得知此刻正在画哪一张。做成"指认某一张正在画"会是
+// 编出来的信息。这不是漏做,是刻意的边界。
+function Placeholder({ text, generating, failed }: {
+  text: string
+  generating: boolean
+  failed?: boolean
+}) {
+  const label = failed ? '生成失败' : generating ? '生成中…' : '未生成'
+  return (
+    <div
+      className={`flex h-full flex-col items-center justify-center gap-1 ${
+        generating && !failed ? 'animate-shy-pulse' : ''
+      }`}
+    >
+      <span className="font-scrawl text-2xl text-band">{text}</span>
+      <span className={`text-[11px] ${failed ? 'text-alarm' : 'text-muted'}`}>{label}</span>
+    </div>
+  )
+}
+
+const card = 'rounded-2xl border border-band bg-paper p-5 shadow-paper' 
 const fieldCls =
   'w-full rounded-lg border border-line bg-white/70 px-2.5 py-1.5 text-[13px] text-ink outline-none transition focus:border-cinnabar focus:bg-white'
 const primaryBtn =
@@ -99,6 +123,7 @@ export function ProjectDetailView({
   const [stepBusy, setStepBusy] = useState<string | null>(null)
   const [trackBusy, setTrackBusy] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [s2Open, setS2Open] = useState(false)
   const [voiceOpen, setVoiceOpen] = useState(false)
   const [voicePicked, setVoicePicked] = useState<{ blob: Blob; filename: string } | null>(null)
   const [voiceBusy, setVoiceBusy] = useState(false)
@@ -151,11 +176,22 @@ export function ProjectDetailView({
     }
   }
 
+  // 「分镜」重跑会作废漫画页/配音/合成(角色三视图不受影响——它依赖剧本不依赖分镜),
+  // 所以单独给它一个三出口弹窗,而不是让用户点完再自己去点三次。其余步骤沿用原确认框。
   async function handleStep(name: string, label: string) {
+    if (name === 's2') {
+      setS2Open(true)
+      return
+    }
     if (!window.confirm(`确定重新执行「${label}」?这会清空之后各步骤的产物。`)) return
+    void doStep(name, false)
+  }
+
+  async function doStep(name: string, cascade: boolean) {
+    setS2Open(false)
     setStepBusy(name)
     try {
-      await api.runStep(project.project_id, name)
+      await api.runStep(project.project_id, name, cascade)
       onChanged()
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e))
@@ -313,6 +349,7 @@ export function ProjectDetailView({
                 key={c.name}
                 c={c}
                 pages={project.pages}
+                generating={generating}
                 projectId={project.project_id}
                 editable={editable}
                 onChanged={onChanged}
@@ -351,6 +388,7 @@ export function ProjectDetailView({
               <Fragment key={pg.index}>
                 <PageCard
                   pg={pg}
+                  generating={generating}
                   projectId={project.project_id}
                   trackLangs={meta?.track_langs ?? []}
                   editable={editable}
@@ -394,6 +432,53 @@ export function ProjectDetailView({
             </span>
           </div>
           <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
+        </div>
+      )}
+      {s2Open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-6"
+          onClick={() => setS2Open(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl border border-band bg-paper p-5 shadow-paper-lg"
+          >
+            <h3 className="font-serif text-sm font-semibold tracking-wide text-ink">
+              重新生成分镜
+            </h3>
+            <p className="mt-2 text-xs text-ink-soft">
+              分镜会被整体重写,已生成的<b>漫画页、配音、成片</b>(含英文版)随之作废,
+              旧的图片与音频文件会被清理。
+              <br />
+              角色三视图<b>不受影响</b>——它依赖剧本,而这一步只换分镜。
+            </p>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button type="button" onClick={() => setS2Open(false)} className={ghostBtn}>
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void doStep('s2', false)}
+                disabled={stepBusy !== null}
+                className={ghostBtn}
+              >
+                只重跑分镜
+              </button>
+              <button
+                type="button"
+                onClick={() => void doStep('s2', true)}
+                disabled={stepBusy !== null}
+                className={primaryBtn}
+              >
+                分镜 + 漫画页 + 配音 + 合成
+              </button>
+            </div>
+            <p className="mt-2 text-right text-[11px] text-muted">
+              选「只重跑分镜」的话,之后需自己依次点「漫画页」「配音」「合成」
+            </p>
+          </div>
         </div>
       )}
       {voiceOpen && (
@@ -520,12 +605,14 @@ function ExportButtons({ project }: { project: Detail }) {
 function CharacterCard({
   c,
   pages,
+  generating,
   projectId,
   editable,
   onChanged,
 }: {
   c: Character
   pages: Page[]
+  generating: boolean
   projectId: string
   editable: boolean
   onChanged: () => void
@@ -632,11 +719,9 @@ function CharacterCard({
     <figure className="overflow-hidden rounded-xl border border-line bg-white/60">
       <div className={`aspect-[3/2] bg-gradient-to-b from-kraft to-rice-deep ${mountFrame}`}>
         {c.image ? (
-          <img src={c.image} alt={c.name} className="h-full w-full object-cover" />
+          <img src={c.image} alt={c.name} className="h-full w-full animate-shy-rise object-cover" />
         ) : (
-          <div className="flex h-full items-center justify-center text-xs text-muted">
-            <span className="font-scrawl text-2xl text-band">未生成</span>
-          </div>
+          <Placeholder text="三视图" generating={generating} />
         )}
         <span className="absolute left-2 top-2 flex gap-1">
           <span className="rounded-full bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
@@ -824,9 +909,7 @@ function TrackRow({
     <div className="space-y-1.5 rounded-lg border border-line bg-white/40 p-2.5">
       <div className="flex items-center gap-2">
         <span className="text-[10px] tracking-[2px] text-muted">{label}</span>
-        {track?.duration_ms ? (
-          <span className="text-[11px] text-muted">配音 {(track.duration_ms / 1000).toFixed(1)}s</span>
-        ) : null}
+        {/* 同上:语种轨这行的「配音 X.Xs」一并去掉,与中文行保持一致 */}
         {editable && !editing && (
           <div className="ml-auto flex gap-1.5">
             <button
@@ -950,6 +1033,7 @@ function InsertPageForm({
 
 function PageCard({
   pg,
+  generating,
   projectId,
   trackLangs,
   editable,
@@ -962,6 +1046,7 @@ function PageCard({
   onInsertAfter,
 }: {
   pg: Page
+  generating: boolean
   projectId: string
   trackLangs: string[]
   editable: boolean
@@ -1078,12 +1163,12 @@ function PageCard({
     >
       <div className={`aspect-[4/3] bg-gradient-to-br from-kraft via-rice to-rice-deep ${mountFrame}`}>
         {pg.image ? (
-          <img src={pg.image} alt={`第 ${pg.index} 页`} className="h-full w-full object-cover" />
+          <img src={pg.image} alt={`第 ${pg.index} 页`}
+               className="h-full w-full animate-shy-rise object-cover" />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-1 text-sm text-muted">
-            <span className="font-scrawl text-3xl text-band">第 {pg.index} 图</span>
-            <span className="text-[11px]">{pg.status}</span>
-          </div>
+          // 此前这里把 pg.status 的英文原样透出(draft/failed),对用户毫无意义
+          <Placeholder text={`第 ${pg.index} 图`} generating={generating}
+                       failed={pg.status === 'failed'} />
         )}
         {pg.scene_ref && (
           <span className="absolute left-2 top-2 rounded-md bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
@@ -1221,9 +1306,8 @@ function PageCard({
             <span className={`rounded-full px-2 py-0.5 tracking-wide ${emotionCls(pg.emotion)}`}>
               {pg.emotion}
             </span>
-            {pg.duration_ms > 0 && (
-              <span className="text-muted">配音 {(pg.duration_ms / 1000).toFixed(1)}s</span>
-            )}
+            {/* 这里原本还有一个「配音 X.Xs」——下面的 <audio controls> 本来就显示时长,
+                重复且占位;用户明确要求去掉。duration_ms 字段仍在用(算成片时间轴),只是不展示。 */}
             {pg.image_gen_ms > 0 && (
               <span className="text-muted">生成 {(pg.image_gen_ms / 1000).toFixed(1)}s</span>
             )}

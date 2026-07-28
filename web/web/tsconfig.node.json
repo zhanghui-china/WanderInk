@@ -1,6 +1,8 @@
 {
   "compilerOptions": {
     "composite": true,
+    // vite.config.ts 读 ../version.json 用到 node:fs / node:url(构建标识注入)
+    "types": ["node"],
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "bundler",

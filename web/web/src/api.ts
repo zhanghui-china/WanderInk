@@ -1,3 +1,4 @@
+import type { BuildInfo } from './version'
 import type {
   AppConfigInput,
   AppConfigView,
@@ -82,6 +83,9 @@ export const api = {
   me: () => fetch('/api/me', CREDS).then((r) => j<{ username: string; is_admin: boolean }>(r)),
 
   meta: () => fetch('/api/meta', CREDS).then((r) => j<Meta>(r)),
+
+  // 后端构建标识。免鉴权,登录页之前就能拉(用来和前端 __BUILD__ 比对是否只部署了一半)
+  version: () => fetch('/api/version', CREDS).then((r) => j<BuildInfo>(r)),
 
   list: () => fetch('/api/projects', CREDS).then((r) => j<ProjectSummary[]>(r)),
 
@@ -202,10 +206,11 @@ export const api = {
       method: 'POST',
     }).then((r) => j<ProjectDetail>(r)),
 
-  runStep: (id: string, name: string) =>
-    fetch(`/api/projects/${id}/steps/${name}`, { ...CREDS, method: 'POST' }).then((r) =>
-      j<{ queued: boolean }>(r)
-    ),
+  // cascade=true 时后端会把该步作废的下游一并跑完(见 api._INVALIDATES),
+  // 前端不需要串行轮询——runStep 是入队语义,前端串会因关标签页断链。
+  runStep: (id: string, name: string, cascade = false) =>
+    fetch(`/api/projects/${id}/steps/${name}${cascade ? '?cascade=true' : ''}`,
+      { ...CREDS, method: 'POST' }).then((r) => j<{ queued: boolean }>(r)),
 
   getConfig: () => fetch('/api/config', CREDS).then((r) => j<AppConfigView>(r)),
 

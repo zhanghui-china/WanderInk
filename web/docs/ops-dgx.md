@@ -74,25 +74,23 @@ curl http://127.0.0.1:8188/system_stats   # ComfyUI 本尊:200 说明它还活�
 
 ## 常见维护场景
 
-**部署新代码**(标准流程,已在 [deploy-dgx.md](deploy-dgx.md) 反复走过,这里只列命令):
+**部署新代码**——用脚本,不要手敲:
 ```bash
-# 本机(Mac)
-rsync -avz --delete \
-  --exclude='.env' --exclude='projects' --exclude='config.json' --exclude='users.json' \
-  --exclude='.venv' --exclude='web/node_modules' --exclude='spike' --exclude='out' --exclude='.git' \
-  -e "ssh -p 14801" ./ huntun@21.tcp.vip.cpolar.cn:~/shanhai/
-# 前端如果改了,本机先 build 再单独 rsync web/dist(DGX 上没装 node_modules/tsgo,不在 DGX 上跑 npm run build)
+scripts/deploy-dgx.sh            # 有在途任务会直接拒绝
+scripts/deploy-dgx.sh --force    # 确实要打断在途任务时才用
+```
+脚本按顺序做八件事:在途闸门 → 打版本戳(`version.json`)→ `npm run build`(把版本烧进 dist)
+→ rsync 代码 → rsync `web/dist` → 远端 `uv sync` + `pytest`(失败即中止**且不重启**,旧版继续服务)
+→ 重启 → **校验 `/api/version` 的 sha 与本次部署一致**。
 
-# DGX
-cd ~/shanhai && ~/.local/bin/uv sync && ~/.local/bin/uv run pytest -q
-systemctl --user restart shanhai-web
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/   # 期待 200
-```
-部署前务必先确认没有在途生成任务(重启会打断正在跑的管线):
-```bash
-cd ~/shanhai && grep -l '"pipeline": "running"\|"pipeline": "queued"' projects/*/project.json 2>/dev/null
-```
-有输出说明有活跃任务,等它跑完(或者和用户确认可以打断)再重启。
+两条为什么必须是脚本而不是手敲的记录:
+- 2026-07-28 手敲部署时,在途检查确实输出了「在途: 1」,但它和 scp/重启串在同一条命令链里、
+  没有拦截能力,结果打断了一个正在跑 S4 的作品。**闸门必须能让流程退出。**
+- 原先的验证只有 `curl -w '%{http_code}'`,200 只证明服务活着,不证明跑的是刚传上去的代码。
+  最后那步 sha 比对才算数——历史上发生过 rsync 代码超时中断而 dist 成功,线上成了新前端 + 旧后端。
+
+前端固定在本机构建(DGX 上没有 node_modules/tsgo),脚本已包含这一步。
+页脚会同时显示前端与后端的构建号,不一致时标红——线上到底部署成没成,看一眼页脚即可。
 
 **DGX 整机重启后的兜底**(即便 linger 已开,出问题时的手动补救):
 ```bash

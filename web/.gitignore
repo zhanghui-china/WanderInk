@@ -17,3 +17,6 @@ __pycache__/
 .venv/
 config.json
 users.json
+
+# 构建标识,由 scripts/stamp-version.py 生成。不能提交:内容依赖 HEAD,提交它就永远差一个提交
+version.json

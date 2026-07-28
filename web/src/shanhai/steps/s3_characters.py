@@ -81,6 +81,22 @@ def _draw_flags(characters: list[CharacterCard], workdir: Path) -> list[bool]:
     return flags
 
 
+def turnaround_progress(project: Project, workdir: Path) -> tuple[int, int]:
+    """(已出三视图数, 本轮该出的总数),供前端显示 S3 的实时进度。
+
+    分母**不是**角色总数:只有前 MAX_TURNAROUND 个主角、以及传了参考图的角色才会画,
+    还有 MAX_TURNAROUND_TOTAL 的硬顶。拿总数当分母会永远停在 4/8 那样卡住不动。
+    刻意复用 _draw_flags 而不是在 api 层另算一遍——同一个判断写两份必然漂移,
+    这正是 _INVALIDATES 那次的教训。"""
+    if project.script is None:
+        return 0, 0
+    chars = project.script.characters
+    flags = _draw_flags(chars, workdir)
+    total = sum(flags)
+    done = sum(1 for c, f in zip(chars, flags) if f and c.turnaround_image)
+    return done, total
+
+
 def _process_character(c: CharacterCard, llm: LLMClient, image: ImageClient,
                        style: str, workdir: Path, char_dir: Path, image_size: str,
                        should_draw: bool) -> None:

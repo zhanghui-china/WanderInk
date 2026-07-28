@@ -59,3 +59,18 @@ def test_concurrent_save_no_torn_write(tmp_path):
     assert loaded.scenic_spot.startswith("景点")
     # 唯一临时名在各自 replace 后均被消费,不留残余 .tmp
     assert not list(store.project_dir(p.project_id, root=tmp_path).glob("*.tmp"))
+
+
+def test_default_root_is_late_bound(tmp_path, monkeypatch):
+    """monkeypatch DEFAULT_ROOT 必须对所有 store 函数生效——它们的 root 默认值若写成
+    `root: Path = DEFAULT_ROOT`,会在函数定义时求值绑死,monkeypatch 改模块属性完全无效。
+    那个写法曾让几条 api 测试自以为隔离、实际往真实 projects/ 里写,在 DGX 上跑一次
+    pytest 就在线上作品目录里留下了一个假作品。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("测试景点")
+    assert (tmp_path / p.project_id / "project.json").exists()
+    assert store.project_dir(p.project_id) == tmp_path / p.project_id
+    assert store.voice_sample_dir().parent == tmp_path
+    p.scenic_spot = "改过"
+    store.save(p)
+    assert store.load(p.project_id).scenic_spot == "改过"

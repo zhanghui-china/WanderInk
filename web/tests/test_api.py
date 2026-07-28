@@ -139,7 +139,9 @@ def test_serialize_builds_urls():
     assert d["script_title"] == "白蛇传"
     assert d["pages"][0]["silent"] is False              # 真人解说页非静音
     assert d["deliverable"] is True                      # 有成图页 → 可交付
-    assert d["content_summary"] == {"total": 1, "imaged": 1, "narrated": 1, "silent": 0}
+    # 角色维度与页维度并列吐出:前端进度格靠它显示 S3 的 "N/M 位角色"(此前只有 S4 有数字)
+    assert d["content_summary"] == {"total": 1, "imaged": 1, "narrated": 1, "silent": 0,
+                                    "characters_imaged": 1, "characters_total": 1}
 
 
 def test_serialize_appends_version_to_existing_files(tmp_path, monkeypatch):
@@ -247,7 +249,8 @@ def test_serialize_marks_silent_and_non_deliverable():
                                                             image="", audio="")]
     d = api._serialize(p)
     assert d["pages"][0]["silent"] is True
-    assert d["content_summary"] == {"total": 2, "imaged": 1, "narrated": 0, "silent": 1}
+    assert d["content_summary"] == {"total": 2, "imaged": 1, "narrated": 0, "silent": 1,
+                                    "characters_imaged": 0, "characters_total": 0}
     assert d["deliverable"] is True                      # 至少一页成图
 
 
@@ -813,9 +816,11 @@ def test_run_step_prelude_exception_falls_to_error_not_stuck_queued():
     assert "steppreludeid" not in api._CANCELLED
 
 
-def test_pipeline_records_step_and_total_timing():
+def test_pipeline_records_step_and_total_timing(tmp_path: Path):
     # 每步开始/结束都要落 started_at/elapsed_s,整体落 pipeline_started_at/pipeline_finished_at,
     # 供前端时间线展示每步及总耗时。
+    # ⚠️ s3~s6 的 mock 必须真的往 workdir 里写文件,否则会被空跑守卫判成"什么都没做"、
+    # 计时键一个不写(守卫只看产物指纹)。s0/s1/s2 不设守卫,无所谓。
     from unittest.mock import MagicMock
     p = Project(project_id="timingid", scenic_spot="雷峰塔")
     mock_settings = MagicMock()
@@ -828,6 +833,7 @@ def test_pipeline_records_step_and_total_timing():
     }
     with patch("shanhai.api.store.load", return_value=p), \
          patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
          patch("shanhai.api.resolve_stage_clients", return_value=(settings, clients)), \
          patch("shanhai.api.s0_legend") as s0, \
          patch("shanhai.api.s1_script") as s1, \
@@ -837,8 +843,11 @@ def test_pipeline_records_step_and_total_timing():
          patch("shanhai.api.s5_audio") as s5, \
          patch("shanhai.api.s6_compose") as s6:
         s0.from_text.return_value = p
-        for m in (s1, s2, s3, s4, s5, s6):
-            m.run.return_value = p
+        for i, m in enumerate((s1, s2, s3, s4, s5, s6)):
+            def _write(*_args, _n=i, **_kwargs):
+                (tmp_path / f"artifact_{_n}.bin").write_bytes(b"x")   # 真的产出文件,指纹随之变化
+                return p
+            m.run.side_effect = _write
         api._pipeline("timingid", runtime_config.AppConfig(), "自备故事")
 
     assert p.status["pipeline"] != "running"   # 已跑到终态(mock 未产出可交付内容,具体终态值不是本测试重点)
@@ -894,14 +903,20 @@ def test_pipeline_use_hermes_agent_false_falls_back_to_global_llm():
 
 
 @patch("shanhai.api.Settings")
-def test_run_step_records_step_timing(_settings):
+def test_run_step_records_step_timing(_settings, tmp_path: Path):
+    # ⚠️ mock 必须真的往 workdir 里写文件,否则会被空跑守卫判成"什么都没做"、三个计时键
+    # 一字不写,断言全空(守卫只看产物指纹,见 _mark_step_elapsed)。
     from unittest.mock import MagicMock
     p = Project(project_id="stepTimingId", scenic_spot="雷峰塔")
     with patch("shanhai.api.store.load", return_value=p), \
          patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
          patch("shanhai.api._clients", return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
          patch("shanhai.api.s6_compose") as s6:
-        s6.run.return_value = p
+        def _write_mp4(*_args, **_kwargs):
+            (tmp_path / "final.mp4").write_bytes(b"mp4")
+            return p
+        s6.run.side_effect = _write_mp4
         api._run_step("stepTimingId", "s6", runtime_config.AppConfig())
 
     assert p.status["s6_started_at"]
@@ -1044,9 +1059,10 @@ def test_run_step_marks_cancelled_when_flag_set_during_step():
     assert "cancelmidstep" not in api._CANCELLED   # 标记已被消费,不残留污染下次重跑
 
 
-def test_run_step_cascades_clears_downstream_status():
+def test_run_step_cascades_clears_downstream_status(tmp_path: Path):
     # 联动诚实化:重跑上游 s4 使其下游 s5/s6 产物过期,须级联清掉下游 status 键(含计时键),
     # 避免残留"假完成"标记;本环节 s4 自身与其上游不被级联清除,output 因上游重跑清空。
+    # ⚠️ mock 必须真的写文件:空跑守卫判定"本轮无产出"时会跳过级联(什么都没重做、下游就没过期)。
     from unittest.mock import MagicMock
 
     from shanhai.config import Settings
@@ -1058,11 +1074,13 @@ def test_run_step_cascades_clears_downstream_status():
     with patch("shanhai.api.resolve_settings", return_value=fake), \
          patch("shanhai.api.store.load", return_value=p), \
          patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
          patch("shanhai.api._clients",
                return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
          patch("shanhai.api.s4_pages") as s4:
         def _run_s4(*_args, **_kwargs):
             p.status["s4"] = "done"   # 模拟真实 s4_pages.run() 跑完后写回终态(自身状态由 run() 负责)
+            (tmp_path / "page_01.png").write_bytes(b"png")   # 真的产出文件,指纹随之变化
             return p
         s4.run.side_effect = _run_s4
         api._run_step("cascadeId", "s4", runtime_config.AppConfig())
@@ -1710,3 +1728,141 @@ def test_delete_reference_unknown_character_404(tmp_path: Path):
          patch("shanhai.api.store.project_dir", return_value=tmp_path):
         r = client.delete("/api/projects/refid/characters/不存在的角色/reference")
     assert r.status_code == 404
+
+
+@patch("shanhai.api.Settings")
+def test_s2_rerun_keeps_s3_and_purges_stale_artifacts(_settings, tmp_path: Path):
+    """重跑分镜:S3 保留、S4~S6 与多语种作废、旧的逐页产物与成片被删、三视图留着。
+
+    S3 依赖的是 project.script,而 S2 换的是 storyboard——剧本没动,三视图仍然有效。
+    按 _STEP_NAMES 位置级联会把 S3 一起作废,而它的图还在、locked 还是 True,用户真去点
+    S3 时会被空跑守卫判成没干活,那格的历史耗时就此永久丢失。
+    """
+    from unittest.mock import MagicMock
+    from shanhai.config import Settings as RealSettings
+    p = Project(project_id="s2cascade", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    p.output = {"mp4": "projects/s2cascade/output/final.mp4"}
+    p.status = {"s3": "done", "s3_elapsed_s": "120.0", "s3_finished_at": "2020-01-01T00:00:00+00:00",
+                "s4": "done", "s5": "done", "s6": "done",
+                "s5t_en": "done", "s5_en": "done", "track_en": "done",
+                "track_en_elapsed_s": "489.9"}
+    for sub, name in (("pages", "page_01.png"), ("audio", "page_01.mp3"),
+                      ("output", "final.mp4"), ("output", "final.en.vtt"),
+                      ("characters", "白娘子.png")):
+        (tmp_path / sub).mkdir(exist_ok=True)
+        (tmp_path / sub / name).write_bytes(b"x")
+
+    fake = RealSettings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s2_storyboard") as s2:
+        def _run_s2(*_a, **_k):
+            p.storyboard = [_imaged_page()]   # 整体替换,模拟真实行为
+            p.status["s2"] = "done"
+            return p
+        s2.run.side_effect = _run_s2
+        api._run_step("s2cascade", "s2", runtime_config.AppConfig())
+
+    assert p.status["s3"] == "done"                     # S3 不被误伤
+    assert p.status["s3_elapsed_s"] == "120.0"          # 它的历史耗时也留着
+    for k in ("s4", "s5", "s6", "s5t_en", "s5_en", "track_en", "track_en_elapsed_s"):
+        assert k not in p.status, f"{k} 应被作废"
+    assert p.output == {}
+    # 旧的逐页产物与成片(含字幕)已删,角色三视图保留
+    assert not (tmp_path / "pages" / "page_01.png").exists()
+    assert not (tmp_path / "audio" / "page_01.mp3").exists()
+    assert not (tmp_path / "output" / "final.en.vtt").exists()
+    assert (tmp_path / "characters" / "白娘子.png").exists()
+
+
+@patch("shanhai.api.Settings")
+def test_s2_failure_does_not_delete_anything(_settings, tmp_path: Path):
+    """S2 抛异常时**一个文件都不能删**。
+
+    s2_storyboard.run 会在 LLM 返回空分镜时 raise;那一刻旧产物还是用户仅有的东西,
+    先删后跑等于让一次失败的重生成把成片也赔进去。这条最容易写反,故单独守着。
+    """
+    from unittest.mock import MagicMock
+    from shanhai.config import Settings as RealSettings
+    p = Project(project_id="s2fail2", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    p.output = {"mp4": "projects/s2fail2/output/final.mp4"}
+    for sub, name in (("pages", "page_01.png"), ("output", "final.mp4")):
+        (tmp_path / sub).mkdir(exist_ok=True)
+        (tmp_path / sub / name).write_bytes(b"x")
+
+    fake = RealSettings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
+         patch("shanhai.api._save_error"), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s2_storyboard") as s2:
+        s2.run.side_effect = ValueError("分镜为空,S2 未产出任何页")
+        api._run_step("s2fail2", "s2", runtime_config.AppConfig())
+
+    assert (tmp_path / "pages" / "page_01.png").exists()
+    assert (tmp_path / "output" / "final.mp4").exists()
+
+
+def test_invalidates_table_covers_every_step():
+    """依赖表必须与 _STEP_NAMES 同步,否则将来加环节时会静默漏配级联。"""
+    assert set(api._INVALIDATES) == set(api._STEP_NAMES)
+    for name, downstream in api._INVALIDATES.items():
+        assert name not in downstream            # 不作废自己
+        for d in downstream:
+            assert d in api._STEP_NAMES
+
+
+@patch("shanhai.api.Settings")
+def test_run_step_skips_timing_on_first_noop_without_prior_record(_settings, tmp_path: Path):
+    # 「石坊温热」s3=0.0秒 的回归测试:计时键被级联清空之后的**首次**空跑,此前没有耗时记录,
+    # 老守卫的 `elapsed_s in status` 前置条件因此不成立、被整个绕过,把 0.0 写了进去
+    # (4 个三视图早就在盘上、一个没重画,真实 0.0016 秒),前端显示「0秒」、总耗时少算一环节。
+    # 守卫只看指纹即可:没产出任何文件的运行,不管此前有没有记录都不该落一个假耗时。
+    from unittest.mock import MagicMock
+    p = Project(project_id="noopFirstId", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    p.status = {}                                   # 计时键已被清空,此前无任何记录
+    (tmp_path / "audio").mkdir()
+    (tmp_path / "audio" / "page_01.mp3").write_bytes(b"mp3")   # 产物已在盘上,本轮不会被重写
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s5_audio") as s5:
+        s5.run.return_value = p                     # 原样返回:全部子项幂等跳过,无新产物
+        api._run_step("noopFirstId", "s5", runtime_config.AppConfig())
+
+    assert "s5_elapsed_s" not in p.status           # 不写假的 0.0 秒,这一行留空
+    assert "s5_started_at" not in p.status
+    assert "s5_finished_at" not in p.status
+    assert "s5_running_since" not in p.status       # 进行中标记仍要收干净
+
+
+def test_version_endpoint_is_unauthenticated():
+    # /api/version 刻意免鉴权:部署脚本靠 curl 它自证"线上正在跑的进程"确实是刚传上去的那版
+    # (原先 ops-dgx.md 的验证只有 curl -w '%{http_code}',证明不了任何事),
+    # 前端也要在登录页之前就拿到它。将来谁顺手给它加了 Depends(current_user),这条会炸。
+    api.app.dependency_overrides.clear()          # 去掉本文件 autouse 的"已登录"覆盖
+    r = client.get("/api/version")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == {"build", "sha", "dirty", "stamped_at"}
+    assert isinstance(body["build"], int)
+
+
+def test_version_route_not_swallowed_by_static_catch_all():
+    # api.py 末尾把 web/dist 挂在 "/" 上做 SPA 兜底(html=True)。任何声明在它**之后**的路由
+    # 永远命中不到,只会拿到 index.html。这条守住 /api/version 的声明位置。
+    r = client.get("/api/version")
+    assert r.headers["content-type"].startswith("application/json")
+    assert "<!doctype html" not in r.text.lower()
