@@ -200,18 +200,27 @@ def run(project: Project, workdir: Path, lang: str = DEFAULT_LANG) -> Project:
     ffmpeg.sh(ffmpeg.xfade_concat_cmd(clips, durations, merged))
     final = out_dir / f"final{suffix}.mp4"
     bgm = Path(project.bgm) if project.bgm else None
+    # 配乐增益由**实测响度**算出,而不是固定系数:ACE-Step 出的曲子响度跨度实测 12 dB
+    #(-21.4 / -11.5 / -9.4 LUFS),盲乘同一个 volume 会让最响那首只比人声低 4 dB。
+    # 测量放在这里而不是 finalize_cmd 里:后者是纯函数、只负责拼命令,不该自己跑 ffmpeg。
+    gain = 0.0
+    if bgm:
+        lufs = ffmpeg.measure_lufs(bgm)          # 只量一次,别在 print 里再量一遍
+        gain = ffmpeg.bgm_gain_db(lufs)
+        print(f"配乐响度 {lufs:.1f} LUFS → 增益 {gain:+.1f} dB"
+              f"(目标:比人声低 {ffmpeg.BGM_BELOW_VOICE_DB:g} dB)")
     # 字幕不吃这份 durations:那是本轮 lang 的画面时长,每个语种要按自己的时间轴算
     subs = _write_subtitles(project, workdir, out_dir, lang)
     if subs:
         # 先做 BGM/响度,再单独一趟 copy 封字幕轨(见 ffmpeg.mux_subtitles_cmd 的取舍说明)
         staged = out_dir / f"final{suffix}.nosub.mp4"
-        ffmpeg.sh(ffmpeg.finalize_cmd(merged, bgm, staged))
+        ffmpeg.sh(ffmpeg.finalize_cmd(merged, bgm, staged, gain))
         # 本轮语种的那条轨置默认:英文版就该默认显示英文字幕
         ffmpeg.sh(ffmpeg.mux_subtitles_cmd(staged, subs, final,
                                            default_lang=SUB_LANG_TAGS.get(lang, lang)))
         staged.unlink(missing_ok=True)
     else:
-        ffmpeg.sh(ffmpeg.finalize_cmd(merged, bgm, final))
+        ffmpeg.sh(ffmpeg.finalize_cmd(merged, bgm, final, gain))
     project.output["mp4" if is_main else f"mp4_{lang}"] = str(final)
     # 诚实状态:content_cells 只挑 confirmed 且图/音齐备的页,少于总页数说明有页因上游
     # (通常是 S4)失败被跳过——不能无条件标 done,否则这一格看着"完成"会盖过 S4 的 partial。

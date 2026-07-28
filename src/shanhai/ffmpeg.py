@@ -1,3 +1,4 @@
+import re
 import subprocess
 from pathlib import Path
 
@@ -52,6 +53,40 @@ def probe_duration_ms(path: Path) -> int:
     if not out or out == "N/A":
         raise ValueError(f"ffprobe 无法解析时长(输出为 {out!r}):{path}")
     return int(float(out) * 1000)
+
+
+# 成片人声的目标响度,与 finalize_cmd 里 loudnorm 的 I= 必须一致(它就是人声的基准线)。
+VOICE_TARGET_LUFS = -16.0
+# 配乐比人声低多少。广播/纪录片旁白配乐的通行档位是 15~20 dB;用户拍板 18。
+BGM_BELOW_VOICE_DB = 18.0
+# measure_lufs 解析失败时的兜底。**必须往"素材很响"的方向猜**:猜响 → 衰减更多 → 配乐偏轻,
+# 顶多是不明显;猜轻 → 衰减不够 → 盖住解说,那正是这次要修的毛病。方向不能反。
+_LUFS_FALLBACK = -8.0
+
+
+def measure_lufs(path: Path) -> float:
+    """整体响度(LUFS)。ACE-Step 出的曲子响度完全不受控——实测三首分别是
+    -21.4 / -11.5 / -9.4,跨度 12 dB。以前用固定的 volume=0.18 盲乘,于是最响那首混完
+    只比人声低 4.1 dB(而最轻那首低 17.3 dB),同一套参数听感天差地别。
+    先量再算增益,相对关系才是确定的。60 秒素材约一秒跑完,代价可以忽略。"""
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostats", "-i", str(path),
+             "-af", "ebur128=framelog=quiet", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=120)
+        # ebur128 的汇总块形如 "  I:         -9.4 LUFS";取最后一个即整体值
+        found = re.findall(r"^\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", r.stderr, re.M)
+        if found:
+            return float(found[-1])
+    except Exception as e:  # noqa: BLE001 —— ffmpeg 缺失/超时/输出格式变化都不该拖垮合成
+        print(f"⚠️ 响度测量失败({path.name}),按 {_LUFS_FALLBACK} LUFS 兜底:{e}")
+    return _LUFS_FALLBACK
+
+
+def bgm_gain_db(bgm_lufs: float) -> float:
+    """把实测响度换算成要施加的增益,使配乐恒定落在"比人声低 BGM_BELOW_VOICE_DB"。
+    例:实测 -9.4 → -24.6 dB;实测 -21.4 → -12.6 dB。目标恒为 -34 LUFS。"""
+    return VOICE_TARGET_LUFS - BGM_BELOW_VOICE_DB - bgm_lufs
 
 
 def clip_duration_s(duration_ms: int, has_audio: bool) -> float:
@@ -194,11 +229,37 @@ def xfade_concat_cmd(clips: list[Path], durations_s: list[float], out: Path,
             "-c:a", "aac", "-b:a", "192k", *_AR_AC, str(out)]
 
 
-def finalize_cmd(video: Path, bgm: Path | None, out: Path) -> list[str]:
-    loudnorm = "loudnorm=I=-16:TP=-1.5:LRA=11"
+# 人声闪避:说话时把配乐再压下去,停顿时(release 内)浮回来。
+# 调参方向:threshold 越小越容易触发闪避;ratio 越大压得越狠;release 太短会有明显的
+# "呼吸感"(配乐一起一伏),太长则段落间隙里配乐一直起不来。400ms 是二者的折中。
+_DUCK = "sidechaincompress=threshold=0.03:ratio=6:attack=20:release=400:makeup=1"
+
+
+def finalize_cmd(video: Path, bgm: Path | None, out: Path,
+                 bgm_gain_db: float = -20.0) -> list[str]:
+    """成片收尾:响度规范化 +(可选)配乐混音。
+
+    滤镜链的顺序是这次重做的核心,三处都不能随手改回去:
+
+    1. **loudnorm 只作用于人声支路,不作用于混音结果。** 原实现是 `[mix]loudnorm`,
+       而单遍 loudnorm 是**动态**的:人声间隙里它会抬高整体增益,把配乐顶上来——
+       用户报的"背景音**有时候**比人声大"就是这个,"有时候"三个字正是动态增益的指纹。
+    2. **配乐增益由实测响度算出(见 measure_lufs / bgm_gain_db),不再是固定的 volume=0.18。**
+       ACE-Step 出的曲子响度跨度实测 12 dB,盲乘同一个系数,最响那首混完只比人声低 4.1 dB。
+    3. **amix 必须显式 normalize=0。** 默认 normalize=1 会把每路除以路数(-6 dB),
+       原先靠后面的 loudnorm 补回来;现在 loudnorm 已经挪到人声支路,不关掉整片会轻一半。
+
+    结尾的 alimiter 是最后一道闸:人声已被 loudnorm 限到 TP=-1.5,再叠一路低 18 dB 的
+    配乐理论上抬不过 0.5 dB,但闸门便宜,不留侥幸。
+    """
+    loudnorm = f"loudnorm=I={VOICE_TARGET_LUFS:g}:TP=-1.5:LRA=11"
     if bgm:
-        fc = (f"[1:a]volume=0.18[bg];[0:a][bg]amix=inputs=2:duration=first[mix];"
-              f"[mix]{loudnorm}[aout]")
+        fc = (f"[0:a]{loudnorm}[voice];"
+              # 开头 2 秒淡入:-stream_loop 从第一帧硬起,突然进来的乐声很突兀
+              f"[1:a]volume={bgm_gain_db:.1f}dB,afade=t=in:d=2[bgraw];"
+              f"[bgraw][voice]{_DUCK}[duck];"
+              f"[voice][duck]amix=inputs=2:duration=first:normalize=0[mix];"
+              f"[mix]alimiter=limit=0.85[aout]")
         return ["ffmpeg", "-y", "-i", str(video), "-stream_loop", "-1", "-i", str(bgm),
                 "-filter_complex", fc, "-map", "0:v", "-map", "[aout]",
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", str(out)]

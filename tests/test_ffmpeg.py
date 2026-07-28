@@ -113,9 +113,39 @@ def test_xfade_concat_cmd_opens_and_closes_on_black():
     assert "fade=t=out:st=2.5" in cmd                # 末段 3.0s − 0.5s 起淡出
 
 
-def test_finalize_cmd_loudnorm_and_bgm():
-    cmd = " ".join(ffmpeg.finalize_cmd(Path("v.mp4"), Path("b.mp3"), Path("o.mp4")))
-    assert "loudnorm=I=-16" in cmd and "volume=0.18" in cmd and "amix" in cmd
+def test_finalize_cmd_loudnorm_applies_to_voice_not_the_mix():
+    """滤镜链的三条硬要求(每一条都对应一个已被用户报过的毛病):
+
+    1. loudnorm 只作用于人声支路 `[0:a]`,**不能**作用在 `[mix]` 上——单遍 loudnorm 是
+       动态的,挂在混音后会在人声间隙抬高整体增益、把配乐顶上来,即"背景音有时候比人声大";
+    2. 配乐增益来自传入的实测值,不再是写死的 volume=0.18;
+    3. amix 必须显式 normalize=0,否则默认会把每路除以 2(-6dB),而补回来的那个
+       loudnorm 已经不在混音后了。"""
+    cmd = " ".join(ffmpeg.finalize_cmd(Path("v.mp4"), Path("b.mp3"), Path("o.mp4"), -24.6))
+    assert "[0:a]loudnorm=I=-16" in cmd
+    assert "[mix]loudnorm" not in cmd
+    assert "volume=-24.6dB" in cmd and "volume=0.18" not in cmd
+    assert "sidechaincompress" in cmd
+    assert "amix=inputs=2:duration=first:normalize=0" in cmd
+    assert "alimiter" in cmd
+
+
+def test_bgm_gain_is_computed_from_measured_loudness():
+    """不管 ACE-Step 出的曲子多响,混完都恒定落在"比人声低 18 dB"(即 -34 LUFS)。
+    线上实测的两个极端值:黄鹤楼 -9.4、华山 -21.4,跨度 12 dB。"""
+    assert ffmpeg.bgm_gain_db(-9.4) == pytest.approx(-24.6)
+    assert ffmpeg.bgm_gain_db(-21.4) == pytest.approx(-12.6)
+    for lufs in (-9.4, -21.4, -11.5):
+        assert lufs + ffmpeg.bgm_gain_db(lufs) == pytest.approx(
+            ffmpeg.VOICE_TARGET_LUFS - ffmpeg.BGM_BELOW_VOICE_DB)
+
+
+def test_measure_lufs_falls_back_loud_not_quiet(tmp_path: Path):
+    """测量失败必须往"素材很响"的方向兜底:猜响 → 衰减更多 → 配乐偏轻,顶多不明显;
+    猜轻 → 衰减不够 → 盖住解说,正是这次要修的毛病。方向锁,别写反。"""
+    got = ffmpeg.measure_lufs(tmp_path / "does-not-exist.mp3")
+    assert got == ffmpeg._LUFS_FALLBACK
+    assert ffmpeg.bgm_gain_db(got) < -20, "兜底值必须导致大幅衰减"
 
 
 def test_finalize_cmd_no_bgm():
