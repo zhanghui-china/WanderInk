@@ -1093,21 +1093,87 @@ function PageCard({
   }
 
   async function save() {
+    // 先按字段算出这次改动作废了什么,用来决定保存后问哪一句。必须在 updateCell 之前算:
+    // 判据要和后端 editing.update_cell 的级联规则严格对齐——画面/人物作废图,旁白作废音,
+    // 情绪不级联。比较用 trim 后的值,与真正提交上去的值一致,免得只多敲一个空格也弹窗。
+    const nextCaption = caption.trim()
+    const nextVisual = visualDesc.trim()
+    const needRedraw =
+      nextVisual !== pg.visual_desc ||
+      characters.length !== pg.characters.length ||
+      characters.some((c, i) => c !== pg.characters[i])
+    const needRevoice = nextCaption !== pg.caption
+
     setBusy('save')
     setErr(null)
     try {
       await api.updateCell(projectId, pg.index, {
-        caption: caption.trim(),
-        visual_desc: visualDesc.trim(),
+        caption: nextCaption,
+        visual_desc: nextVisual,
         emotion,
         characters,
       })
       setEditing(false)
+      if (needRedraw && needRevoice) {
+        if (
+          window.confirm(
+            `已保存。第 ${pg.index} 页的图片和配音都已作废,现在一并重新生成吗?将调用生图与 TTS API,并清空已合成的成片。`,
+          )
+        ) {
+          // 不能连着发两次 runStep:同一项目已有任务在跑时端点直接 409。改成两次标脏后
+          // 只触发一次 S4 并带 cascade——api._INVALIDATES 里 s4 会带出 s5/s6,配音会接着跑。
+          await api.redrawCell(projectId, pg.index)
+          await api.revoiceCell(projectId, pg.index)
+          await triggerStep('s4', true, '已标记重绘与重配音', '可点漫画页步骤重试')
+        }
+      } else if (needRedraw) {
+        if (
+          window.confirm(
+            `已保存。第 ${pg.index} 页的图片已作废,现在重新生成吗?将调用配置的生图 API。`,
+          )
+        ) {
+          await regen('redraw')
+        }
+      } else if (needRevoice) {
+        if (
+          window.confirm(
+            `已保存。第 ${pg.index} 页的配音已作废,现在重新生成吗?将调用配置的 TTS API,并清空已合成的成片。`,
+          )
+        ) {
+          await regen('revoice')
+        }
+      }
       onChanged()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(null)
+    }
+  }
+
+  /** 触发某步,并在触发失败时刷新 + 给出可自行重试的指引。
+   *  标脏接口已经清掉了本页的 image/audio 与成片,触发失败时若不刷新,UI 会停在陈旧画面、
+   *  让用户以为还在。返回 false 表示触发失败(调用方据此跳过后续动作)。 */
+  async function triggerStep(name: 's4' | 's5', cascade: boolean, what: string, hint: string) {
+    try {
+      await api.runStep(projectId, name, cascade)
+      return true
+    } catch (e) {
+      onChanged()
+      alert(`${what},但触发生成失败:${e instanceof Error ? e.message : String(e)},${hint}`)
+      return false
+    }
+  }
+
+  /** 标脏 + 立即触发对应步骤(不含二次确认,确认由调用方负责)。
+   *  S4/S5 对已完成的页幂等跳过,所以整步重跑实际只会重做本页。 */
+  async function regen(kind: 'redraw' | 'revoice') {
+    if (kind === 'redraw') {
+      await api.redrawCell(projectId, pg.index)
+      await triggerStep('s4', false, '已标记重绘', '可点漫画页步骤重试')
+    } else {
+      await api.revoiceCell(projectId, pg.index)
+      await triggerStep('s5', false, '已标记重配音', '可点配音步骤重试')
     }
   }
 
@@ -1119,34 +1185,8 @@ function PageCard({
         !window.confirm(`确定重新生成第 ${pg.index} 页的配音?将调用配置的 TTS API,并清空已合成的成片。`)) return
     setBusy(kind)
     try {
-      if (kind === 'redraw') {
-        await api.redrawCell(projectId, pg.index)
-        try {
-          await api.runStep(projectId, 's4') // 标记后立即触发 S4 重跑,只会重画本页等待中的页
-        } catch (e) {
-          // redrawCell 已清掉本页 image/output,若触发生成失败要刷新让用户看到已被清的状态,
-          // 否则 UI 停在陈旧画面、以为还在;并给出可自行重试的明确指引。
-          onChanged()
-          alert(
-            `已标记重绘,但触发生成失败:${e instanceof Error ? e.message : String(e)},可点漫画页步骤重试`,
-          )
-          return
-        }
-      }
-      if (kind === 'revoice') {
-        await api.revoiceCell(projectId, pg.index)
-        try {
-          await api.runStep(projectId, 's5') // 同 redraw:标记后立即触发 S5,只会重配本页(其余页幂等跳过)
-        } catch (e) {
-          // revoiceCell 已清掉本页 audio/output,若触发生成失败要刷新让用户看到已被清的状态。
-          onChanged()
-          alert(
-            `已标记重配音,但触发生成失败:${e instanceof Error ? e.message : String(e)},可点配音步骤重试`,
-          )
-          return
-        }
-      }
       if (kind === 'delete') await api.deleteCell(projectId, pg.index)
+      else await regen(kind)
       onChanged()
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e))
