@@ -106,12 +106,29 @@ class ImageClient:
         # 不在此重试——重试策略连同时间预算都归 s4_pages 管,这里只负责判定"这张不合格"。
         return _reject_if_framed(_reject_if_blank(self._dispatch(prompt, size, references, retries)))
 
+    def route_for(self, references: list[Path] | None) -> str:
+        """本次请求会走哪条路:"chat" / "edit" / "text2img"。
+
+        抽出来是为了让 s4_pages 记录"这一页实际走了哪条路"时能复用同一份判据,而不是照抄一遍
+        if——这个仓库已经因为"同一判断写两份"栽过四次(paneling._cover vs typeset._cover、
+        _draw_flags 在两处各算一遍、_INVALIDATES 按位置而非依赖、caption 的 240 散在三处),
+        所以 _dispatch 必须按本方法的返回值分派,判断只允许存在这一份。
+
+        之所以要把这条路记下来:只有 "edit"(ComfyUI 的 image_edit 工作流)带 LoRA 节点;
+        "text2img"(Text2IMGKrea2 模板)**没有** LoRA 节点,lora 字段传了也会被静默忽略。
+        这正是"用户换了 LoRA 却有些页毫无变化"的原因——那些页恰好没有参考图,走的是 text2img。
+        """
+        if self.mode == "chat_api":     # chat 形态下有没有参考图都走同一个接口
+            return "chat"
+        return "edit" if references else "text2img"
+
     def _dispatch(self, prompt: str, size: str, references: list[Path] | None,
                   retries: int) -> bytes:
-        if self.mode == "chat_api":
+        route = self.route_for(references)
+        if route == "chat":
             return self._via_chat(prompt, references or [], retries)
-        if references:
-            return self._via_edits(prompt, references, size, retries)
+        if route == "edit":
+            return self._via_edits(prompt, references or [], size, retries)
         return self._via_generations(prompt, size, retries)
 
     def _lora_extra(self) -> dict:

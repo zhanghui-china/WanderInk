@@ -264,3 +264,46 @@ def test_generate_rejects_near_solid_color_image():
     c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
     with pytest.raises(ImageGenError):
         c.generate("a cat")
+
+
+# --- route_for 与 _dispatch 同源 ---
+# 只测 route_for 返回什么是不够的:那样两边各自漂移也照样绿。这里断言"route_for 说走哪条,
+# _dispatch 就真的只调了那条对应的私有方法",三种入参各测一遍,把两者钉在一起。
+_ROUTE_TO_METHOD = {"chat": "_via_chat", "edit": "_via_edits", "text2img": "_via_generations"}
+
+
+def _dispatch_calls(client: ImageClient, references):
+    """返回 (route_for 的返回值, _dispatch 实际调用的那个私有方法名)。"""
+    with patch.object(ImageClient, "_via_chat", return_value=REAL_PNG) as chat, \
+            patch.object(ImageClient, "_via_edits", return_value=REAL_PNG) as edits, \
+            patch.object(ImageClient, "_via_generations", return_value=REAL_PNG) as gens:
+        client._dispatch("a cat", "1536x1024", references, 2)
+        called = [name for name, m in (("_via_chat", chat), ("_via_edits", edits),
+                                       ("_via_generations", gens)) if m.called]
+    assert len(called) == 1, f"应恰好走一条路,实际调用了 {called}"
+    return client.route_for(references), called[0]
+
+
+def test_route_text2img_matches_dispatch():
+    c = ImageClient(BASE, "sk", "comfyui-local", mode="images_api")
+    route, method = _dispatch_calls(c, None)
+    assert route == "text2img"
+    assert method == _ROUTE_TO_METHOD[route]
+
+
+def test_route_edit_matches_dispatch(tmp_path: Path):
+    ref = tmp_path / "ref.png"; ref.write_bytes(b"refpng")
+    c = ImageClient(BASE, "sk", "comfyui-local", mode="images_api")
+    route, method = _dispatch_calls(c, [ref])
+    assert route == "edit"
+    assert method == _ROUTE_TO_METHOD[route]
+
+
+def test_route_chat_matches_dispatch_regardless_of_references(tmp_path: Path):
+    # chat_api 下有无参考图都走 chat,两种入参都要钉住
+    ref = tmp_path / "ref.png"; ref.write_bytes(b"refpng")
+    c = ImageClient(BASE, "sk", "nano-banana", mode="chat_api")
+    for references in (None, [ref]):
+        route, method = _dispatch_calls(c, references)
+        assert route == "chat"
+        assert method == _ROUTE_TO_METHOD[route]

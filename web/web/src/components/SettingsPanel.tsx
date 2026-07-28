@@ -272,8 +272,14 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
               </option>
             ))}
           </select>
-          {/* 三视图走的工作流模板里没有 LoRA 节点,选了也不会生效,提前讲清楚免得用户误判 */}
-          <p className="mt-1 text-[11px] text-muted">仅对漫画页生效,角色三视图不支持</p>
+          {/* 判据是"这一次生成有没有带参考图",不是"是漫画页还是三视图":带参考图才走
+              ComfyUI 的 image_edit 工作流,只有那条工作流里有 LoRA 节点。
+              ⚠️ 上一版写成"角色三视图不支持"是错的——用户给角色传了参考图时 S3 同样走 edit
+              路径(见 s3_characters 的 TURNAROUND_REF_TMPL),LoRA 在那里是生效的。
+              逐页的实际情况在漫画页卡上有标签,这里只讲规则。 */}
+          <p className="mt-1 text-[11px] text-muted">
+            仅对带参考图的生成生效(漫画页有出场角色、或角色已上传参考图);无参考图的页与三视图不适用
+          </p>
         </div>
       )
     }

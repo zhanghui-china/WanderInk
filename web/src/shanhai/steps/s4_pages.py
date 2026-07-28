@@ -81,6 +81,13 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
     imgs: list[bytes] = []
     kept_panels: list[Panel] = []
     gen_ms_total = 0
+    # 各格的 refs **不相同**:_panel_prompt 是按 panel.characters(页面角色的子集,空集合也合法)
+    # 逐格算 present 的,所以一页里完全可能"有人物的格走 edit、空镜格走 text2img"。
+    # 只记最后一格会说反话——恰恰在这个 feature 最该说真话的混合场景上。
+    # 故收集各格路径,最后归约:全部相同取该值,不同则记 "mixed"(= 这一页只有部分内容吃到 LoRA)。
+    # 只统计**真正进了成品页**的格(kept_panels 那些):写盘失败被 except 丢掉的格不算数。
+    panel_routes: list[str] = []
+    lora = ""
     # 每格按它自己要塞进的版位比例出图,而不是所有格都用整页的 image_size:后者是 3:2,
     # 而版位比例从 1.79 到 3.61 不等,cover 裁切会吃掉 16%~58% 的高度、人物头部首当其冲。
     # 已知限制:某格生成失败被跳过时,compose_manga_page 会按幸存格数降级版式,届时这里
@@ -100,15 +107,21 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
                 gen_t0 = time.monotonic()
                 art = image.generate(prompt, size=panel_size, references=refs or None)
                 gen_ms_total += round((time.monotonic() - gen_t0) * 1000)
+                panel_route = image.route_for(refs or None)
                 out = pages_dir / f"page_{cell.index:02d}_panel{i}.png"
                 out.write_bytes(art)
                 panel.image = str(out.relative_to(workdir))
                 imgs.append(art)
                 kept_panels.append(panel)
+                # 落在写盘之后:这一格确定进成品页了才计入路径统计
+                panel_routes.append(panel_route)
+                lora = image.lora_model or ""
                 break
             except Exception:  # noqa: BLE001 单格失败不拖垮整页,重试/预算耗尽后放弃该格(不占位符硬凑)
                 continue
     if not imgs:
+        cell.image_route = ""      # 同上:本轮无产出,不留描述上一次生成的陈旧值
+        cell.image_lora = ""
         cell.status = "failed"
         return
     composed = paneling.compose_manga_page(imgs, kept_panels)
@@ -116,6 +129,8 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
     typeset.compose_page(composed, out)
     cell.image = str(out.relative_to(workdir))
     cell.image_gen_ms = gen_ms_total
+    cell.image_route = panel_routes[0] if len(set(panel_routes)) == 1 else "mixed"
+    cell.image_lora = lora
     cell.status = "confirmed"
 
 
@@ -147,10 +162,18 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
             # 否则 compose_page 抛异常时耗时已经写进去、图却没有,失败页会挂着一个"生成 X.Xs"。
             cell.image = str(out.relative_to(workdir))
             cell.image_gen_ms = gen_ms
+            # 判据必须与 image.generate 传的 references 完全一致(refs or None),
+            # 否则记录的路径可能和实际生成用的路径对不上。
+            cell.image_route = image.route_for(refs or None)
+            cell.image_lora = image.lora_model or ""
             cell.status = "confirmed"
             return
         except Exception:  # noqa: BLE001 单页失败不拖垮整轮,重试/预算耗尽后标 failed
             pass
+    # 清掉可能残留的上一次成功值:这一轮没产出新图,旧的路径/LoRA 描述的是另一次生成,
+    # 挂在 failed 页上就是三条假信息(image/image_gen_ms 的同类残留是既有行为,不在本次范围)。
+    cell.image_route = ""
+    cell.image_lora = ""
     cell.status = "failed"
 
 
