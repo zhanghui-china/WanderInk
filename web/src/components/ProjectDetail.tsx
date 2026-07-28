@@ -909,9 +909,7 @@ function TrackRow({
     <div className="space-y-1.5 rounded-lg border border-line bg-white/40 p-2.5">
       <div className="flex items-center gap-2">
         <span className="text-[10px] tracking-[2px] text-muted">{label}</span>
-        {track?.duration_ms ? (
-          <span className="text-[11px] text-muted">配音 {(track.duration_ms / 1000).toFixed(1)}s</span>
-        ) : null}
+        {/* 同上:语种轨这行的「配音 X.Xs」一并去掉,与中文行保持一致 */}
         {editable && !editing && (
           <div className="ml-auto flex gap-1.5">
             <button
@@ -1308,9 +1306,8 @@ function PageCard({
             <span className={`rounded-full px-2 py-0.5 tracking-wide ${emotionCls(pg.emotion)}`}>
               {pg.emotion}
             </span>
-            {pg.duration_ms > 0 && (
-              <span className="text-muted">配音 {(pg.duration_ms / 1000).toFixed(1)}s</span>
-            )}
+            {/* 这里原本还有一个「配音 X.Xs」——下面的 <audio controls> 本来就显示时长,
+                重复且占位;用户明确要求去掉。duration_ms 字段仍在用(算成片时间轴),只是不展示。 */}
             {pg.image_gen_ms > 0 && (
               <span className="text-muted">生成 {(pg.image_gen_ms / 1000).toFixed(1)}s</span>
             )}
