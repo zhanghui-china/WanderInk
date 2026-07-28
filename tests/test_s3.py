@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 from shanhai.schema import CharacterCard, Project, Script
@@ -146,7 +147,12 @@ def test_s3_cancel_check_stops_early(tmp_path: Path):
              for i in range(3)]
     p = Project(project_id="x", scenic_spot="雷峰塔")
     p.script = Script(title="t", theme="th", acts=[], characters=chars)
-    llm = MagicMock(); llm.chat.return_value = "白衣女子,黑色长发,银簪"
+    # ⚠️ 每个角色的活儿必须**慢到**主线程来得及在 as_completed 里看到第一个完成:
+    # mock 瞬时返回时,concurrency=1 的 worker 线程可能在主线程走到取消判断之前就把 3 个
+    # 角色全跑完,pending.cancel() 无从拦截 → 全部 locked → assert not True 挂掉。
+    # 2026-07-28 在 DGX(机器更快)上真的撞到过一次,造成一次假警报的部署中断。
+    llm = MagicMock()
+    llm.chat.side_effect = lambda *a, **k: (time.sleep(0.05), "白衣女子,黑色长发,银簪")[1]
     image = MagicMock(); image.generate.return_value = b"png"
     p = s3_characters.run(p, llm, image, tmp_path, "1536x1024", concurrency=1,
                            cancel_check=lambda: True)
