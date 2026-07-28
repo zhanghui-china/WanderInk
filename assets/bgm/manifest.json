@@ -1,1 +1,26 @@
-{"tracks": []}
+{
+  "tracks": [
+    {
+      "file": "calm.mp3",
+      "emotions": [
+        "宁静",
+        "温情",
+        "烟雨"
+      ]
+    },
+    {
+      "file": "tense.mp3",
+      "emotions": [
+        "惊变",
+        "险境"
+      ]
+    },
+    {
+      "file": "solemn.mp3",
+      "emotions": [
+        "悲壮",
+        "苍凉"
+      ]
+    }
+  ]
+}

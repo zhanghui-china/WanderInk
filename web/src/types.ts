@@ -109,6 +109,7 @@ export interface NewProjectInput {
   voice?: string
   speed?: number
   multi_panel?: boolean
+  bgm?: boolean
   use_hermes_agent?: boolean
   master_skill?: boolean
 }

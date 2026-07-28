@@ -250,19 +250,35 @@ def _resolve_bgm(project: Project, music: MusicClient | None, workdir: Path,
                  manifest_path: Path) -> str:
     """三级降级选 BGM:AI 生成 → 静态曲库 → 无 BGM,返回路径(无则空串)。
     H4:任何失败(AI shim 未部署/超时、manifest 缺失/损坏/字段不全)都整段捕获降级,绝不向上抛——
-    BGM 是非关键增强,不该拖垮更关键的配音;在独立线程里跑亦不会炸掉 TTS 线程池或整个 S5。"""
+    BGM 是非关键增强,不该拖垮更关键的配音;在独立线程里跑亦不会炸掉 TTS 线程池或整个 S5。
+
+    结果一律写进 project.status["bgm"](ai/manifest/failed/skipped)。这是 2026-07-27 的教训:
+    此前失败完全静默——实际触发的那两条分支一行日志都不打、status 里没有任何 BGM 键、前端
+    也零处显示,于是 music-shim 的模板路径写错这件事攒了 33 个无配乐的作品才被用户发现。"""
+    if not project.params.bgm:
+        # 用户没勾配乐:直接跳过,不白烧一次 ACE-Step(单曲最长 180s 且与生图抢同一块 GPU)
+        project.status["bgm"] = "skipped"
+        return ""
     bgm_path: str | None = None
     if music is not None:
         try:
             bgm_path = _generate_ai_bgm(project, music, workdir)
         except Exception as e:  # noqa: BLE001 AI BGM 非关键,失败降级到静态曲库
             print(f"⚠️ AI BGM 生成失败,降级到静态曲库:{e}")
-    if bgm_path is None:
-        try:
-            bgm_path = _select_manifest_bgm(project, manifest_path)
-        except Exception as e:  # noqa: BLE001 BGM 非关键,任何失败都跳过配乐而非拖垮 S5
-            print(f"⚠️ BGM 选曲失败({manifest_path}),跳过配乐:{e}")
-    return bgm_path or ""
+    if bgm_path is not None:
+        project.status["bgm"] = "ai"
+        return bgm_path
+    try:
+        bgm_path = _select_manifest_bgm(project, manifest_path)
+    except Exception as e:  # noqa: BLE001 BGM 非关键,任何失败都跳过配乐而非拖垮 S5
+        print(f"⚠️ BGM 选曲失败({manifest_path}),跳过配乐:{e}")
+    if bgm_path:
+        project.status["bgm"] = "manifest"
+        return bgm_path
+    # 曲库为空也算 failed 而不是"正常无配乐":用户勾了配乐却没拿到,就是没满足他的要求
+    print("⚠️ AI 生成与静态曲库均未产出 BGM,本片无配乐")
+    project.status["bgm"] = "failed"
+    return ""
 
 
 def run(project: Project, tts: TTSClient, voice: str, workdir: Path,

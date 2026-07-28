@@ -259,6 +259,7 @@ export function ProjectDetailView({
             controls
             className="w-full rounded-xl border border-line bg-black"
           />
+          <BgmNote status={project.status['bgm']} />
           <ExportButtons project={project} />
         </div>
       )}
@@ -406,6 +407,24 @@ export function ProjectDetailView({
       )}
 
     </div>
+  )
+}
+
+// 配乐结果只用一行小字说明,不做弹窗/红色告警——BGM 是非关键增强,失败不该打断用户。
+// 但也不能像改造前那样完全静默:正是因为一个字都不说,music-shim 的模板路径写错攒了
+// 33 个无配乐的作品才被用户发现。
+const BGM_NOTE: Record<string, { text: string; alarm?: boolean }> = {
+  ai: { text: '已配乐(AI 生成)' },
+  manifest: { text: '已配乐(曲库选曲)' },
+  skipped: { text: '未配乐(建作品时未勾选)' },
+  failed: { text: '配乐生成失败,本片无背景音乐', alarm: true },
+}
+
+function BgmNote({ status }: { status?: string }) {
+  const note = status ? BGM_NOTE[status] : undefined
+  if (!note) return null   // 老作品没有这个键,不显示比瞎猜好
+  return (
+    <p className={`mt-2 text-[11px] ${note.alarm ? 'text-alarm' : 'text-muted'}`}>{note.text}</p>
   )
 }
 

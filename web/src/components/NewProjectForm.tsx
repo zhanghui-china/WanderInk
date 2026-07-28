@@ -32,6 +32,7 @@ export function NewProjectForm({
   const upload = useUpload<VoiceSample>()
   const [speed, setSpeed] = useState(1.0)
   const [multiPanel, setMultiPanel] = useState(false)
+  const [bgm, setBgm] = useState(true)
   const [masterSkill, setMasterSkill] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -52,6 +53,7 @@ export function NewProjectForm({
         voice,
         speed,
         multi_panel: multiPanel,
+        bgm,
         master_skill: masterSkill,
       })
       setSpot('')
@@ -201,6 +203,19 @@ export function NewProjectForm({
         />
         <label htmlFor="multi-panel" className="text-xs text-ink-soft">
           启用分格排版(日式分镜)
+        </label>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <input
+          id="bgm"
+          type="checkbox"
+          checked={bgm}
+          onChange={(e) => setBgm(e.target.checked)}
+          className="h-4 w-4 rounded border-line accent-cinnabar"
+        />
+        <label htmlFor="bgm" className="text-xs text-ink-soft">
+          生成背景音乐(与配音并行,不额外拉长总时间)
         </label>
       </div>
 
