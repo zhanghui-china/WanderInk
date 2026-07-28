@@ -102,6 +102,10 @@ class GenerationParams(BaseModel):
     voice_en: str = ""   # 英文轨音色;留空则回落到配置层的 tts_voice_en
     speed: float = 1.0
     multi_panel: bool = False
+    # 默认开:与改造前"能生成就配"的隐式行为一致(BGM 链路一直是完整的,只是 music-shim
+    # 的工作流模板路径写错、每次秒返 500 被静默降级吞掉,所以从未成功过)。
+    # 有默认值 → 老 project.json 零迁移。
+    bgm: bool = True
     use_hermes_agent: bool = True
     master_skill: bool = False   # S1 用"编剧大师"+S2 用"导演大师"深度创作(需对应环节为 hermes-agent 后端,更慢更贵)
 

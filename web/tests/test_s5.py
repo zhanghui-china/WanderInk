@@ -539,3 +539,66 @@ def test_lang_pace_thresholds_below_measured_speech_rate():
 
 def test_lang_pace_falls_back_to_default_for_unknown_lang():
     assert s5_audio._pace("ja") == s5_audio.LANG_PACE[s5_audio.DEFAULT_LANG]
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_bgm_switch_off_skips_generation(mock_probe, mock_sh, tmp_path: Path):
+    """没勾配乐:一次 ACE-Step 都不该发——单曲最长 180s 且与生图抢同一块 GPU。
+    曲库里明明有曲子也不选,免得"关了配乐却还是有音乐"。"""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"]}]}), encoding="utf-8")
+    p = _project()
+    p.params.bgm = False
+    music = _writing_music()
+    p = s5_audio.run(p, _writing_tts(), "alloy", tmp_path, music=music, manifest_path=manifest)
+    assert music.generate.call_count == 0
+    assert p.bgm == ""
+    assert p.status["bgm"] == "skipped"
+
+
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=6800)
+def test_s5_bgm_status_records_which_path_won(mock_probe, mock_sh, tmp_path: Path):
+    """status['bgm'] 必须如实反映走了哪条路。改造前这里什么都不写,于是 music-shim 的
+    模板路径写错攒了 33 个无配乐的作品才被用户发现——这条测试就是守着那个教训。"""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": [
+        {"file": "calm.mp3", "emotions": ["宁静"]}]}), encoding="utf-8")
+
+    p = s5_audio.run(_project(), _writing_tts(), "alloy", tmp_path,
+                     music=_writing_music(), manifest_path=manifest)
+    assert p.status["bgm"] == "ai"
+
+    failing = MagicMock()
+    failing.generate.side_effect = RuntimeError("shim 500")
+    p = s5_audio.run(_project(), _writing_tts(), "alloy", tmp_path,
+                     music=failing, manifest_path=manifest)
+    assert p.status["bgm"] == "manifest"
+
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = s5_audio.run(_project(), _writing_tts(), "alloy", tmp_path,
+                     music=failing, manifest_path=empty)
+    assert p.bgm == ""
+    # 用户勾了配乐却没拿到 = failed,不是"正常无配乐"。原代码把这条当正常路径、
+    # 连日志都不打,正是问题攒了 33 个作品才暴露的原因。
+    assert p.status["bgm"] == "failed"
+
+
+def test_default_manifest_is_not_empty():
+    """兜底曲库必须真的有曲子。
+
+    这条补的是既有测试的盲区:所有 BGM 测试都用 mock 或 tmp_path 造的 manifest,
+    **没有一条跑真实的 DEFAULT_MANIFEST**——所以"生产上曲库是空的、三级降级实际只有
+    两级且都落空"这件事,测试根本测不出来,只能靠用户报障。
+    """
+    data = json.loads(s5_audio.DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+    tracks = data.get("tracks", [])
+    assert tracks, "assets/bgm/manifest.json 是空的,兜底曲库形同虚设"
+    covered = {e for t in tracks for e in t.get("emotions", [])}
+    for t in tracks:
+        assert (s5_audio.DEFAULT_MANIFEST.parent / t["file"]).exists(), f"曲库缺文件 {t['file']}"
+    # 分镜可能出现的全部情绪都要有曲子兜底,否则 _select_manifest_bgm 会退化成"永远选第一首"
+    assert {"宁静", "温情", "惊变", "悲壮", "险境", "烟雨", "苍凉"} <= covered

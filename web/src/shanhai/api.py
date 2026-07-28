@@ -542,6 +542,7 @@ class NewProject(BaseModel):
     voice: str = ""
     speed: float = 1.0
     multi_panel: bool = False
+    bgm: bool = True
     # 命名沿用历史,真实机制见 _pipeline:关闭时 S0/S1 跳过按环节覆盖、回退全局默认 LLM,
     # 而非字面的"是否用编剧大师"——仅当 hermes 恰配成 s0/s1 stage 覆盖时两者才等价。
     use_hermes_agent: bool = True
@@ -587,6 +588,7 @@ def create_project(body: NewProject, user: str = Depends(current_user)) -> dict:
         p.params.voice = body.voice
         p.params.speed = body.speed
         p.params.multi_panel = body.multi_panel
+        p.params.bgm = body.bgm
         p.params.use_hermes_agent = body.use_hermes_agent
         p.params.master_skill = body.master_skill
         p.style_preset = body.style

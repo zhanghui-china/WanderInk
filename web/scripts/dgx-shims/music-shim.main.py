@@ -25,7 +25,7 @@ COMFYUI_WS = os.getenv("COMFYUI_WS", "ws://127.0.0.1:8188/ws")
 # 只读:直接引用队友(wuzi)维护的工作流模板,不拷贝副本(同 image-shim 的
 # COMFYUI_ROOT 做法),避免模板更新后两处失配。
 WORKFLOW_PATH = Path(os.getenv(
-    "WORKFLOW_JSON_PATH", "/home1/wuzi/ComfyUI/MusicCreation-ACESTEP1.5XL_api.json"))
+    "WORKFLOW_JSON_PATH", "/home1/wuzi/WanderInk/comfyui-bridge/MusicCreation-ACESTEP1.5XL_api.json"))
 POLL_TIMEOUT_S = float(os.getenv("MUSIC_SHIM_POLL_TIMEOUT_S", "300"))
 # 共享机的 /usr/local/bin/ffmpeg 是残缺构建(无 libmp3lame,详见 docs/deploy-dgx.md);
 # 必须走独立的完整版 conda 环境,同 tts_shim.py 已踩过的坑。
