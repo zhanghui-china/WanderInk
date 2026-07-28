@@ -89,12 +89,55 @@ def to_reference_png(raw: bytes) -> bytes:
 
 
 # --- 音色克隆的参考录音 ---
-# 浏览器 MediaRecorder 产出的是 webm/opus(不是 wav),所以后端必须转码。
-MAX_AUDIO_BYTES = 4 * 1024 * 1024   # 20 秒 opus 约 100~300KB,4 MiB 已经宽到离谱
+# 两个来源:浏览器 MediaRecorder(webm/opus,Safari 给 mp4/aac)与用户直接上传的 wav/mp3。
+# 无论哪种都必须转码——转码本身就是净化(见 ffmpeg.voice_sample_cmd)。
+#
+# ⚠️ 8 MiB 是**上限**,不能再往上加:全局 BodySizeLimitMiddleware 是
+# MAX_UPLOAD_BYTES(8 MiB) + 1 MiB = 9 MiB(api.py),超过这里就必须同时抬中间件。
+# 为什么从 4 MiB 提上来:4 MiB 是按"20 秒 opus 约 300KB"定的,只够录音;而用户上传的
+# 20 秒 48k/24bit/立体声 wav 就有 5.8 MB,会被无谓拒掉。
+MAX_AUDIO_BYTES = 8 * 1024 * 1024
 MIN_VOICE_MS = 5_000                # 太短的样本克隆不出像的音色,不如当场拒绝让用户重录
-# 前端声明什么格式就用什么 demuxer 解,只认这几种;绝不让 ffmpeg 自动探测(见 voice_sample_cmd)
-AUDIO_DEMUXERS = {"audio/webm": "webm", "video/webm": "webm",
-                  "audio/ogg": "ogg", "audio/wav": "wav", "audio/mpeg": "mp3"}
+
+# demuxer 白名单。**只用来在这几种里选一个,绝不等于放开 ffmpeg 自动探测**——
+# 显式 `-f {fmt}` 仍是这条路径的安全基石(理由见 ffmpeg.voice_sample_cmd)。
+AUDIO_FORMATS = frozenset({"webm", "ogg", "wav", "mp3", "mp4"})
+
+# 魔数 → demuxer。**优先按内容判定,不认客户端声明的 content_type**:
+# 图片那条路的注释白纸黑字写着"绝不信 content_type 或扩展名",音频这条此前却在信。
+# 用户手选文件后更糟——浏览器按扩展名猜的 MIME 在不同系统上有 audio/x-wav、audio/wave、
+# audio/mp3 等变体,合法文件会被随机拒掉;反过来攻击者也能靠声明 content_type 挑解析器。
+_AUDIO_MAGIC: tuple[tuple[int, bytes, str], ...] = (
+    (0, b"RIFF", "wav"),           # 还要再验 offset 8 是 WAVE,见 _sniff_audio
+    (0, b"OggS", "ogg"),
+    (0, b"\x1a\x45\xdf\xa3", "webm"),   # EBML,Matroska/WebM 共用
+    (0, b"ID3", "mp3"),
+    (4, b"ftyp", "mp4"),           # m4a/mp4:Safari 的 MediaRecorder 产出
+)
+
+# 仅在魔数认不出时兜底(极少数容器头部不规范的情况)。别名收全,免得同一个 wav
+# 在 Windows 上报 audio/x-wav、在别处报 audio/wave 就被拒。
+AUDIO_DEMUXERS = {
+    "audio/webm": "webm", "video/webm": "webm",
+    "audio/ogg": "ogg", "application/ogg": "ogg",
+    "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav", "audio/vnd.wave": "wav",
+    "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/x-mpeg-3": "mp3",
+    "audio/mp4": "mp4", "audio/x-m4a": "mp4", "audio/aac": "mp4",
+}
+
+
+def _sniff_audio(raw: bytes) -> str | None:
+    """按字节头认出 demuxer;认不出返回 None(交给 content_type 兜底)。"""
+    for off, sig, fmt in _AUDIO_MAGIC:
+        if raw[off:off + len(sig)] != sig:
+            continue
+        if fmt == "wav" and raw[8:12] != b"WAVE":
+            continue          # RIFF 也可能是 avi/webp,必须再验一层
+        return fmt
+    # 无 ID3 标签的裸 mp3:帧同步 11 个 1(0xFF Ex/Fx),放在最后避免误伤其它格式
+    if raw[:1] == b"\xff" and len(raw) > 1 and (raw[1] & 0xE0) == 0xE0:
+        return "mp3"
+    return None
 
 
 async def read_limited_audio(file: UploadFile) -> bytes:
@@ -103,28 +146,33 @@ async def read_limited_audio(file: UploadFile) -> bytes:
     while chunk := await file.read(1 << 20):
         raw.extend(chunk)
         if len(raw) > MAX_AUDIO_BYTES:
-            raise HTTPException(413, f"录音超过 {MAX_AUDIO_BYTES // 1024 // 1024} MiB 上限")
+            raise HTTPException(413, f"音频超过 {MAX_AUDIO_BYTES // 1024 // 1024} MiB 上限")
     return bytes(raw)
 
 
 def to_voice_sample_wav(raw: bytes, content_type: str) -> bytes:
-    """把上传的录音净化成 16k 单声道 wav。与 to_reference_png 同一套哲学:
-    绝不把客户端字节原样落盘,一律经 ffmpeg 重编码。"""
-    fmt = AUDIO_DEMUXERS.get((content_type or "").split(";")[0].strip().lower())
-    if fmt is None:
-        raise HTTPException(400, "不支持的音频格式,请用浏览器自带的录音功能")
+    """把上传的录音/音频文件净化成 16k 单声道 wav。与 to_reference_png 同一套哲学:
+    绝不把客户端字节原样落盘,一律经 ffmpeg 重编码。
+
+    格式判定**先看魔数、后看 content_type**(见 _AUDIO_MAGIC 上方的说明)。兜底那一路
+    也要再过一次白名单——AUDIO_DEMUXERS 的值域本就在白名单内,这层校验是为了防止
+    以后有人往表里加了一项却忘了同步 AUDIO_FORMATS。"""
+    fmt = _sniff_audio(raw) \
+        or AUDIO_DEMUXERS.get((content_type or "").split(";")[0].strip().lower())
+    if fmt not in AUDIO_FORMATS:
+        raise HTTPException(400, "无法识别的音频格式,支持 wav / mp3 / m4a,或直接用浏览器录音")
     with tempfile.TemporaryDirectory() as td:
         src, out = Path(td) / f"in.{fmt}", Path(td) / "out.wav"
         src.write_bytes(raw)
         try:
             ffmpeg.sh(ffmpeg.voice_sample_cmd(src, out, fmt))
         except RuntimeError as e:   # ffmpeg.sh 把非零退出包成 RuntimeError
-            raise HTTPException(400, "录音无法解码,请重新录制") from e
+            raise HTTPException(400, "音频无法解码,请换一个文件或重新录制") from e
         if not out.exists() or not out.stat().st_size:
-            raise HTTPException(400, "录音无法解码,请重新录制")
+            raise HTTPException(400, "音频无法解码,请换一个文件或重新录制")
         ms = ffmpeg.probe_duration_ms(out)
         if ms < MIN_VOICE_MS:
-            raise HTTPException(400, f"录音太短({ms / 1000:.1f} 秒),至少需要 "
+            raise HTTPException(400, f"音频太短({ms / 1000:.1f} 秒),至少需要 "
                                      f"{MIN_VOICE_MS // 1000} 秒才能克隆出像的音色")
         return out.read_bytes()
 

@@ -261,7 +261,7 @@ export function NewProjectForm({
       <UploadDialog
         title="录制自定义音色"
         glyph="音"
-        hint="念一段 5–20 秒的话,系统会克隆这个音色来配音"
+        hint="念一段 5–20 秒的话,或上传一段 wav / mp3,系统会克隆这个音色来配音"
         picker={
           <VoiceRecorder
             onPicked={(b, f) => setPicked({ blob: b, filename: f })}

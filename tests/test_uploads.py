@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from PIL import Image
 
-from shanhai import api, uploads
+from shanhai import api, ffmpeg, uploads
 
 
 def _png_bytes(w=400, h=300, color=(200, 50, 50)) -> bytes:
@@ -215,11 +215,24 @@ def test_voice_sample_rejects_non_audio():
     assert e.value.status_code == 400
 
 
-def test_voice_sample_rejects_unknown_content_type():
-    """content_type 不在白名单就直接拒——绝不让 ffmpeg 自动探测 demuxer。
+def test_voice_sample_format_decided_by_content_not_content_type():
+    """demuxer 由**字节内容**决定,不由客户端声明决定。
+
+    两个方向都要守:①真 webm 即使声称 application/octet-stream 也能认出来
+    (以前会被拒——而浏览器/系统给的 MIME 五花八门,合法文件被随机拒掉是真实痛点);
+    ②反过来,声称 audio/wav 也改变不了它实际按 webm 解——攻击者不能靠声明挑解析器。
+    白名单本身一个都没放宽,仍只有 webm/ogg/wav/mp3/mp4。"""
+    assert uploads._sniff_audio(_webm_bytes(8.0)) == "webm"
+    for declared in ("application/octet-stream", "audio/wav", ""):
+        wav = uploads.to_voice_sample_wav(_webm_bytes(8.0), declared)
+        assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE"
+
+
+def test_voice_sample_rejects_unrecognizable_bytes():
+    """内容认不出、content_type 也不在兜底表里 → 直接拒,**绝不**退回让 ffmpeg 自动探测。
     Pillow 是纯解码器,而 ffmpeg 是一大堆解析器的集合,自动探测的攻击面大得多。"""
     with pytest.raises(HTTPException) as e:
-        uploads.to_voice_sample_wav(_webm_bytes(8.0), "application/octet-stream")
+        uploads.to_voice_sample_wav(b"definitely not audio at all", "application/octet-stream")
     assert e.value.status_code == 400
 
 
@@ -227,3 +240,59 @@ def test_voice_sample_rel_path_is_salted():
     a, b = uploads.voice_sample_rel_path(), uploads.voice_sample_rel_path()
     assert a != b and a.startswith("vs_") and a.endswith(".wav")
     assert "/" not in a and ".." not in a
+
+
+# ---------- 用户直接上传 wav / mp3 / m4a ----------
+
+def _audio_bytes(ext: str, seconds: float = 8.0, extra: list[str] | None = None) -> bytes:
+    """用 ffmpeg 造一段真音频。与 _webm_bytes 同一套路,只是换容器——
+    用户手选的文件就是这些格式,不能拿假字节糊弄过去。"""
+    import subprocess, tempfile
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / f"a.{ext}"
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi",
+                        "-i", f"sine=frequency=440:duration={seconds}",
+                        *(extra or []), str(out)], check=True, capture_output=True)
+        return out.read_bytes()
+
+
+def test_voice_sample_accepts_uploaded_wav_and_mp3():
+    for ext, ct in (("wav", "audio/wav"), ("mp3", "audio/mpeg")):
+        wav = uploads.to_voice_sample_wav(_audio_bytes(ext, 8.0), ct)
+        assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE", ext
+
+
+def test_voice_sample_accepts_safari_m4a():
+    """Safari 的 MediaRecorder 产出 audio/mp4(VoiceRecorder 的 PREFERRED 里就有它),
+    而旧的 AUDIO_DEMUXERS 没有这一项 —— Safari 用户录完必然撞「不支持的音频格式,
+    请用浏览器自带的录音功能」,而他用的正是浏览器自带的录音功能。这条守着那个既有缺陷。"""
+    raw = _audio_bytes("m4a", 8.0, ["-c:a", "aac"])
+    assert uploads._sniff_audio(raw) == "mp4"
+    wav = uploads.to_voice_sample_wav(raw, "audio/mp4")
+    assert wav[:4] == b"RIFF"
+
+
+def test_voice_sample_accepts_mime_aliases():
+    """同一个 wav 在不同系统上可能报 audio/x-wav / audio/wave;mp3 可能报 audio/mp3。
+    这些别名不认就会把合法文件随机拒掉。(有魔数兜底,但兜底表也得收全。)"""
+    for ct in ("audio/x-wav", "audio/wave", "audio/vnd.wave"):
+        assert uploads.AUDIO_DEMUXERS[ct] == "wav"
+    for ct in ("audio/mp3", "audio/x-mpeg-3"):
+        assert uploads.AUDIO_DEMUXERS[ct] == "mp3"
+    # 兜底表的值域必须全在白名单内,否则等于悄悄放开了一个 demuxer
+    assert set(uploads.AUDIO_DEMUXERS.values()) <= uploads.AUDIO_FORMATS
+
+
+def test_voice_sample_riff_that_is_not_wave_is_rejected():
+    """RIFF 头也可能是 avi/webp,只看前四字节会把它们当 wav 喂给 ffmpeg。"""
+    assert uploads._sniff_audio(b"RIFF\x00\x00\x00\x00WEBPVP8 ") is None
+
+
+def test_uploaded_long_audio_is_hard_truncated():
+    """上传一首长音频只会取前 20 秒(界面上有明说)。硬截断在服务端,不能只信前端。"""
+    wav = uploads.to_voice_sample_wav(_audio_bytes("wav", 35.0), "audio/wav")
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "o.wav"
+        p.write_bytes(wav)
+        assert abs(ffmpeg.probe_duration_ms(p) - 20_000) < 300
