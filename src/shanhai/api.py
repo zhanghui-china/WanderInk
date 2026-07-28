@@ -328,15 +328,21 @@ def _mark_step_started(p: Project, name: str, workdir: Path) -> _StepStart:
 def _mark_step_elapsed(p: Project, name: str, start: _StepStart, workdir: Path) -> bool:
     """原子写入该环节本次运行的起止与耗时,直接覆盖上一轮的值(不累加)。返回是否真的记了。
 
-    空跑守卫:产物指纹与开工时完全一致、且此前已有耗时记录 → 本轮被幂等逻辑全量跳过、
-    一个文件都没写,三个计时键原样不动(实测:DGX 上 5 个 s5_elapsed_s=2.0 的作品,每页音频
-    都在盘上、一页没重做,那 2 秒纯粹是加载遍历的空转;把真实的十几分钟覆盖成 2 秒,正是
-    用户报的那个 bug)。指纹必须在这里重算——环节函数返回的是新的 p、产物也刚落盘。
+    空跑守卫:产物指纹与开工时完全一致 → 本轮被幂等逻辑全量跳过、一个文件都没写,
+    三个计时键原样不动(实测:DGX 上 5 个 s5_elapsed_s=2.0 的作品,每页音频都在盘上、
+    一页没重做,那 2 秒纯粹是加载遍历的空转;把真实的十几分钟覆盖成 2 秒,正是用户报的
+    那个 bug)。指纹必须在这里重算——环节函数返回的是新的 p、产物也刚落盘。
+
+    守卫**只看指纹**,不再附加"此前已有耗时记录"这个前置条件。第一版有,结果是计时键被级联
+    清空之后的首次空跑照样绕过守卫:「石坊温热」的 s3 就这样被写成 0.0 秒(4 个三视图早就在
+    盘上、一个没重画,真实耗时 0.0016 秒),前端显示「0秒」、总耗时也跟着少算一整个环节。
+    一次没产出任何文件的运行,无论此前有没有记录,记下来的耗时都不代表这个环节的工作量。
+    代价:此前从没记过时间、且本轮又确实没产文件的环节,那一行会留空(悬停显示「尚未生成」)
+    而不是显示一个 0 秒——留空是诚实的,0 秒是假的。
 
     返回值给调用方判断要不要走"下游产物已过期"的级联:本轮什么都没重做,下游自然也没过期。"""
     p.status.pop(f"{name}_running_since", None)
-    if start.fingerprint is not None and f"{name}_elapsed_s" in p.status \
-            and _artifact_fingerprint(workdir) == start.fingerprint:
+    if start.fingerprint is not None and _artifact_fingerprint(workdir) == start.fingerprint:
         return False
     p.status[f"{name}_started_at"] = start.started_at
     p.status[f"{name}_elapsed_s"] = f"{time.monotonic() - start.t0:.1f}"

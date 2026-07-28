@@ -816,9 +816,11 @@ def test_run_step_prelude_exception_falls_to_error_not_stuck_queued():
     assert "steppreludeid" not in api._CANCELLED
 
 
-def test_pipeline_records_step_and_total_timing():
+def test_pipeline_records_step_and_total_timing(tmp_path: Path):
     # 每步开始/结束都要落 started_at/elapsed_s,整体落 pipeline_started_at/pipeline_finished_at,
     # 供前端时间线展示每步及总耗时。
+    # ⚠️ s3~s6 的 mock 必须真的往 workdir 里写文件,否则会被空跑守卫判成"什么都没做"、
+    # 计时键一个不写(守卫只看产物指纹)。s0/s1/s2 不设守卫,无所谓。
     from unittest.mock import MagicMock
     p = Project(project_id="timingid", scenic_spot="雷峰塔")
     mock_settings = MagicMock()
@@ -831,6 +833,7 @@ def test_pipeline_records_step_and_total_timing():
     }
     with patch("shanhai.api.store.load", return_value=p), \
          patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
          patch("shanhai.api.resolve_stage_clients", return_value=(settings, clients)), \
          patch("shanhai.api.s0_legend") as s0, \
          patch("shanhai.api.s1_script") as s1, \
@@ -840,8 +843,11 @@ def test_pipeline_records_step_and_total_timing():
          patch("shanhai.api.s5_audio") as s5, \
          patch("shanhai.api.s6_compose") as s6:
         s0.from_text.return_value = p
-        for m in (s1, s2, s3, s4, s5, s6):
-            m.run.return_value = p
+        for i, m in enumerate((s1, s2, s3, s4, s5, s6)):
+            def _write(*_args, _n=i, **_kwargs):
+                (tmp_path / f"artifact_{_n}.bin").write_bytes(b"x")   # 真的产出文件,指纹随之变化
+                return p
+            m.run.side_effect = _write
         api._pipeline("timingid", runtime_config.AppConfig(), "自备故事")
 
     assert p.status["pipeline"] != "running"   # 已跑到终态(mock 未产出可交付内容,具体终态值不是本测试重点)
@@ -897,14 +903,20 @@ def test_pipeline_use_hermes_agent_false_falls_back_to_global_llm():
 
 
 @patch("shanhai.api.Settings")
-def test_run_step_records_step_timing(_settings):
+def test_run_step_records_step_timing(_settings, tmp_path: Path):
+    # ⚠️ mock 必须真的往 workdir 里写文件,否则会被空跑守卫判成"什么都没做"、三个计时键
+    # 一字不写,断言全空(守卫只看产物指纹,见 _mark_step_elapsed)。
     from unittest.mock import MagicMock
     p = Project(project_id="stepTimingId", scenic_spot="雷峰塔")
     with patch("shanhai.api.store.load", return_value=p), \
          patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
          patch("shanhai.api._clients", return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
          patch("shanhai.api.s6_compose") as s6:
-        s6.run.return_value = p
+        def _write_mp4(*_args, **_kwargs):
+            (tmp_path / "final.mp4").write_bytes(b"mp4")
+            return p
+        s6.run.side_effect = _write_mp4
         api._run_step("stepTimingId", "s6", runtime_config.AppConfig())
 
     assert p.status["s6_started_at"]
@@ -1047,9 +1059,10 @@ def test_run_step_marks_cancelled_when_flag_set_during_step():
     assert "cancelmidstep" not in api._CANCELLED   # 标记已被消费,不残留污染下次重跑
 
 
-def test_run_step_cascades_clears_downstream_status():
+def test_run_step_cascades_clears_downstream_status(tmp_path: Path):
     # 联动诚实化:重跑上游 s4 使其下游 s5/s6 产物过期,须级联清掉下游 status 键(含计时键),
     # 避免残留"假完成"标记;本环节 s4 自身与其上游不被级联清除,output 因上游重跑清空。
+    # ⚠️ mock 必须真的写文件:空跑守卫判定"本轮无产出"时会跳过级联(什么都没重做、下游就没过期)。
     from unittest.mock import MagicMock
 
     from shanhai.config import Settings
@@ -1061,11 +1074,13 @@ def test_run_step_cascades_clears_downstream_status():
     with patch("shanhai.api.resolve_settings", return_value=fake), \
          patch("shanhai.api.store.load", return_value=p), \
          patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
          patch("shanhai.api._clients",
                return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
          patch("shanhai.api.s4_pages") as s4:
         def _run_s4(*_args, **_kwargs):
             p.status["s4"] = "done"   # 模拟真实 s4_pages.run() 跑完后写回终态(自身状态由 run() 负责)
+            (tmp_path / "page_01.png").write_bytes(b"png")   # 真的产出文件,指纹随之变化
             return p
         s4.run.side_effect = _run_s4
         api._run_step("cascadeId", "s4", runtime_config.AppConfig())
@@ -1804,3 +1819,30 @@ def test_invalidates_table_covers_every_step():
         assert name not in downstream            # 不作废自己
         for d in downstream:
             assert d in api._STEP_NAMES
+
+
+@patch("shanhai.api.Settings")
+def test_run_step_skips_timing_on_first_noop_without_prior_record(_settings, tmp_path: Path):
+    # 「石坊温热」s3=0.0秒 的回归测试:计时键被级联清空之后的**首次**空跑,此前没有耗时记录,
+    # 老守卫的 `elapsed_s in status` 前置条件因此不成立、被整个绕过,把 0.0 写了进去
+    # (4 个三视图早就在盘上、一个没重画,真实 0.0016 秒),前端显示「0秒」、总耗时少算一环节。
+    # 守卫只看指纹即可:没产出任何文件的运行,不管此前有没有记录都不该落一个假耗时。
+    from unittest.mock import MagicMock
+    p = Project(project_id="noopFirstId", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    p.status = {}                                   # 计时键已被清空,此前无任何记录
+    (tmp_path / "audio").mkdir()
+    (tmp_path / "audio" / "page_01.mp3").write_bytes(b"mp3")   # 产物已在盘上,本轮不会被重写
+    with patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s5_audio") as s5:
+        s5.run.return_value = p                     # 原样返回:全部子项幂等跳过,无新产物
+        api._run_step("noopFirstId", "s5", runtime_config.AppConfig())
+
+    assert "s5_elapsed_s" not in p.status           # 不写假的 0.0 秒,这一行留空
+    assert "s5_started_at" not in p.status
+    assert "s5_finished_at" not in p.status
+    assert "s5_running_since" not in p.status       # 进行中标记仍要收干净
