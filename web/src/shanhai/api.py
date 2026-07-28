@@ -7,6 +7,7 @@
 - 若 web/dist 存在(前端已 build),挂到 / 作为单页应用;dev 时前端另起 Vite 连本服务。
 """
 import json
+import mimetypes
 import os
 import secrets
 import shutil
@@ -42,8 +43,16 @@ from shanhai.styles import STYLE_PRESETS
 
 # 可产出的附加语种轨(主语言中文不在其中,它走原有流水线)。加一门语言只需扩 s5t_translate.LANGUAGES。
 TRACK_LANGS = tuple(s5t_translate.LANGUAGES)
+# 主语言码,与 s5_audio/s6_compose 同源,不在这里另写字面量
+MAIN_LANG = s5_audio.DEFAULT_LANG
 
 app = FastAPI(title="WanderInk · 有声连环画生成器")
+
+# 显式注册 .vtt:浏览器只接受 Content-Type 为 text/vtt 的 <track src>,给成
+# application/octet-stream 会被直接拒绝——而且是**静默**拒绝,字幕就是不出来、控制台
+# 也未必报。StaticFiles 靠 mimetypes 猜,而它取决于运行环境的 /etc/mime.types 等系统
+# 文件(实测本机 macOS 与 DGX 当前都能猜对,但那是环境的功劳不是我们的)。一行的保险。
+mimetypes.add_type("text/vtt", ".vtt")
 
 # 把 .env 加载进 os.environ,供下面的 os.getenv 与之后的 Settings() 读取。
 # override=False:已存在的进程环境变量(如 systemd EnvironmentFile 注入)优先于 .env。
@@ -479,6 +488,11 @@ def _serialize(p: Project) -> dict:
         # 附加语种成片:{"en": "/files/..."};没生成过就是空字典
         "track_mp4": {lg: _mp4_url(p.output.get(f"mp4_{lg}", ""))
                       for lg in TRACK_LANGS if p.output.get(f"mp4_{lg}")},
+        # 网页播放器用的 WebVTT 外挂字幕:{"zh": "/files/...", "en": ...}。
+        # MP4 里那几条 mov_text 内嵌轨浏览器根本不解析,网页显示字幕只能靠 <track> + VTT。
+        "subtitles": {lg: _file_url(p.project_id, f"output/final.{lg}.vtt", workdir)
+                      for lg in (MAIN_LANG, *TRACK_LANGS)
+                      if (workdir / "output" / f"final.{lg}.vtt").exists()},
     }
 
 
@@ -1047,6 +1061,36 @@ def run_step(project_id: str, name: str, user: str = Depends(current_user)) -> J
     return JSONResponse({"queued": True}, status_code=202)
 
 
+def _remux_main_subtitles(p: Project, workdir: Path) -> None:
+    """英文轨做完后,把新出的字幕轨也补进**中文版**成片。
+
+    为什么需要:中文版是在英文译文还不存在时合成的,只封了一条中文轨;而生成英文轨只
+    重跑 lang="en",不会回头动它。结果就是用户在主成片播放器里怎么也找不到英文字幕。
+    这一趟是纯 copy(音视频都不重编码),几秒钟。
+
+    失败必须吞掉:中文版少一条字幕轨是瑕疵,让已经跑完的英文轨整个报错是事故。"""
+    mp4 = p.output.get("mp4")
+    if not mp4:
+        return
+    try:
+        src = Path(mp4)
+        src = src if src.exists() else workdir / src
+        if not src.exists():
+            return
+        out_dir = workdir / "output"
+        subs = [(out_dir / f"final.{lg}.srt", s6_compose.SUB_LANG_TAGS.get(lg, lg))
+                for lg in (MAIN_LANG, *TRACK_LANGS)
+                if (out_dir / f"final.{lg}.srt").exists()]
+        if len(subs) < 2:      # 只有主语言一条时无事可做
+            return
+        staged = out_dir / "final.remux.mp4"
+        ffmpeg.sh(ffmpeg.mux_subtitles_cmd(
+            src, subs, staged, default_lang=s6_compose.SUB_LANG_TAGS[MAIN_LANG]))
+        os.replace(staged, src)
+    except Exception as e:  # noqa: BLE001 —— 见 docstring:不能让它拖垮已成功的英文轨
+        print(f"⚠️ 中文版字幕重封失败(英文轨不受影响):{e}")
+
+
 def _run_track(project_id: str, lang: str, cfg: AppConfig) -> None:
     """后台线程产出附加语种轨:翻译 → 该语种配音 → 该语种成片。
     复用 _run_step 的状态写入与异常兜底语义;各环节自身幂等,失败后重点一次即可续跑。"""
@@ -1078,6 +1122,7 @@ def _run_track(project_id: str, lang: str, cfg: AppConfig) -> None:
         _locked_save(p)
 
         p = s6_compose.run(p, workdir, lang=lang)
+        _remux_main_subtitles(p, workdir)
         _mark_step_elapsed(p, f"track_{lang}", track_start, workdir)
         p.status[f"track_{lang}"] = "done" if p.output.get(f"mp4_{lang}") else "partial"
         _locked_save(p)

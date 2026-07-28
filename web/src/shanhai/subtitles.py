@@ -29,13 +29,29 @@ def _ts(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def build_srt(cues: list[Cue], out: Path) -> None:
-    """写 SRT。空文本的 cue 直接跳过(某页没有该语种译文时不产出空字幕块);
-    序号按实际写出的条目连续编号,不留空洞。"""
-    blocks: list[str] = []
+def _blocks(cues: list[Cue], sep: str) -> list[str]:
+    """SRT 与 VTT 的唯一实质差别就是时间戳的毫秒分隔符(SRT 用逗号、VTT 用点),
+    所以 cue 的筛选与编号逻辑必须共用——两边各写一遍迟早漂移。
+    空文本的 cue 直接跳过(某页没有该语种译文时不产出空字幕块),序号按实际写出的
+    条目连续编号,不留空洞。"""
+    out: list[str] = []
     for start, end, text in cues:
         text = text.strip()
         if not text:
             continue
-        blocks.append(f"{len(blocks) + 1}\n{_ts(start)} --> {_ts(end)}\n{text}\n")
-    out.write_text("\n".join(blocks), encoding="utf-8")
+        a, b = _ts(start).replace(",", sep), _ts(end).replace(",", sep)
+        out.append(f"{len(out) + 1}\n{a} --> {b}\n{text}\n")
+    return out
+
+
+def build_srt(cues: list[Cue], out: Path) -> None:
+    """写 SRT。给 ffmpeg 的 mov_text 内嵌字幕轨用。"""
+    out.write_text("\n".join(_blocks(cues, ",")), encoding="utf-8")
+
+
+def build_vtt(cues: list[Cue], out: Path) -> None:
+    """写 WebVTT。**给网页播放器用**——浏览器的 HTML5 <video> 不解析 MP4 容器内的
+    mov_text 字幕轨(Chrome/Firefox/Edge 一律忽略),网页里显示字幕唯一的办法是
+    <track kind="subtitles"> 外挂 VTT;而 SRT 也不是浏览器认的格式。
+    与 build_srt 共用同一份 cues,时间轴不重算(见 _blocks)。"""
+    out.write_text("WEBVTT\n\n" + "\n".join(_blocks(cues, ".")), encoding="utf-8")
