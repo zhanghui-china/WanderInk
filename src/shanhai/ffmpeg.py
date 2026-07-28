@@ -206,9 +206,10 @@ def finalize_cmd(video: Path, bgm: Path | None, out: Path) -> list[str]:
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(out)]
 
 
-def mux_subtitles_cmd(video: Path, subs: list[tuple[Path, str]], out: Path) -> list[str]:
+def mux_subtitles_cmd(video: Path, subs: list[tuple[Path, str]], out: Path,
+                      default_lang: str = "") -> list[str]:
     """把若干 SRT 作为软字幕轨封进 MP4。subs 是 (srt 路径, ISO 639-2 语种码) 列表,
-    如 [(zh.srt, "zho"), (en.srt, "eng")]。
+    如 [(zh.srt, "zho"), (en.srt, "eng")]。default_lang 指定哪条轨为默认(ISO 639-2)。
 
     独立一趟做,不并进 finalize_cmd:后者带 -stream_loop -1 的 BGM 输入和 -shortest,
     再塞进稀疏的字幕流容易让 -shortest 按字幕结束时刻截断整片。这里音视频都是 copy,
@@ -223,5 +224,10 @@ def mux_subtitles_cmd(video: Path, subs: list[tuple[Path, str]], out: Path) -> l
     cmd += ["-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text"]
     for i, (_path, lang) in enumerate(subs):
         cmd += [f"-metadata:s:s:{i}", f"language={lang}"]
+        # 显式给每条轨定 disposition:命中 default_lang 的置 default,其余显式清 0。
+        # 不写 0 不行——ffmpeg 会保留源流的 disposition,可能出现两条都是 default 或
+        # 都不是。没有 default 时播放器一律选第一条,英文版就会弹中文字幕,用户的
+        # 观感就是"没有英文字幕"(这正是本次反馈的成因之一)。
+        cmd += [f"-disposition:s:{i}", "default" if lang == default_lang else "0"]
     cmd.append(str(out))
     return cmd

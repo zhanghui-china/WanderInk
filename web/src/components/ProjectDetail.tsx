@@ -28,6 +28,35 @@ const EMOTIONS = ['宁静', '温情', '惊变', '悲壮', '险境', '烟雨', '�
 // 语种码 -> 中文标签。后端 /api/meta 的 track_langs 决定出现哪些语种,这里只管显示名。
 const TRACK_LABEL: Record<string, string> = { en: '英文版' }
 
+// 字幕语种码 -> <track> 的 srclang / label
+const SUB_LABEL: Record<string, string> = { zh: '中文', en: 'English' }
+
+// 浏览器的 HTML5 <video> **不解析 MP4 容器内的 mov_text 字幕轨**(Chrome/Firefox/Edge
+// 一律忽略),网页里显示字幕唯一的办法就是 <track> 外挂 WebVTT。MP4 内嵌轨仍然保留——
+// 下载后用 VLC / 景区播放设备看时靠的是它。
+function SubTracks({ subtitles, defaultLang }: {
+  subtitles?: Record<string, string | null>
+  defaultLang: string
+}) {
+  if (!subtitles) return null
+  return (
+    <>
+      {Object.entries(subtitles).map(([lang, url]) =>
+        url ? (
+          <track
+            key={lang}
+            kind="subtitles"
+            src={url}
+            srcLang={lang}
+            label={SUB_LABEL[lang] ?? lang}
+            default={lang === defaultLang}
+          />
+        ) : null,
+      )}
+    </>
+  )
+}
+
 const STEP_ACTIONS: { name: string; label: string; destructive?: boolean }[] = [
   { name: 's2', label: '分镜', destructive: true },
   { name: 's3', label: '角色' },
@@ -237,7 +266,14 @@ export function ProjectDetailView({
                   </div>
                   {url && (
                     <>
-                      <video src={url} controls className="w-full rounded-xl border border-line bg-black" />
+                      <video
+                        src={url}
+                        controls
+                        crossOrigin="anonymous"
+                        className="w-full rounded-xl border border-line bg-black"
+                      >
+                        <SubTracks subtitles={project.subtitles} defaultLang={lang} />
+                      </video>
                       <a href={url} download className={ghostBtn}>
                         下载{label}成片
                       </a>
@@ -257,8 +293,11 @@ export function ProjectDetailView({
           <video
             src={project.mp4}
             controls
+            crossOrigin="anonymous"
             className="w-full rounded-xl border border-line bg-black"
-          />
+          >
+            <SubTracks subtitles={project.subtitles} defaultLang="zh" />
+          </video>
           <BgmNote status={project.status['bgm']} />
           <ExportButtons project={project} />
         </div>

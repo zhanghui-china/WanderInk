@@ -83,6 +83,9 @@ export interface ProjectDetail {
   pdf: string | null
   zip: string | null
   track_mp4: Record<string, string | null>
+  // 网页播放器用的 WebVTT 外挂字幕 {lang: url}。MP4 里那几条 mov_text 内嵌轨
+  // 浏览器根本不解析,网页显示字幕只能靠 <track> + VTT。
+  subtitles?: Record<string, string | null>
 }
 
 export interface CellPatch {

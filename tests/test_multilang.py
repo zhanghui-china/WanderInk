@@ -226,3 +226,52 @@ def test_s5_english_track_does_not_touch_bgm(tmp_path: Path):
         p = s5_audio.run(p, MagicMock(), "EN-Female", tmp_path, lang="en")
     resolve.assert_not_called()
     assert p.bgm == "audio/bgm.mp3"
+
+
+# ---------- 网页字幕:本次反馈「英文配音已生成,尚无英文字幕」的成因与修复 ----------
+
+def test_vtt_shares_cues_with_srt_and_uses_dot_separator(tmp_path: Path):
+    """VTT 与 SRT 必须来自同一份 cues,只在时间戳分隔符上不同。
+    两边各算一遍时间轴迟早漂移——而时间轴是这里最难查的东西(xfade 重叠)。"""
+    cues = [(0.0, 2.5, "第一句"), (2.5, 5.0, ""), (5.0, 7.5, "第三句")]
+    srt, vtt = tmp_path / "a.srt", tmp_path / "a.vtt"
+    subtitles.build_srt(cues, srt)
+    subtitles.build_vtt(cues, vtt)
+    s, v = srt.read_text(encoding="utf-8"), vtt.read_text(encoding="utf-8")
+    assert v.startswith("WEBVTT\n\n")            # 没有这个头浏览器直接拒收
+    assert "00:00:00,000 --> 00:00:02,500" in s  # SRT 用逗号
+    assert "00:00:00.000 --> 00:00:02.500" in v  # VTT 用点
+    # 空文本 cue 两边都跳过,条目数一致
+    assert s.count("-->") == v.count("-->") == 2
+
+
+def test_vtt_mimetype_is_registered():
+    """浏览器只接受 Content-Type 为 text/vtt 的 <track src>,给 octet-stream 会被**静默**
+    拒绝——字幕就是不出来、控制台也未必报。StaticFiles 靠 mimetypes 猜,而那取决于运行
+    环境的系统 mime 文件。api 模块必须显式注册,不能靠环境的运气。"""
+    import mimetypes
+    import shanhai.api  # noqa: F401 —— import 即触发 add_type
+    assert mimetypes.guess_type("x.vtt")[0] == "text/vtt"
+
+
+def test_mux_subtitles_marks_only_target_lang_default():
+    """没有 default 时播放器一律选第一条轨,英文版就会弹中文字幕——用户观感即
+    "没有英文字幕"(本次反馈的成因之一)。非目标轨要**显式**清 0,不写的话
+    ffmpeg 会保留源流的 disposition。"""
+    cmd = mux_subtitles_cmd(Path("v.mp4"),
+                            [(Path("zh.srt"), "zho"), (Path("en.srt"), "eng")],
+                            Path("o.mp4"), default_lang="eng")
+    assert cmd[cmd.index("-disposition:s:0") + 1] == "0"
+    assert cmd[cmd.index("-disposition:s:1") + 1] == "default"
+
+
+def test_subtitle_langs_puts_current_lang_first():
+    """本轮语种要排第一:播放器不认 disposition 时就靠顺序兜底。"""
+    from shanhai.steps.s6_compose import _subtitle_langs
+    p = _project(1)
+    p.storyboard[0].tracks = {"en": LocalizedTrack(caption="English")}
+    assert _subtitle_langs(p, "en") == ["en", "zh"]
+    assert _subtitle_langs(p, "zh") == ["zh", "en"]
+    # 没有任何译文时只剩主语言
+    p.storyboard[0].tracks = {}
+    assert _subtitle_langs(p, "zh") == ["zh"]

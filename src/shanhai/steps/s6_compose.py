@@ -69,24 +69,31 @@ def _encode_page_clip(cell: StoryboardCell, track: StoryboardCell | LocalizedTra
     return clip, ffmpeg.clip_duration_s(track.duration_ms, has_audio=True)
 
 
-def _subtitle_langs(project: Project) -> list[str]:
-    """成片要内嵌的字幕语种:主语言恒有,附加语种只要有任意一页译文就算数。"""
+def _subtitle_langs(project: Project, lang: str = DEFAULT_LANG) -> list[str]:
+    """成片要内嵌的字幕语种:主语言恒有,附加语种只要有任意一页译文就算数。
+
+    **本轮语种排在最前**:播放器不认 disposition 时一律选第一条轨,英文版若把中文排在
+    前面就会弹中文字幕——用户的观感就是"没有英文字幕"(本次反馈的成因之一)。"""
     langs = [DEFAULT_LANG]
     extra = {lg for cell in project.storyboard for lg, tr in cell.tracks.items()
              if tr.caption.strip()}
-    return langs + sorted(extra)
+    langs += sorted(extra)
+    return [lang] + [x for x in langs if x != lang] if lang in langs else langs
 
 
 def _write_subtitles(project: Project, cells: list[StoryboardCell], durations: list[float],
-                     out_dir: Path) -> list[tuple[Path, str]]:
-    """为每个可用语种写一份 SRT,返回 [(路径, ISO639-2 标签)]。
-    时间轴按 clip 起点算——cells[i] 对应 clips[i+1](clips[0] 是片头卡)。"""
+                     out_dir: Path, lang: str = DEFAULT_LANG) -> list[tuple[Path, str]]:
+    """为每个可用语种各写一份 SRT 与 VTT,返回 [(srt 路径, ISO639-2 标签)]。
+    时间轴按 clip 起点算——cells[i] 对应 clips[i+1](clips[0] 是片头卡)。
+
+    两种格式各有其用、缺一不可:SRT 喂给 ffmpeg 封成 mov_text 内嵌轨(下载后用 VLC/
+    景区播放设备看);VTT 给网页——浏览器**不解析 MP4 内的字幕轨**,只认 <track> 外挂 VTT。"""
     starts = subtitles.clip_start_times(durations)
     written: list[tuple[Path, str]] = []
-    for lang in _subtitle_langs(project):
+    for sub_lang in _subtitle_langs(project, lang):
         cues: list[subtitles.Cue] = []
         for i, cell in enumerate(cells):
-            track = track_of(cell, lang)
+            track = track_of(cell, sub_lang)
             if not track.caption.strip():
                 continue
             start = starts[i + 1]
@@ -96,9 +103,10 @@ def _write_subtitles(project: Project, cells: list[StoryboardCell], durations: l
             cues.append((start, start + span, track.caption))
         if not cues:
             continue
-        path = out_dir / f"final.{lang}.srt"
+        path = out_dir / f"final.{sub_lang}.srt"
         subtitles.build_srt(cues, path)
-        written.append((path, SUB_LANG_TAGS.get(lang, lang)))
+        subtitles.build_vtt(cues, out_dir / f"final.{sub_lang}.vtt")
+        written.append((path, SUB_LANG_TAGS.get(sub_lang, sub_lang)))
     return written
 
 
@@ -156,12 +164,14 @@ def run(project: Project, workdir: Path, lang: str = DEFAULT_LANG) -> Project:
     ffmpeg.sh(ffmpeg.xfade_concat_cmd(clips, durations, merged))
     final = out_dir / f"final{suffix}.mp4"
     bgm = Path(project.bgm) if project.bgm else None
-    subs = _write_subtitles(project, content_cells, durations, out_dir)
+    subs = _write_subtitles(project, content_cells, durations, out_dir, lang)
     if subs:
         # 先做 BGM/响度,再单独一趟 copy 封字幕轨(见 ffmpeg.mux_subtitles_cmd 的取舍说明)
         staged = out_dir / f"final{suffix}.nosub.mp4"
         ffmpeg.sh(ffmpeg.finalize_cmd(merged, bgm, staged))
-        ffmpeg.sh(ffmpeg.mux_subtitles_cmd(staged, subs, final))
+        # 本轮语种的那条轨置默认:英文版就该默认显示英文字幕
+        ffmpeg.sh(ffmpeg.mux_subtitles_cmd(staged, subs, final,
+                                           default_lang=SUB_LANG_TAGS.get(lang, lang)))
         staged.unlink(missing_ok=True)
     else:
         ffmpeg.sh(ffmpeg.finalize_cmd(merged, bgm, final))
