@@ -353,3 +353,37 @@ def test_s3_budget_not_consumed_by_already_locked_characters(tmp_path: Path):
     assert image.generate.call_count == total
     for i in range(4, 4 + total):
         assert p.script.characters[i].locked is True, f"角色{i} 传了参考图却没画出来"
+
+
+def test_turnaround_progress_denominator_matches_draw_flags(tmp_path: Path):
+    """S3 进度的分母必须是「本轮真的会画的角色数」,不是角色总数。
+
+    只有前 MAX_TURNAROUND 个主角、以及传了参考图的角色才会画,还有 MAX_TURNAROUND_TOTAL
+    硬顶。拿总数当分母会永远停在 4/8 那样卡住不动;而在 api 层另算一遍判据必然与
+    _draw_flags 漂移——这条同时守着"同源"这件事。
+    """
+    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance="白衣")
+             for i in range(8)]
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+
+    # 8 个角色但只有前 4 个是候选 → 分母 4,不是 8
+    assert s3_characters.turnaround_progress(p, tmp_path) == (0, 4)
+
+    # 前两个已出图 → 分子 2
+    for i in range(2):
+        chars[i].turnaround_image = f"characters/角色{i}.png"
+    assert s3_characters.turnaround_progress(p, tmp_path) == (2, 4)
+
+    # 第 6 个传了参考图 → 它也进候选,分母变 5
+    (tmp_path / "characters" / "refs").mkdir(parents=True)
+    rel = "characters/refs/ref_x.png"
+    (tmp_path / rel).write_bytes(b"png")
+    chars[5].reference_image = rel
+    assert s3_characters.turnaround_progress(p, tmp_path) == (2, 5)
+
+
+def test_turnaround_progress_without_script():
+    """S1 之前 script 为 None,不能炸——前端在任何阶段都会读这个字段。"""
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    assert s3_characters.turnaround_progress(p, Path("/nonexistent")) == (0, 0)

@@ -55,6 +55,10 @@ export interface ContentSummary {
   imaged: number
   narrated: number
   silent: number
+  // 角色维度:分母是**本轮真的会画的**角色数(前 4 个主角 + 传了参考图的),
+  // 不是角色总数——否则会永远停在 4/8 那样卡住不动。
+  characters_total: number
+  characters_imaged: number
 }
 
 export interface Character {

@@ -481,7 +481,11 @@ def _serialize(p: Project) -> dict:
         "characters": characters,
         "pages": pages,
         "deliverable": p.is_deliverable(),
-        "content_summary": p.content_summary(),
+        # 页维度来自 content_summary(纯模型方法);角色维度要看盘上的文件(参考图/三视图
+        # 是否存在)才能算准分母,故在这里算——_serialize 手里有 workdir,模型方法没有。
+        "content_summary": {**p.content_summary(),
+                            **dict(zip(("characters_imaged", "characters_total"),
+                                       s3_characters.turnaround_progress(p, workdir)))},
         "mp4": _mp4_url(p.output.get("mp4", "")),
         "zip": _mp4_url(p.output.get("zip", "")),
         "pdf": _mp4_url(p.output.get("pdf", "")),

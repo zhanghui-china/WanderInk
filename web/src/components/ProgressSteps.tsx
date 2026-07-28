@@ -193,11 +193,16 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
               (Number.isFinite(dur) && dur >= 0 ? ` · 耗时 ${formatElapsed(dur)}` : '')
           }
 
-          // S4 逐页生图耗时较长,当前步是它时额外显示"已出图 N/M 页",不用干等一个笼统的"生成中"
+          // S3/S4 都是逐项生图、动辄几分钟,当前步是它们时显示实时计数,
+          // 不用干等一个笼统的"生成中"。表以外的环节没有数字,行为不变。
+          const cs = project.content_summary
+          const counters: Record<string, [number, number, string] | undefined> = {
+            s3: [cs.characters_imaged, cs.characters_total, '位角色'],
+            s4: [cs.imaged, cs.total, '页'],
+          }
+          const counter = isCurrent ? counters[s.key] : undefined
           const pageProgress =
-            isCurrent && s.key === 's4' && project.content_summary.total > 0
-              ? `${project.content_summary.imaged}/${project.content_summary.total} 页`
-              : null
+            counter && counter[1] > 0 ? `${counter[0]}/${counter[1]} ${counter[2]}` : null
 
           return (
             <li key={s.key} className="group relative flex items-center gap-3">

@@ -139,7 +139,9 @@ def test_serialize_builds_urls():
     assert d["script_title"] == "白蛇传"
     assert d["pages"][0]["silent"] is False              # 真人解说页非静音
     assert d["deliverable"] is True                      # 有成图页 → 可交付
-    assert d["content_summary"] == {"total": 1, "imaged": 1, "narrated": 1, "silent": 0}
+    # 角色维度与页维度并列吐出:前端进度格靠它显示 S3 的 "N/M 位角色"(此前只有 S4 有数字)
+    assert d["content_summary"] == {"total": 1, "imaged": 1, "narrated": 1, "silent": 0,
+                                    "characters_imaged": 1, "characters_total": 1}
 
 
 def test_serialize_appends_version_to_existing_files(tmp_path, monkeypatch):
@@ -247,7 +249,8 @@ def test_serialize_marks_silent_and_non_deliverable():
                                                             image="", audio="")]
     d = api._serialize(p)
     assert d["pages"][0]["silent"] is True
-    assert d["content_summary"] == {"total": 2, "imaged": 1, "narrated": 0, "silent": 1}
+    assert d["content_summary"] == {"total": 2, "imaged": 1, "narrated": 0, "silent": 1,
+                                    "characters_imaged": 0, "characters_total": 0}
     assert d["deliverable"] is True                      # 至少一页成图
 
 

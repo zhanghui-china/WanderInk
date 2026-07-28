@@ -75,7 +75,31 @@ function stepReady(name: string, project: Detail): boolean {
   return hasPages
 }
 
-const card = 'rounded-2xl border border-band bg-paper p-5 shadow-paper'
+// 图还没出来时的占位。生成期间脉动、文案改成"生成中…",让用户在内容区也看得出在跑
+//(此前三种状态——从没跑过 / 正在为它生图 / 跑失败了——视觉上完全一样)。
+//
+// ⚠️ 只能表达"待生成/生成中"这个**合并态**:S3/S4 都是并发跑的(CONCURRENCY=3),
+// 前端只知道"哪些已经有图",无从得知此刻正在画哪一张。做成"指认某一张正在画"会是
+// 编出来的信息。这不是漏做,是刻意的边界。
+function Placeholder({ text, generating, failed }: {
+  text: string
+  generating: boolean
+  failed?: boolean
+}) {
+  const label = failed ? '生成失败' : generating ? '生成中…' : '未生成'
+  return (
+    <div
+      className={`flex h-full flex-col items-center justify-center gap-1 ${
+        generating && !failed ? 'animate-shy-pulse' : ''
+      }`}
+    >
+      <span className="font-scrawl text-2xl text-band">{text}</span>
+      <span className={`text-[11px] ${failed ? 'text-alarm' : 'text-muted'}`}>{label}</span>
+    </div>
+  )
+}
+
+const card = 'rounded-2xl border border-band bg-paper p-5 shadow-paper' 
 const fieldCls =
   'w-full rounded-lg border border-line bg-white/70 px-2.5 py-1.5 text-[13px] text-ink outline-none transition focus:border-cinnabar focus:bg-white'
 const primaryBtn =
@@ -325,6 +349,7 @@ export function ProjectDetailView({
                 key={c.name}
                 c={c}
                 pages={project.pages}
+                generating={generating}
                 projectId={project.project_id}
                 editable={editable}
                 onChanged={onChanged}
@@ -363,6 +388,7 @@ export function ProjectDetailView({
               <Fragment key={pg.index}>
                 <PageCard
                   pg={pg}
+                  generating={generating}
                   projectId={project.project_id}
                   trackLangs={meta?.track_langs ?? []}
                   editable={editable}
@@ -579,12 +605,14 @@ function ExportButtons({ project }: { project: Detail }) {
 function CharacterCard({
   c,
   pages,
+  generating,
   projectId,
   editable,
   onChanged,
 }: {
   c: Character
   pages: Page[]
+  generating: boolean
   projectId: string
   editable: boolean
   onChanged: () => void
@@ -691,11 +719,9 @@ function CharacterCard({
     <figure className="overflow-hidden rounded-xl border border-line bg-white/60">
       <div className={`aspect-[3/2] bg-gradient-to-b from-kraft to-rice-deep ${mountFrame}`}>
         {c.image ? (
-          <img src={c.image} alt={c.name} className="h-full w-full object-cover" />
+          <img src={c.image} alt={c.name} className="h-full w-full animate-shy-rise object-cover" />
         ) : (
-          <div className="flex h-full items-center justify-center text-xs text-muted">
-            <span className="font-scrawl text-2xl text-band">未生成</span>
-          </div>
+          <Placeholder text="三视图" generating={generating} />
         )}
         <span className="absolute left-2 top-2 flex gap-1">
           <span className="rounded-full bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
@@ -1009,6 +1035,7 @@ function InsertPageForm({
 
 function PageCard({
   pg,
+  generating,
   projectId,
   trackLangs,
   editable,
@@ -1021,6 +1048,7 @@ function PageCard({
   onInsertAfter,
 }: {
   pg: Page
+  generating: boolean
   projectId: string
   trackLangs: string[]
   editable: boolean
@@ -1137,12 +1165,12 @@ function PageCard({
     >
       <div className={`aspect-[4/3] bg-gradient-to-br from-kraft via-rice to-rice-deep ${mountFrame}`}>
         {pg.image ? (
-          <img src={pg.image} alt={`第 ${pg.index} 页`} className="h-full w-full object-cover" />
+          <img src={pg.image} alt={`第 ${pg.index} 页`}
+               className="h-full w-full animate-shy-rise object-cover" />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-1 text-sm text-muted">
-            <span className="font-scrawl text-3xl text-band">第 {pg.index} 图</span>
-            <span className="text-[11px]">{pg.status}</span>
-          </div>
+          // 此前这里把 pg.status 的英文原样透出(draft/failed),对用户毫无意义
+          <Placeholder text={`第 ${pg.index} 图`} generating={generating}
+                       failed={pg.status === 'failed'} />
         )}
         {pg.scene_ref && (
           <span className="absolute left-2 top-2 rounded-md bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice">
