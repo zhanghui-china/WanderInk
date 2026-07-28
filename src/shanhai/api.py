@@ -962,64 +962,38 @@ def update_project_voice(project_id: str, body: VoiceParams,
 
 _STEP_NAMES = ("s2", "s3", "s4", "s5", "s6")
 
+# 某一步重跑后,**哪些环节的产物真的过期了**——按数据依赖列,不按 _STEP_NAMES 里的位置。
+# 关键差别在 s2:它换的是 project.storyboard,而 S3(角色三视图)依赖的是 project.script,
+# 剧本没动、三视图仍然有效。按位置级联会把 s3 一起作废,而它的图还在、locked 还是 True,
+# 用户真去点 S3 时会被空跑守卫判成没干活 → 那格的历史耗时就此永久丢失。
+_INVALIDATES: dict[str, tuple[str, ...]] = {
+    "s2": ("s4", "s5", "s6"),
+    "s3": ("s4", "s5", "s6"),
+    "s4": ("s5", "s6"),
+    "s5": ("s6",),
+    "s6": (),
+}
 
-def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
-    """后台线程跑单步,复用 _pipeline 的状态写入 + 异常兜底语义(不复用其整段管线循环,
-    因为这里只跑调用方指定的一步)。"""
+
+def _run_step(project_id: str, name: str, cfg: AppConfig, cascade: bool = False) -> None:
+    """后台线程跑单步;cascade=True 时连同该步作废的下游一起跑完。
+
+    级联要跑哪几步、与要作废哪几步,共用 _INVALIDATES 同一张表——两处各写一份必然漂移,
+    而且会漂出"作废了却不重跑"这种最难查的组合。级联放后端而不是让前端串行提交:
+    runStep 是入队语义不是完成语义,前端要串起来就得轮询,还会因为用户关掉标签页而断链。"""
+    steps = (name, *_INVALIDATES[name]) if cascade else (name,)
     try:
         # 序言纳入 try(同 _pipeline):store.load/resolve_settings/_clients 抛异常(project.json
         # 损坏、畸形 base_url、ImportError 等)否则会被 Future 静默吞掉,项目永久卡 queued。
         p = store.load(project_id)
         workdir = store.project_dir(project_id)
-        s = resolve_settings(name, cfg)  # 该环节生效 Settings + client
-        llm, image, tts, music = _clients(s)
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
         _locked_save(p)
-        if _check_cancelled(project_id):  # 协作式取消:环节开始执行前检查
-            p.status["pipeline"] = "cancelled"
-            p.status["pipeline_finished_at"] = _now_iso()
-            _locked_save(p)
-            return
-        step_start = _mark_step_started(p, name, workdir)
-        # 清掉该环节自己的陈旧终态(如上次成功的 done):否则重跑期间磁盘上仍是旧值,
-        # 前端 currentIdx(非 done/非 partial 才算"当前步")会判定错位,动感显示不到这一格。
-        p.status.pop(name, None)
-        _locked_save(p)
-        if name == "s2":
-            p = s2_storyboard.run(p, llm, use_skill=_use_master_skill(p, s, "S2"))
-        elif name == "s3":
-            p = s3_characters.run(p, llm, image, workdir, s.image_size,
-                                  concurrency=image_concurrency(s),
-                                  cancel_check=lambda: _is_cancelled(project_id))
-        elif name == "s4":
-            p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
-                              on_progress=lambda: _locked_save(p),
-                              concurrency=image_concurrency(s),
-                              cancel_check=lambda: _is_cancelled(project_id))
-        elif name == "s5":
-            p = s5_audio.run(p, tts, s.tts_voice, workdir, music,
-                              cancel_check=lambda: _is_cancelled(project_id))
-        elif name == "s6":
-            p = s6_compose.run(p, workdir)
-        regenerated = _mark_step_elapsed(p, name, step_start, workdir)
-        if _check_cancelled(project_id):  # 协作式取消:s3/s4/s5 环节内部提前收尾后在此消费标记,
-            # 避免明明是用户主动取消却被 _deliverable_status 判成普通 partial/error,状态失真。
-            p.status["pipeline"] = "cancelled"
-            p.status["pipeline_finished_at"] = _now_iso()
-            _locked_save(p)
-            return
-        # 本轮一个产物文件都没重写(全被幂等逻辑跳过)时不走级联:什么都没变,下游自然没过期。
-        # 这一条顺带修掉一个既有 bug——在已出片的项目上点"重新生成 S4",哪怕一页都没重做,
-        # 原先也会无条件 p.output.clear() 把 mp4/zip/pdf 全毁掉,用户白白丢一次成片。
-        if name != "s6" and regenerated:
-            p.output.clear()   # 重跑上游步骤使已合成的 mp4/zip/pdf 失效,清掉避免残留"假成片"
-            # 级联:重跑上游环节使其下游环节产物过期,清掉下游 status 键避免残留"假完成"标记。
-            # name 恒在 _STEP_NAMES 内(run_step 已校验),故按 _STEP_NAMES 顺序取其后即为下游。
-            idx = _STEP_NAMES.index(name)
-            for step in _STEP_NAMES[idx + 1:]:
-                editing.clear_step_keys(p.status, step)
-        _locked_save(p)
+        for step_name in steps:
+            cancelled, p = _run_one_step(p, project_id, step_name, cfg, workdir)
+            if cancelled:
+                return          # 状态已由 _run_one_step 写好
         p.status["pipeline"] = _deliverable_status(p)
         p.status["pipeline_finished_at"] = _now_iso()
         _locked_save(p)
@@ -1031,9 +1005,79 @@ def _run_step(project_id: str, name: str, cfg: AppConfig) -> None:
             _CANCELLED.discard(project_id)
 
 
+def _run_one_step(p: Project, project_id: str, name: str, cfg: AppConfig,
+                  workdir: Path) -> tuple[bool, Project]:
+    """跑一步并处理它的级联作废。返回 (是否被取消, 新的 project)。
+
+    必须把 project 返回出去:各 step 的 run() 返回的是新对象(`p = sX.run(p, ...)`),
+    在函数内重绑局部名的话调用方手里还是旧的那个,级联跑第二步时就会拿着上一步之前的
+    快照去跑——这类"看着能跑、结果全错"的 bug 最难查。
+    异常照常向上抛给 _run_step 的兜底(不在这里吞)。"""
+    s = resolve_settings(name, cfg)  # 该环节生效 Settings + client
+    llm, image, tts, music = _clients(s)
+    if _check_cancelled(project_id):  # 协作式取消:环节开始执行前检查
+        p.status["pipeline"] = "cancelled"
+        p.status["pipeline_finished_at"] = _now_iso()
+        _locked_save(p)
+        return True, p
+    step_start = _mark_step_started(p, name, workdir)
+    # 清掉该环节自己的陈旧终态(如上次成功的 done):否则重跑期间磁盘上仍是旧值,
+    # 前端 currentIdx(非 done/非 partial 才算"当前步")会判定错位,动感显示不到这一格。
+    p.status.pop(name, None)
+    _locked_save(p)
+    if name == "s2":
+        p = s2_storyboard.run(p, llm, use_skill=_use_master_skill(p, s, "S2"))
+    elif name == "s3":
+        p = s3_characters.run(p, llm, image, workdir, s.image_size,
+                              concurrency=image_concurrency(s),
+                              cancel_check=lambda: _is_cancelled(project_id))
+    elif name == "s4":
+        p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
+                          on_progress=lambda: _locked_save(p),
+                          concurrency=image_concurrency(s),
+                          cancel_check=lambda: _is_cancelled(project_id))
+    elif name == "s5":
+        p = s5_audio.run(p, tts, s.tts_voice, workdir, music,
+                          cancel_check=lambda: _is_cancelled(project_id))
+    elif name == "s6":
+        p = s6_compose.run(p, workdir)
+    regenerated = _mark_step_elapsed(p, name, step_start, workdir)
+    if _check_cancelled(project_id):  # 协作式取消:s3/s4/s5 环节内部提前收尾后在此消费标记,
+        # 避免明明是用户主动取消却被 _deliverable_status 判成普通 partial/error,状态失真。
+        p.status["pipeline"] = "cancelled"
+        p.status["pipeline_finished_at"] = _now_iso()
+        _locked_save(p)
+        return True, p
+    # 本轮一个产物文件都没重写(全被幂等逻辑跳过)时不走级联:什么都没变,下游自然没过期。
+    # 这一条顺带修掉一个既有 bug——在已出片的项目上点"重新生成 S4",哪怕一页都没重做,
+    # 原先也会无条件 p.output.clear() 把 mp4/zip/pdf 全毁掉,用户白白丢一次成片。
+    if regenerated and _INVALIDATES[name]:
+        p.output.clear()   # 重跑上游步骤使已合成的 mp4/zip/pdf 失效,清掉避免残留"假成片"
+        for step in _INVALIDATES[name]:
+            editing.clear_step_keys(p.status, step)
+        # 多语种轨也要跟着作废,而且**必须**:S2 换掉 storyboard 后 cell.tracks 全空、
+        # 英文译文实质上已经全丢,状态却还写着 track_en=done——实测线上作品正是如此,
+        # 用户白跑了 8 分钟的英文轨却收不到任何提示。
+        for lg in TRACK_LANGS:
+            p.status.pop(f"s5t_{lg}", None)
+            p.status.pop(f"s5_{lg}", None)
+            editing._invalidate_track_output(p, lg)
+        if name == "s2":
+            # 分镜被整体换掉 → 逐页产物与成片确定全部过期。必须在 s2 成功之后才删:
+            # 它可能抛异常(LLM 返回空分镜),那时旧产物还是用户仅有的东西。
+            removed = editing.purge_page_artifacts(workdir)
+            print(f"分镜已重生成,清理过期产物 {removed} 个文件(角色三视图保留)")
+    _locked_save(p)
+    return False, p
+
+
 @app.post("/api/projects/{project_id}/steps/{name}")
-def run_step(project_id: str, name: str, user: str = Depends(current_user)) -> JSONResponse:
-    """单步重跑(编辑后只需局部重生成,不必整条管线重来一遍)。"""
+def run_step(project_id: str, name: str, cascade: bool = False,
+             user: str = Depends(current_user)) -> JSONResponse:
+    """单步重跑(编辑后只需局部重生成,不必整条管线重来一遍)。
+
+    cascade=true 时把该步作废的下游一并跑完(见 _INVALIDATES)。放后端而不是让前端
+    串行提交:runStep 是入队语义不是完成语义,前端串起来要轮询、还会因关标签页断链。"""
     if name not in _STEP_NAMES:
         raise HTTPException(400, f"未知步骤: {name}")
     _editable(project_id, user)  # 403/409/404 快速前置校验(返回丢弃,下面锁内重载最新快照)
@@ -1057,7 +1101,7 @@ def run_step(project_id: str, name: str, user: str = Depends(current_user)) -> J
             p.status["pipeline"] = "queued"
             store.save(p)
             _CANCELLED.discard(project_id)  # 兜底:清掉上一轮作业可能残留的陈旧取消标记,不污染本次
-            _JOBS[project_id] = _EXECUTOR.submit(_run_step, project_id, name, cfg)
+            _JOBS[project_id] = _EXECUTOR.submit(_run_step, project_id, name, cfg, cascade)
     return JSONResponse({"queued": True}, status_code=202)
 
 

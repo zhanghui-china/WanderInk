@@ -148,6 +148,32 @@ def mark_redraw(project: Project, index: int) -> None:
     _invalidate_downstream(project, "s4")
 
 
+def purge_page_artifacts(workdir: Path) -> int:
+    """删掉逐页产物与成片目录,返回删除的文件数。
+
+    只在**分镜被整体换掉**时用(s2_storyboard.run 是 `project.storyboard = result.cells`)——
+    那一刻旧的图/音/成片/字幕已确定全部过期,而新分镜页数若比旧的少,多出来的
+    page_NN.png / page_NN.mp3 再没有任何东西会覆盖它们,只能永远躺在盘上。
+    delete_cell 删单页时会 unlink,同样是"页数减少",两条路径的行为应该一致。
+
+    **不碰 characters/**:角色三视图依赖的是 project.script,而 S2 换的是 storyboard,
+    剧本没动、三视图仍然有效(与 api._INVALIDATES 里 s2 不作废 s3 是同一个判断)。
+    调用方必须在**该步成功之后**才调它:S2 抛异常时(如 LLM 返回空分镜)旧产物还是
+    用户仅有的东西,先删后跑等于一次失败的重生成把成片也赔进去。"""
+    n = 0
+    for _attr, subdir, ext in _MEDIA:
+        for f in (workdir / subdir).glob(f"*.{ext}"):
+            f.unlink(missing_ok=True)
+            n += 1
+    out = workdir / "output"
+    if out.exists():
+        for f in out.rglob("*"):
+            if f.is_file():
+                f.unlink(missing_ok=True)
+                n += 1
+    return n
+
+
 def _invalidate_track_output(project: Project, lang: str) -> None:
     """该语种成片过期。只清这一语种的产物与状态,不动主语言的 mp4/zip/pdf——
     改英文译文没有理由让中文成片作废。"""

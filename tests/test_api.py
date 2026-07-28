@@ -1710,3 +1710,94 @@ def test_delete_reference_unknown_character_404(tmp_path: Path):
          patch("shanhai.api.store.project_dir", return_value=tmp_path):
         r = client.delete("/api/projects/refid/characters/不存在的角色/reference")
     assert r.status_code == 404
+
+
+@patch("shanhai.api.Settings")
+def test_s2_rerun_keeps_s3_and_purges_stale_artifacts(_settings, tmp_path: Path):
+    """重跑分镜:S3 保留、S4~S6 与多语种作废、旧的逐页产物与成片被删、三视图留着。
+
+    S3 依赖的是 project.script,而 S2 换的是 storyboard——剧本没动,三视图仍然有效。
+    按 _STEP_NAMES 位置级联会把 S3 一起作废,而它的图还在、locked 还是 True,用户真去点
+    S3 时会被空跑守卫判成没干活,那格的历史耗时就此永久丢失。
+    """
+    from unittest.mock import MagicMock
+    from shanhai.config import Settings as RealSettings
+    p = Project(project_id="s2cascade", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    p.output = {"mp4": "projects/s2cascade/output/final.mp4"}
+    p.status = {"s3": "done", "s3_elapsed_s": "120.0", "s3_finished_at": "2020-01-01T00:00:00+00:00",
+                "s4": "done", "s5": "done", "s6": "done",
+                "s5t_en": "done", "s5_en": "done", "track_en": "done",
+                "track_en_elapsed_s": "489.9"}
+    for sub, name in (("pages", "page_01.png"), ("audio", "page_01.mp3"),
+                      ("output", "final.mp4"), ("output", "final.en.vtt"),
+                      ("characters", "白娘子.png")):
+        (tmp_path / sub).mkdir(exist_ok=True)
+        (tmp_path / sub / name).write_bytes(b"x")
+
+    fake = RealSettings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s2_storyboard") as s2:
+        def _run_s2(*_a, **_k):
+            p.storyboard = [_imaged_page()]   # 整体替换,模拟真实行为
+            p.status["s2"] = "done"
+            return p
+        s2.run.side_effect = _run_s2
+        api._run_step("s2cascade", "s2", runtime_config.AppConfig())
+
+    assert p.status["s3"] == "done"                     # S3 不被误伤
+    assert p.status["s3_elapsed_s"] == "120.0"          # 它的历史耗时也留着
+    for k in ("s4", "s5", "s6", "s5t_en", "s5_en", "track_en", "track_en_elapsed_s"):
+        assert k not in p.status, f"{k} 应被作废"
+    assert p.output == {}
+    # 旧的逐页产物与成片(含字幕)已删,角色三视图保留
+    assert not (tmp_path / "pages" / "page_01.png").exists()
+    assert not (tmp_path / "audio" / "page_01.mp3").exists()
+    assert not (tmp_path / "output" / "final.en.vtt").exists()
+    assert (tmp_path / "characters" / "白娘子.png").exists()
+
+
+@patch("shanhai.api.Settings")
+def test_s2_failure_does_not_delete_anything(_settings, tmp_path: Path):
+    """S2 抛异常时**一个文件都不能删**。
+
+    s2_storyboard.run 会在 LLM 返回空分镜时 raise;那一刻旧产物还是用户仅有的东西,
+    先删后跑等于让一次失败的重生成把成片也赔进去。这条最容易写反,故单独守着。
+    """
+    from unittest.mock import MagicMock
+    from shanhai.config import Settings as RealSettings
+    p = Project(project_id="s2fail2", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    p.output = {"mp4": "projects/s2fail2/output/final.mp4"}
+    for sub, name in (("pages", "page_01.png"), ("output", "final.mp4")):
+        (tmp_path / sub).mkdir(exist_ok=True)
+        (tmp_path / sub / name).write_bytes(b"x")
+
+    fake = RealSettings(_env_file=None, base_url="https://placeholder.invalid/v1", api_key="x")
+    with patch("shanhai.api.resolve_settings", return_value=fake), \
+         patch("shanhai.api.store.load", return_value=p), \
+         patch("shanhai.api.store.save"), \
+         patch("shanhai.api.store.project_dir", return_value=tmp_path), \
+         patch("shanhai.api._save_error"), \
+         patch("shanhai.api._clients",
+               return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock())), \
+         patch("shanhai.api.s2_storyboard") as s2:
+        s2.run.side_effect = ValueError("分镜为空,S2 未产出任何页")
+        api._run_step("s2fail2", "s2", runtime_config.AppConfig())
+
+    assert (tmp_path / "pages" / "page_01.png").exists()
+    assert (tmp_path / "output" / "final.mp4").exists()
+
+
+def test_invalidates_table_covers_every_step():
+    """依赖表必须与 _STEP_NAMES 同步,否则将来加环节时会静默漏配级联。"""
+    assert set(api._INVALIDATES) == set(api._STEP_NAMES)
+    for name, downstream in api._INVALIDATES.items():
+        assert name not in downstream            # 不作废自己
+        for d in downstream:
+            assert d in api._STEP_NAMES

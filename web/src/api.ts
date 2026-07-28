@@ -202,10 +202,11 @@ export const api = {
       method: 'POST',
     }).then((r) => j<ProjectDetail>(r)),
 
-  runStep: (id: string, name: string) =>
-    fetch(`/api/projects/${id}/steps/${name}`, { ...CREDS, method: 'POST' }).then((r) =>
-      j<{ queued: boolean }>(r)
-    ),
+  // cascade=true 时后端会把该步作废的下游一并跑完(见 api._INVALIDATES),
+  // 前端不需要串行轮询——runStep 是入队语义,前端串会因关标签页断链。
+  runStep: (id: string, name: string, cascade = false) =>
+    fetch(`/api/projects/${id}/steps/${name}${cascade ? '?cascade=true' : ''}`,
+      { ...CREDS, method: 'POST' }).then((r) => j<{ queued: boolean }>(r)),
 
   getConfig: () => fetch('/api/config', CREDS).then((r) => j<AppConfigView>(r)),
 

@@ -99,6 +99,7 @@ export function ProjectDetailView({
   const [stepBusy, setStepBusy] = useState<string | null>(null)
   const [trackBusy, setTrackBusy] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [s2Open, setS2Open] = useState(false)
   const [voiceOpen, setVoiceOpen] = useState(false)
   const [voicePicked, setVoicePicked] = useState<{ blob: Blob; filename: string } | null>(null)
   const [voiceBusy, setVoiceBusy] = useState(false)
@@ -151,11 +152,22 @@ export function ProjectDetailView({
     }
   }
 
+  // 「分镜」重跑会作废漫画页/配音/合成(角色三视图不受影响——它依赖剧本不依赖分镜),
+  // 所以单独给它一个三出口弹窗,而不是让用户点完再自己去点三次。其余步骤沿用原确认框。
   async function handleStep(name: string, label: string) {
+    if (name === 's2') {
+      setS2Open(true)
+      return
+    }
     if (!window.confirm(`确定重新执行「${label}」?这会清空之后各步骤的产物。`)) return
+    void doStep(name, false)
+  }
+
+  async function doStep(name: string, cascade: boolean) {
+    setS2Open(false)
     setStepBusy(name)
     try {
-      await api.runStep(project.project_id, name)
+      await api.runStep(project.project_id, name, cascade)
       onChanged()
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e))
@@ -394,6 +406,53 @@ export function ProjectDetailView({
             </span>
           </div>
           <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
+        </div>
+      )}
+      {s2Open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-6"
+          onClick={() => setS2Open(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl border border-band bg-paper p-5 shadow-paper-lg"
+          >
+            <h3 className="font-serif text-sm font-semibold tracking-wide text-ink">
+              重新生成分镜
+            </h3>
+            <p className="mt-2 text-xs text-ink-soft">
+              分镜会被整体重写,已生成的<b>漫画页、配音、成片</b>(含英文版)随之作废,
+              旧的图片与音频文件会被清理。
+              <br />
+              角色三视图<b>不受影响</b>——它依赖剧本,而这一步只换分镜。
+            </p>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button type="button" onClick={() => setS2Open(false)} className={ghostBtn}>
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void doStep('s2', false)}
+                disabled={stepBusy !== null}
+                className={ghostBtn}
+              >
+                只重跑分镜
+              </button>
+              <button
+                type="button"
+                onClick={() => void doStep('s2', true)}
+                disabled={stepBusy !== null}
+                className={primaryBtn}
+              >
+                分镜 + 漫画页 + 配音 + 合成
+              </button>
+            </div>
+            <p className="mt-2 text-right text-[11px] text-muted">
+              选「只重跑分镜」的话,之后需自己依次点「漫画页」「配音」「合成」
+            </p>
+          </div>
         </div>
       )}
       {voiceOpen && (
