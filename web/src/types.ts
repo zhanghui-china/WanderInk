@@ -39,6 +39,12 @@ export interface Page {
   characters: string[]
   image: string | null
   audio: string | null
+  // 本页实际走的生成路径:"edit"/"text2img"/"chat";空串=老数据或尚未生成。
+  // text2img 模板没有 LoRA 节点,所选 LoRA 对这一页不生效——PageCard 靠这个字段判断要不要提示。
+  image_route: string
+  // 本次请求指定的 LoRA 短名;空串不等于"没用 LoRA",而是"未指定,后端回落自己的默认权重"
+  // (模板里 LoRA 节点是焊死的,不存在"不用 LoRA")
+  image_lora: string
   // 附加语种轨,key 是语种码(如 "en");没生成过就是空对象
   tracks: Record<string, LocalizedTrack>
 }

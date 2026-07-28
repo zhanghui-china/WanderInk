@@ -124,27 +124,34 @@ def update_cell(project: Project, index: int, *, caption: str | None = None,
         cell.silent = False
     if visual_desc is not None:
         cell.visual_desc = visual_desc
-        cell.status = "draft"
-        cell.image = ""
-        cell.image_gen_ms = 0
-        cell.panels = []   # 分格页作废分格:改整页构图后回退成单图整页重生成(s4 单图分支)
+        _invalidate_page_image(cell)
     if characters is not None:
         cell.characters = characters
-        cell.status = "draft"
-        cell.image = ""
-        cell.image_gen_ms = 0
-        cell.panels = []   # 同上:出场角色变了,分格构图已过期,回退单图整页重生成
+        _invalidate_page_image(cell)   # 出场角色变了,分格构图与旧图都已过期
     if emotion is not None:
         cell.emotion = emotion
     _invalidate_downstream(project, "s4")
 
 
-def mark_redraw(project: Project, index: int) -> None:
-    """标记该页需重绘:置 draft + 清 image(s4 据此重画,文件由 s4 覆盖)。"""
-    cell = _cell_at(project, index)
+def _invalidate_page_image(cell: StoryboardCell) -> None:
+    """作废该页的图与**所有描述那张图的元数据**,置回 draft。
+
+    单一真源:清 cell.image 的地方有三处(update_cell 的两个分支 + mark_redraw),
+    此前各写各的,新增 image_route/image_lora 时只补了 mark_redraw 一处,于是改画面描述
+    会留下一张已被删掉的图的路径标记,界面照着它渲染"LoRA 未生效"——描述一张不存在的图。
+    这类"同一个不变量散在多处"的疏漏在本仓库反复发生,故收敛到这里,以后加字段只改一处。
+    分格作废是其中一环:改了整页构图或出场角色,旧的分格版式必然过期,回退单图整页重生成。"""
     cell.status = "draft"
     cell.image = ""
     cell.image_gen_ms = 0
+    cell.image_route = ""
+    cell.image_lora = ""
+    cell.panels = []
+
+
+def mark_redraw(project: Project, index: int) -> None:
+    """标记该页需重绘:置 draft + 清 image 及其元数据(s4 据此重画,文件由 s4 覆盖)。"""
+    _invalidate_page_image(_cell_at(project, index))
     _invalidate_downstream(project, "s4")
 
 

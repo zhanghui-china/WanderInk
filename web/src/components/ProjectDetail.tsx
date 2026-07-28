@@ -25,6 +25,21 @@ function emotionCls(e: string): string {
 
 const EMOTIONS = ['宁静', '温情', '惊变', '悲壮', '险境', '烟雨', '苍凉']
 
+// 哪些生成路径拿不到 LoRA。只有 edit(带参考图,走 ComfyUI 的 image_edit 工作流)那条路
+// 的模板里有 LoRA 节点;text2img 的 Text2IMGKrea2 模板没有,chat_api 模式发的是
+// /chat/completions、LoRA 字段由对端自行处置(本仓库无从判定,一律按"不保证生效"讲)。
+// mixed 只出现在分格页:各格参考图按 panel.characters 逐格算,一页里可能半数格走 text2img。
+const LORA_MISS_SHORT: Record<string, string | undefined> = {
+  text2img: '无参考图 · LoRA 未生效',
+  chat: '对话式接口 · LoRA 不保证生效',
+  mixed: '部分格无参考图 · LoRA 未全生效',
+}
+const LORA_MISS: Record<string, string | undefined> = {
+  text2img: '该页没有已出三视图的角色,走的是文生图工作流,该工作流没有 LoRA 节点,所选 LoRA 对这一页不生效',
+  chat: '该页走的是对话式图像接口(image_api_mode=chat_api),LoRA 参数由对端模型自行处置,不保证生效',
+  mixed: '这是分格页,其中部分格没有角色参考图、走了文生图工作流,那些格没有应用所选 LoRA',
+}
+
 // 语种码 -> 中文标签。后端 /api/meta 的 track_langs 决定出现哪些语种,这里只管显示名。
 const TRACK_LABEL: Record<string, string> = { en: '英文版' }
 
@@ -1301,10 +1316,32 @@ function PageCard({
             {/* 这里原本还有一个「配音 X.Xs」——下面的 <audio controls> 本来就显示时长,
                 重复且占位;用户明确要求去掉。duration_ms 字段仍在用(算成片时间轴),只是不展示。 */}
             {pg.image_gen_ms > 0 && (
-              <span className="text-muted">生成 {(pg.image_gen_ms / 1000).toFixed(1)}s</span>
+              // image_lora 挂在这里而不是单独占位:它对 89% 的正常页都有值,单独一枚标签
+              // 全是噪音;空串**不代表没用 LoRA**(后端会回落它自己的默认权重,shanhai 不知道是哪个),
+              // 所以空串时干脆不提,绝不写成"无 LoRA"。
+              <span
+                className="text-muted"
+                title={pg.image_lora ? `本次指定的 LoRA:${pg.image_lora}` : undefined}
+              >
+                生成 {(pg.image_gen_ms / 1000).toFixed(1)}s
+              </span>
             )}
             {pg.silent && pg.audio && (
               <span className="rounded-full bg-kraft px-2 py-0.5 text-muted">静音兜底</span>
+            )}
+            {/* edit(有参考图)是常态(约 89% 的页),不加标签;只在 LoRA 确实没(全)生效时提示,
+                免得给大多数页添噪音。必须同时看 pg.image:失败/被编辑作废的页图已经没了,
+                此时挂一个描述"那张图怎么生成的"的标签就是在说一张不存在的图(审计实测复现过)。
+                存量页 image_route 是空串,不会触发——这不是 bug,是老数据没有该字段的预期状态。
+                已知取舍:远程后端(tu-zi 等)根本没有 LoRA 这回事,那种部署下这枚标签属于无用信息;
+                但配置面板的 LoRA 控件本来就只对本地 ComfyUI 显示,多一枚灰标签的代价可接受。 */}
+            {pg.image && LORA_MISS[pg.image_route] && (
+              <span
+                className="rounded-full bg-kraft px-2 py-0.5 text-muted"
+                title={LORA_MISS[pg.image_route]}
+              >
+                {LORA_MISS_SHORT[pg.image_route]}
+              </span>
             )}
             {pg.status === 'failed' && <span className="text-alarm">生成失败</span>}
           </div>
