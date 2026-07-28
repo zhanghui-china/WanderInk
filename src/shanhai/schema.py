@@ -104,6 +104,15 @@ class StoryboardCell(BaseModel):
     audio: str = ""
     duration_ms: int = 0
     image_gen_ms: int = 0  # 最近一次成功生成该页图片所花的时间(重绘直接覆盖,不累计)
+    # 最近一次成功生成该页图片实际走的路径:"chat" / "edit" / "text2img" / "mixed"。
+    # "mixed" 只出现在分格页:各格的参考图是按 panel.characters 逐格算的,一页里完全可能
+    # "有人物的格走 edit、空镜格走 text2img",此时只记其中一格会说反话。
+    image_route: str = ""
+    # 本次生成请求指定的 LoRA 短名。注意:空串不等于"没用 LoRA"!ComfyUI 工作流模板里 LoRA
+    # 节点是焊死存在的,shanhai 不指定时 DGX 上的 image-shim 会回落它自己的默认权重
+    #(Real_Ani-Qwen_000001250.safetensors),而那个默认值 shanhai 这边无从得知。所以空串
+    # 只表示"未指定,由后端决定",不是"无"——照这条字面意思做界面会做出一个说谎的界面。
+    image_lora: str = ""
     # silent=True 表示该页音频是静音兜底(非真人解说);用于状态诚实化与重跑重合成。
     silent: bool = False
     status: Literal["draft", "confirmed", "failed"] = "draft"

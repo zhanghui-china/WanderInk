@@ -1866,3 +1866,24 @@ def test_version_route_not_swallowed_by_static_catch_all():
     r = client.get("/api/version")
     assert r.headers["content-type"].startswith("application/json")
     assert "<!doctype html" not in r.text.lower()
+
+
+# _serialize 的 page 字典是逐字段挑选的,不是 model_dump。给 StoryboardCell 加字段并不会
+# 自动出现在响应里,而前端 types.ts 把字段声明成必填、TypeScript 又校验不到运行时响应,
+# 所以漏一个字段是**完全静默**的:`pg.xxx` 恒 undefined,那块 UI 永远不渲染。
+# image_gen_ms 就这么漏了整整一个版本(83e7a10 加了字段/写入/前端渲染/类型,唯独没加序列化)。
+# 这份清单与 web/src/types.ts 的 Page 接口一一对应,改一边必须改另一边。
+_PAGE_FIELDS_USED_BY_WEB = {
+    "index", "caption", "emotion", "status", "duration_ms", "silent",
+    "scene_ref", "visual_desc", "characters", "image", "audio", "tracks",
+    "image_gen_ms", "image_route", "image_lora",
+}
+
+
+def test_serialize_page_exposes_every_field_the_web_uses(tmp_path: Path):
+    p = Project(project_id="pageFieldsId", scenic_spot="雷峰塔")
+    p.storyboard = [_imaged_page()]
+    with patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        page = api._serialize(p)["pages"][0]
+    # 用相等而不是包含:少了会静默不渲染,多了说明前端类型没跟上,两边都该被发现
+    assert set(page) == _PAGE_FIELDS_USED_BY_WEB

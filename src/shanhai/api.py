@@ -459,10 +459,20 @@ def _mp4_url(mp4: str) -> str | None:
 
 def _serialize(p: Project) -> dict:
     workdir = store.project_dir(p.project_id)
+    # ⚠️ 这个字典是**逐字段挑选**的,不是 model_dump——给 StoryboardCell 加了字段并不会
+    # 自动出现在 API 响应里,必须在这里补一行。而前端的 types.ts 把字段声明成必填,
+    # TypeScript 只校验编译期类型、校验不到运行时真实响应,漏了会**完全静默**:
+    # `pg.xxx` 恒为 undefined,`undefined > 0` 为 false,那一块 UI 就是永远不渲染。
+    # image_gen_ms 就这么漏了(提交 83e7a10 加了字段、写入、前端渲染和类型,唯独没加这里),
+    # 「生成 X.Xs」从上线起一次都没显示过。tests/test_api.py 现在有一条锁住键集合的用例。
     pages = [{
         "index": c.index, "caption": c.caption, "emotion": c.emotion,
         "status": c.status, "duration_ms": c.duration_ms, "silent": c.silent,
         "scene_ref": c.scene_ref, "visual_desc": c.visual_desc, "characters": c.characters,
+        "image_gen_ms": c.image_gen_ms,
+        # 这一页实际走的生成路径与本次指定的 LoRA:只有 "edit" 那条路带 LoRA 节点,
+        # "text2img" 的模板没有,所选 LoRA 对那些页静默不生效——前端据此给出提示。
+        "image_route": c.image_route, "image_lora": c.image_lora,
         "image": _file_url(p.project_id, c.image, workdir),
         "audio": _file_url(p.project_id, c.audio, workdir),
         "tracks": {lg: {"caption": t.caption, "duration_ms": t.duration_ms,

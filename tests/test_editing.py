@@ -84,6 +84,17 @@ def test_mark_redraw_and_revoice(tmp_path: Path):
     assert p.output == {}
 
 
+def test_mark_redraw_clears_image_route_and_lora(tmp_path: Path):
+    # image_route/image_lora 描述的是刚被清掉的那张图,图没了这两个字段就是孤儿信息,
+    # 必须跟 image/image_gen_ms 同进同退。
+    p = _project(tmp_path)
+    p.storyboard[1].image_route = "edit"
+    p.storyboard[1].image_lora = "wanderink_v2"
+    editing.mark_redraw(p, 2)
+    assert p.storyboard[1].image_route == ""
+    assert p.storyboard[1].image_lora == ""
+
+
 def test_insert_front_reindexes_and_aligns_files(tmp_path: Path):
     p = _project(tmp_path, n=3)
     editing.insert_cell(p, tmp_path, after_index=0, caption="新首页",
@@ -276,3 +287,18 @@ def test_update_track_caption_clears_track_finished_at(tmp_path: Path):
     assert "mp4_en" not in p.output and "s6_en" not in p.status
     assert "track_en_started_at" not in p.status and "track_en_elapsed_s" not in p.status
     assert "track_en_finished_at" not in p.status   # 曾经漏清的那一个
+
+
+def test_update_cell_clears_image_route_and_lora(tmp_path: Path):
+    """三处清 cell.image 的地方(update_cell 两个分支 + mark_redraw)必须清同一组字段。
+    此前只有 mark_redraw 补了新字段,于是"改画面描述"会留下一张已被删掉的图的路径标记,
+    界面照着它渲染「LoRA 未生效」——描述一张不存在的图(审计实测复现)。
+    现在三处共用 _invalidate_page_image,这条守着它。"""
+    for field, value in (("visual_desc", "新画面"), ("characters", ["白素贞"])):
+        p = _project(tmp_path / field)
+        cell = p.storyboard[0]
+        cell.image, cell.image_gen_ms = "pages/page_01.png", 4200
+        cell.image_route, cell.image_lora = "text2img", "figurine_qwen"
+        editing.update_cell(p, 1, **{field: value})
+        assert cell.image == "" and cell.image_gen_ms == 0, field
+        assert cell.image_route == "" and cell.image_lora == "", field
