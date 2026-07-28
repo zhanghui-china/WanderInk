@@ -254,10 +254,13 @@ def finalize_cmd(video: Path, bgm: Path | None, out: Path,
     """
     loudnorm = f"loudnorm=I={VOICE_TARGET_LUFS:g}:TP=-1.5:LRA=11"
     if bgm:
-        fc = (f"[0:a]{loudnorm}[voice];"
+        # asplit 显式写出来:[voice] 要被消费两次(闪避的旁链 + 混音输入),而滤镜输出
+        # 只能连一次。现代 ffmpeg 会自动插 asplit(实测无警告、结果正确),但那是隐式行为,
+        # 换个版本就未必——写死更稳,也让读代码的人一眼看出这里有个分叉。
+        fc = (f"[0:a]{loudnorm},asplit[voice][vkey];"
               # 开头 2 秒淡入:-stream_loop 从第一帧硬起,突然进来的乐声很突兀
               f"[1:a]volume={bgm_gain_db:.1f}dB,afade=t=in:d=2[bgraw];"
-              f"[bgraw][voice]{_DUCK}[duck];"
+              f"[bgraw][vkey]{_DUCK}[duck];"
               f"[voice][duck]amix=inputs=2:duration=first:normalize=0[mix];"
               f"[mix]alimiter=limit=0.85[aout]")
         return ["ffmpeg", "-y", "-i", str(video), "-stream_loop", "-1", "-i", str(bgm),
