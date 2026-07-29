@@ -132,6 +132,7 @@ export interface NewProjectInput {
   speed?: number
   multi_panel?: boolean
   bgm?: boolean
+  burn_subtitles?: boolean
   use_hermes_agent?: boolean
   master_skill?: boolean
 }

@@ -60,8 +60,8 @@ def _encode_page_clip(cell: StoryboardCell, track: StoryboardCell | LocalizedTra
                       zoom_in: bool, workdir: Path, clips_dir: Path,
                       overlay: Path, suffix: str) -> tuple[Path, float]:
     """编码单页 clip,返回 (clip 路径, 时长秒)。线程安全:各页只写各自的 NN.mp4,
-    互不冲突(overlay 是全片共用的只读文件)。编码异常直接向上抛(与既有语义一致:
-    S6 编码失败即 pipeline error,不吞)。"""
+    互不冲突(overlay 是只读的——烧字幕时各页一张、不烧时全片共用一张,两种都在开工前
+    就已写好)。编码异常直接向上抛(与既有语义一致:S6 编码失败即 pipeline error,不吞)。"""
     img, aud = workdir / cell.image, workdir / track.audio
     clip = clips_dir / f"{cell.index:02d}{suffix}.mp4"
     # page_clip_cmd 内部补 0.5s 尾缓冲,此处传原始解说时长;奇偶页交替推近/拉远
@@ -122,7 +122,13 @@ def _write_subtitles(project: Project, workdir: Path,
     cells, durations = _timeline(project, workdir, lang)
     starts = subtitles.clip_start_times(durations)
     written: list[tuple[Path, str]] = []
+    # 中文硬字幕已烧进画面时,再出一条中文软轨就是双份:网页播放器挂着 VTT,
+    # 画面上又有烧死的字,两层叠在一起。英文轨不受影响——同一时刻播放器只显示选中的那条,
+    # 且中文片里带一条英文软轨对外国观众有用。
+    burned = DEFAULT_LANG if (project.params.burn_subtitles and lang == DEFAULT_LANG) else None
     for sub_lang in _subtitle_langs(project, lang):
+        if sub_lang == burned:
+            continue
         cues: list[subtitles.Cue] = []
         for i, cell in enumerate(cells):
             track = track_of(cell, sub_lang)
@@ -165,10 +171,22 @@ def run(project: Project, workdir: Path, lang: str = DEFAULT_LANG) -> Project:
     typeset.title_card(project.scenic_spot, legend_title, title_png)
     credits_png = out_dir / f"credits{suffix}.png"
     typeset.credits_card(_credits_lines(project.legend, lang), credits_png)
-    # 字幕改走 MP4 软字幕轨,画面上不再烧文字——传空 caption 让 overlay 只剩右上角水印。
-    # 全片共用一张(内容与页码无关),不必逐页生成。
-    overlay = overlays_dir / "watermark.png"
-    typeset.overlay_layer("", overlay)
+    # 烧录开关决定 overlay 是逐页还是全片共用一张:
+    #   开(默认):每页各画自己的解说词。浏览器不解析 MP4 内的 mov_text,下载的片子拿到
+    #     微信/抖音软轨也等于不存在,用户看到的就是"没有字幕"——只有烧进画面才到处都在。
+    #     不额外增加 ffmpeg 开销:overlay 本来就要合成进 page_clip,只是从一张变成每页一张。
+    #   关:传空 caption,overlay 只剩右上角水印,内容与页码无关故全片共用一张。
+    # 英文片一律不烧:typeset._wrap 是逐字符换行,英文会被拦腰断开,且超三行静默截断,
+    # 而英文解说上限是中文的 2.5 倍(TRACK_CAPTION_MAX 300 vs CAPTION_MAX 120)。
+    burn = project.params.burn_subtitles and is_main
+    if burn:
+        overlays = [overlays_dir / f"{cell.index:02d}{suffix}.png" for cell in content_cells]
+        for cell, path in zip(content_cells, overlays):
+            typeset.overlay_layer(track_of(cell, lang).caption, path)
+    else:
+        overlay = overlays_dir / "watermark.png"
+        typeset.overlay_layer("", overlay)
+        overlays = [overlay] * len(content_cells)
 
     # clips 与 durations 一一对应:durations 供 xfade 累积 offset 计算
     clips: list[Path] = []
@@ -184,7 +202,7 @@ def run(project: Project, workdir: Path, lang: str = DEFAULT_LANG) -> Project:
     page_durations: list[float] = [None] * len(content_cells)  # type: ignore[list-item]
     with ThreadPoolExecutor(max_workers=S6_CONCURRENCY) as ex:
         futures = [ex.submit(_encode_page_clip, cell, track_of(cell, lang), i % 2 == 0,
-                             workdir, clips_dir, overlay, suffix)
+                             workdir, clips_dir, overlays[i], suffix)
                    for i, cell in enumerate(content_cells)]
         for i, f in enumerate(futures):
             page_clips[i], page_durations[i] = f.result()  # 索引回填 + 传播编码异常

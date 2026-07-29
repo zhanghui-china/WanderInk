@@ -33,6 +33,7 @@ export function NewProjectForm({
   const [speed, setSpeed] = useState(1.0)
   const [multiPanel, setMultiPanel] = useState(false)
   const [bgm, setBgm] = useState(true)
+  const [burnSubtitles, setBurnSubtitles] = useState(true)
   const [masterSkill, setMasterSkill] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -54,6 +55,7 @@ export function NewProjectForm({
         speed,
         multi_panel: multiPanel,
         bgm,
+        burn_subtitles: burnSubtitles,
         master_skill: masterSkill,
       })
       setSpot('')
@@ -216,6 +218,19 @@ export function NewProjectForm({
         />
         <label htmlFor="bgm" className="text-xs text-ink-soft">
           生成背景音乐(与配音并行,不额外拉长总时间)
+        </label>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <input
+          id="burn-subtitles"
+          type="checkbox"
+          checked={burnSubtitles}
+          onChange={(e) => setBurnSubtitles(e.target.checked)}
+          className="h-4 w-4 rounded border-line accent-cinnabar"
+        />
+        <label htmlFor="burn-subtitles" className="text-xs text-ink-soft">
+          字幕叠加到画面(下载后在任何播放器都能看到;关闭则只封字幕轨)
         </label>
       </div>
 

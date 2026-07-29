@@ -138,6 +138,11 @@ class GenerationParams(BaseModel):
     # 的工作流模板路径写错、每次秒返 500 被静默降级吞掉,所以从未成功过)。
     # 有默认值 → 老 project.json 零迁移。
     bgm: bool = True
+    # 把解说词烧进画面(而非只封 MP4 软字幕轨)。默认开:浏览器根本不解析 MP4 内的
+    # mov_text,下载的成片拿到微信/抖音这类地方软轨也等于不存在——用户看到的就是
+    # "没有字幕"。关掉则回到纯软字幕轨。仅中文片生效(英文烧录待解决词级断行)。
+    # 有默认值 → 老 project.json 零迁移。
+    burn_subtitles: bool = True
     use_hermes_agent: bool = True
     master_skill: bool = False   # S1 用"编剧大师"+S2 用"导演大师"深度创作(需对应环节为 hermes-agent 后端,更慢更贵)
 

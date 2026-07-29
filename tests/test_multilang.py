@@ -285,8 +285,13 @@ def test_subtitle_langs_puts_current_lang_first():
 
 def _bilingual(tmp_path: Path, n: int = 3, en_pages: tuple[int, ...] = (1, 2, 3)) -> Project:
     """n 页中文齐备,en_pages 那几页另有英文译文+配音。中英每页时长故意不同,
-    这样"用错语种的时长"会立刻在字幕时间戳上显形。"""
+    这样"用错语种的时长"会立刻在字幕时间戳上显形。
+
+    ⚠️ 本文件测的是**软字幕轨**的跨语种时间轴不变量,故显式关掉硬字幕烧录:
+    默认开着时中文片不再产出 final.zh.srt(烧进画面了,再出软轨就是双份),
+    这些用例就无从断言。软字幕路径本身没变,用户关掉开关走的就是这条。"""
     p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.burn_subtitles = False
     (tmp_path / "pages").mkdir(parents=True, exist_ok=True)
     (tmp_path / "audio").mkdir(exist_ok=True)
     cells = []
