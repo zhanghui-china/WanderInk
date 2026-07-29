@@ -465,6 +465,28 @@ def test_list_projects_skips_non_object_json(tmp_path, monkeypatch):
     assert [it["project_id"] for it in items] == [good.project_id]  # 非对象项目全被跳过
 
 
+def test_cancel_matches_editable_ownership_rule(tmp_path, monkeypatch):
+    """取消权限必须与编辑权限同判据。此前用的是 `p.owner != user`,而 _editable 用的是
+    `p.owner and p.owner != user`——历史项目 owner 为空时人人可编辑,却**没有人**能取消
+    它的作业(此处也没有 is_admin 旁路),那个作业只能靠重启进程停下,期间一直占着
+    执行槽。两个判据的差异没有任何理由,对齐即可。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = ""                              # 无主的历史项目
+    store.save(p, root=tmp_path)
+    r = client.post(f"/api/projects/{p.project_id}/cancel")
+    # 归属校验放行 → 落到"当前没有可取消的作业"那条 400,而不是 403
+    assert r.status_code == 400
+
+
+def test_cancel_rejects_other_owner(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = "someone-else"
+    store.save(p, root=tmp_path)
+    assert client.post(f"/api/projects/{p.project_id}/cancel").status_code == 403
+
+
 def test_write_config_requires_admin(monkeypatch):
     """配置写入决定全站上游端点:任意登录用户可改的话,把 llm_base_url 指向自己的机器
     就能拿到所有人的剧本与自备故事原文,同时让全站生成瘫痪。必须是管理员闸门。"""

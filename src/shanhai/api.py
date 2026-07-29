@@ -656,7 +656,10 @@ def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
-    if p.owner != user:
+    # 判据必须与 _editable 逐字一致:历史项目 owner 为空视为无主。此前写的是
+    # `p.owner != user`,于是那些项目人人可编辑、却**没有人**能取消它们的作业
+    # (这里也没有 is_admin 旁路),作业只能靠重启进程停下,期间一直占着执行槽。
+    if p.owner and p.owner != user:
         raise HTTPException(403, "只能取消自己的生成任务")
     # 「取 f→判定 done/cancel→标记 _CANCELLED」整段收进 _JOBS_LOCK,与 _pipeline/_run_step finally
     # 里同锁的 _CANCELLED.discard 互斥:否则作业恰在此窗口跑完时,discard 先执行、随后此处 add 让
