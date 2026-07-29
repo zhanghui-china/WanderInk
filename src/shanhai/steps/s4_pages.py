@@ -1,5 +1,6 @@
 import concurrent.futures as cf
 import os
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -14,6 +15,10 @@ from shanhai.schema import CharacterCard, Panel, Project, StoryboardCell
 from shanhai.styles import STYLE_PRESETS
 
 MAX_ATTEMPTS = 3  # 1 次 + 重试 2 次(PRD F4)
+# 单页(单格)含重试的总耗时预算 = 本系数 × 单次请求超时。必须与 image_timeout 分开表达:
+# 一个是"这次 HTTP 等多久",一个是"这一格总共值得花多久",此前共用一个数字,
+# 结果是 MAX_ATTEMPTS 把 20 分钟的超时乘成最坏 60 分钟,而那段时间本地后端锁全程被占。
+PAGE_BUDGET_FACTOR = 2
 REF_MAX = 768  # 参考图上传前按最长边缩到 768px,避免大图上传 WriteTimeout(M0 gate 结论)
 CONCURRENCY = 3  # S4 逐页生成并发上限,平衡速度与代理过载(观测到 503"资源不足")
 
@@ -121,20 +126,34 @@ def _anonymize(present: list[CharacterCard], scene: str,
     scene 这条路必须一起处理:S2 的 visual_desc 里同样写着「小虎站在山门前」,
     只洗 features 等于没洗。
     代号只需页内稳定(features 与 scene 用同一个),跨页不必一致。
-    替换表必须覆盖 present 之外的名字(cast 全表 + storyboard 声明但 cast 里查不到的 names):
-    (a) scene 常提到本页/本格没出场的角色,漏掉就是原样进 prompt;
-    (b) present 里的短名会把 scene 里更长的未覆盖名字截碎(「小龙女」→「角色甲女」)。
+
+    **只替换该页声明出场的角色**(present + storyboard 写了但 cards 里查不到的 names)。
+    曾经按 cast 全表替换,但 str.replace 没有词边界概念,中文人名又常与普通名词重合:
+    别页有个角色叫「石头」,本页的「石头台阶」就被改写成「角色甲台阶」——台阶凭空消失,
+    画面语义被静默篡改,不报错、只是"画得不对",比名字被画成实物更难归因。
+    出场声明是"这页画面里确实有这些人"的权威依据,名字在此语境下指人的概率最高。
+    代价:未出场角色的名字若出现在 scene 里会漏进 prompt——但 S2 本就被要求不写角色名,
+    那属于违规,且那个角色本来就不该在这页。
+
+    cast 仍然要传:它只参与**排序保护**,不参与替换。present 里的短名会把 scene 里
+    更长的未覆盖名字截碎(present 有「小龙」,scene 里的「小龙女」→「角色甲女」),
+    把 cast 的长名一起纳入长度排序即可避开,而它们自己不会被换掉。
     features 仍然只列 present——没出场的角色不该给参考特征。"""
-    ordered = [c.name for c in present]
-    ordered += [c.name for c in (cast or [])] + list(names or [])
+    ordered = [c.name for c in present] + list(names or [])
     # 空名必须滤掉:CharacterCard.name 没有 min_length,模型返回空名是可能的,而
     # "少年推开山门".replace("", "角色甲") 会在**每个字之间**插一次代号,整段 scene
     # 变成「角色甲少角色甲年角色甲推…」——该页 prompt 直接报废,还不抛异常、不进 status。
     aliases = {n: f"角色{ALIAS_CHARS[i] if i < len(ALIAS_CHARS) else i + 1}"
                for i, n in enumerate(n for n in dict.fromkeys(ordered) if n)}
-    # 必须按名字长度降序替换,否则「小虎」会先把「小虎子」截成「角色甲子」
-    for name in sorted(aliases, key=len, reverse=True):
-        scene = scene.replace(name, aliases[name])
+    # 一次扫描完成:候选按长度降序排进正则,交替分支从左到右试,于是恒取最长匹配——
+    # 否则「小虎」会先把「小虎子」截成「角色甲子」。
+    # cast 里未出场的名字也进这张表,但映射不到 alias、原样返回:它们的作用只是"占住"
+    # 更长的那段文本不被短名切开(present 有「小龙」时保住 scene 里的「小龙女」)。
+    protect = {c.name for c in (cast or []) if c.name}
+    tokens = sorted(set(aliases) | protect, key=len, reverse=True)
+    if tokens:
+        scene = re.compile("|".join(re.escape(t) for t in tokens)).sub(
+            lambda m: aliases.get(m.group(0), m.group(0)), scene)
     features = ";".join(f"{aliases[c.name]}({c.feature_prompt})"
                         for c in present if c.name) or "无固定角色"
     return features, scene
@@ -173,7 +192,7 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
         panel_size = f"{sw}x{sh}"
         t0 = time.monotonic()
         for attempt in range(MAX_ATTEMPTS):
-            if attempt > 0 and time.monotonic() - t0 >= image.timeout:
+            if attempt > 0 and time.monotonic() - t0 >= image.timeout * PAGE_BUDGET_FACTOR:
                 break  # 这一格的时间预算已耗尽,不再重试这一格(不影响其它格各自的预算)
             try:
                 refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
@@ -224,7 +243,7 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
     out = pages_dir / f"page_{cell.index:02d}.png"
     t0 = time.monotonic()
     for attempt in range(MAX_ATTEMPTS):
-        if attempt > 0 and time.monotonic() - t0 >= image.timeout:
+        if attempt > 0 and time.monotonic() - t0 >= image.timeout * PAGE_BUDGET_FACTOR:
             break  # 上一次尝试已经把这张图的时间预算耗尽(大概率真的卡住了),不再重试
         try:
             refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)

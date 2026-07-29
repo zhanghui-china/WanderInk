@@ -1078,17 +1078,19 @@ def _run_one_step(p: Project, project_id: str, name: str, cfg: AppConfig,
     if name == "s2":
         p = s2_storyboard.run(p, llm, use_skill=runtime_config.use_master_skill(p, s, "s2"))
     elif name == "s3":
-        # 跑之前先记下"谁还没有三视图":跑完凡是从无到有的角色,其出场页必须作废重画,
-        # 否则那次补画对已 confirmed 的页完全无效(S4 会幂等跳过它们),用户以为修好了其实没有。
-        was_missing = editing.missing_turnarounds(p)
+        # 跑之前先给三视图文件拍指纹:跑完凡是**变过**的角色,其出场页必须作废重画,
+        # 否则那次重画对已 confirmed 的页完全无效(S4 会幂等跳过它们),用户以为修好了其实没有。
+        # 判据是"文件变了"而不是"从无到有"——重绘/换参考图会保留 turnaround_image,
+        # 后者恒为空集(见 editing.turnaround_stamps 的说明)。
+        before = editing.turnaround_stamps(p, workdir)
         p = s3_characters.run(p, llm, image, workdir, s.image_size,
                               on_progress=lambda: _locked_save(p),
                               concurrency=image_concurrency(s),
                               cancel_check=lambda: _is_cancelled(project_id))
-        gained = was_missing - editing.missing_turnarounds(p)
-        hit = editing.invalidate_pages_of_characters(p, gained)
+        redrawn = editing.redrawn_characters(before, editing.turnaround_stamps(p, workdir))
+        hit = editing.invalidate_pages_of_characters(p, redrawn)
         if hit:
-            print(f"补出 {'、'.join(sorted(gained))} 的三视图,已作废其出场的第 "
+            print(f"{'、'.join(sorted(redrawn))} 的三视图有更新,已作废其出场的第 "
                   f"{'、'.join(str(i) for i in hit)} 页,重跑 S4 会重画")
     elif name == "s4":
         p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,

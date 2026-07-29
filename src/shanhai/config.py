@@ -25,8 +25,11 @@ class Settings(BaseSettings):
     image_model: str = "gemini-2.5-flash-image"
     image_api_mode: str = "chat_api"
     image_size: str = "1536x1024"
-    image_timeout: float = 1200  # 秒(20分钟);既是单次 HTTP 请求超时,也是"一张图(含内部重试)"
-    # 的总耗时预算上限——见 s4_pages.py 的 MAX_ATTEMPTS 重试循环,避免重试次数把超时乘倍到数十分钟
+    image_timeout: float = 300  # 秒(5分钟);**只**是单次 HTTP 请求超时。
+    # 单页含重试的总预算另算(s4_pages.PAGE_BUDGET_FACTOR × 本值),两件事不能共用一个数字:
+    # 此前这里是 1200 且兼作总预算,而 providers/_http 的本地后端锁是全程持有的——
+    # ComfyUI 卡死一次就冻住全站所有用户的生图/LLM/TTS 整整 20 分钟。本地实测单页 40-60s,
+    # 300s 已是 5 倍余量;真需要更长(远端排队严重)可用 SHANHAI_IMAGE_TIMEOUT 调。
     tts_model: str = "gpt-4o-mini-tts"
     tts_voice: str = "alloy"
     tts_voices: str = ""  # 逗号分隔的可选音色列表;空则回退 [tts_voice]

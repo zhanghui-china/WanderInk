@@ -334,6 +334,49 @@ def test_invalidate_pages_of_characters_hits_only_appearances():
     assert "s4" not in p.status
 
 
+def test_turnaround_stamps_detect_rewritten_file(tmp_path):
+    """判据必须是"三视图文件变了",不能是"从无到有"。
+
+    用户点重绘 / 换参考图时,mark_character_redraw 与上传端点都**刻意保留**
+    turnaround_image(清了卡片会立刻变"未生成",空窗难看)。于是 S3 重画出全新的
+    三视图后,"从无到有"的差集恒为空,一页都不作废 —— 界面 s3=done、s4=done、
+    全部 confirmed,新形象却一页都没出现。这正是 8f41283a 那个事故的另一条入口。"""
+    p = _two_character_project()
+    (tmp_path / "characters").mkdir()
+    for c in p.script.characters:
+        c.turnaround_image = f"characters/{c.name}.png"
+        (tmp_path / c.turnaround_image).write_bytes(b"old")
+
+    before = editing.turnaround_stamps(p, tmp_path)
+    (tmp_path / "characters/法海.png").write_bytes(b"brand new")   # 只有法海被重画
+    after = editing.turnaround_stamps(p, tmp_path)
+
+    assert editing.redrawn_characters(before, after) == {"法海"}
+
+
+def test_turnaround_stamps_still_catch_from_missing_to_present(tmp_path):
+    """原来的"从无到有"必须仍然算数——补画首张三视图是同一件事的特例。"""
+    p = _two_character_project()
+    (tmp_path / "characters").mkdir()
+    before = editing.turnaround_stamps(p, tmp_path)      # 两个角色都还没有三视图
+    p.script.characters[0].turnaround_image = "characters/白素贞.png"
+    (tmp_path / "characters/白素贞.png").write_bytes(b"new")
+    after = editing.turnaround_stamps(p, tmp_path)
+    assert editing.redrawn_characters(before, after) == {"白素贞"}
+
+
+def test_turnaround_stamps_unchanged_file_is_not_redrawn(tmp_path):
+    """S3 幂等跳过(已定稿角色一次请求都不发)时不能动任何东西,
+    否则每跑一次 S3 就白毁一次成片。"""
+    p = _two_character_project()
+    (tmp_path / "characters").mkdir()
+    for c in p.script.characters:
+        c.turnaround_image = f"characters/{c.name}.png"
+        (tmp_path / c.turnaround_image).write_bytes(b"same")
+    before = editing.turnaround_stamps(p, tmp_path)
+    assert editing.redrawn_characters(before, editing.turnaround_stamps(p, tmp_path)) == set()
+
+
 def test_invalidate_pages_of_characters_noop_when_nothing_gained():
     # S3 重跑但一个角色都没从"无图"变"有图"时不能动任何东西,否则每次跑 S3 都白毁一次成片。
     p = _two_character_project()

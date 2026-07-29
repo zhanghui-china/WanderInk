@@ -63,11 +63,12 @@ def test_s4_retries_then_fails(tmp_path: Path):
     assert p.storyboard[0].status == "failed"
 
 def test_s4_budget_exhausted_after_one_slow_attempt_stops_retrying(tmp_path: Path):
-    # 单次尝试就耗光时间预算(0.06s 睡眠 > 0.05s 预算)→ 不再发起第二次尝试
+    # 单页预算 = PAGE_BUDGET_FACTOR × 单次请求超时,两者刻意分开:一个是"这次 HTTP 等多久",
+    # 一个是"这一格总共值得花多久"。睡够一整个预算(0.11s > 2×0.05s)→ 不再发起第二次尝试。
     image = _mock_image(timeout=0.05)
 
     def side_effect(*a, **kw):
-        time.sleep(0.06)
+        time.sleep(0.05 * s4_pages.PAGE_BUDGET_FACTOR + 0.01)
         raise ImageGenError("boom")
 
     image.generate.side_effect = side_effect
@@ -92,7 +93,7 @@ def test_s4_multi_panel_each_panel_gets_independent_budget(tmp_path: Path):
 
     def side_effect(prompt, *a, **kw):
         if "格1" in prompt:
-            time.sleep(0.06)
+            time.sleep(0.05 * s4_pages.PAGE_BUDGET_FACTOR + 0.01)   # 睡满格1 自己的整份预算
             raise ImageGenError("boom")
         return _png()
 
@@ -617,13 +618,33 @@ def test_anonymize_handles_overlapping_name_prefixes():
     assert features == "角色甲(十岁男童);角色乙(八岁女童)"
 
 
-def test_anonymize_masks_names_beyond_present():
-    # scene 里提到的"本页/本格没出场"的角色名同样是名字,漏掉两种后果:
-    # (a) 原样进 prompt 被画成字面意思;(b) 短名把长名截碎成「角色甲女」。
+def test_anonymize_leaves_same_named_common_words_alone():
+    """替换面收窄到"该页出场的角色":cast 里别页的角色名不参与 scene 替换。
+
+    中文人名与普通名词重合率很高(石头/铁牛/大山/小雨)。按 cast 全表替换时,
+    「石头」这个别页角色会把本页的「石头台阶」改写成「角色甲台阶」——台阶凭空消失,
+    画面语义被静默篡改,不报错、只是"画得不对",比名字被画成实物更难归因。"""
+    stone = CharacterCard(name="石头", role="r", personality="p", appearance="a",
+                          feature_prompt="憨厚少年")
+    tiger = CharacterCard(name="小虎", role="r", personality="p", appearance="a",
+                          feature_prompt="十岁男童")
+    _features, scene = s4_pages._anonymize([tiger], "小虎坐在长满青苔的石头台阶上",
+                                           cast=[tiger, stone])
+    assert scene == "角色甲坐在长满青苔的石头台阶上"
+
+
+def test_anonymize_protects_longer_unreplaced_name_from_being_chopped():
+    """cast 里未出场的名字不被替换,但必须"占住"文本不被出场角色的短名切开。
+
+    present 有「小龙」时,若不把 cast 的「小龙女」一起纳入最长匹配,scene 里的
+    「小龙女」会被截成「角色甲女」——半个名字加一个代号,比不换更糟。
+    未出场的「小龙女」原样留在 prompt 里是**已知且接受的代价**:替换面收窄到出场角色
+    是为了不误伤同名普通词(见 test_anonymize_leaves_same_named_common_words_alone),
+    而 S2 本就被要求不在 visual_desc 里写角色名,写了属于违规。"""
     cards = [CharacterCard(name=n, role="r", personality="p", appearance="a",
                            feature_prompt="F" + n) for n in ("小龙", "小龙女")]
     features, scene = s4_pages._anonymize([cards[0]], "小龙女递给小龙一柄剑", cards)
-    assert "小龙" not in scene
+    assert scene == "小龙女递给角色甲一柄剑"     # 出场的换掉;未出场的完整保留,没被截碎
     assert features == "角色甲(F小龙)"          # 未出场角色不进 features
 
 
