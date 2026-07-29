@@ -123,9 +123,17 @@ def _write_subtitles(project: Project, workdir: Path,
     starts = subtitles.clip_start_times(durations)
     written: list[tuple[Path, str]] = []
     # 中文硬字幕已烧进画面时,再出一条中文软轨就是双份:网页播放器挂着 VTT,
-    # 画面上又有烧死的字,两层叠在一起。英文轨不受影响——同一时刻播放器只显示选中的那条,
-    # 且中文片里带一条英文软轨对外国观众有用。
+    # 画面上又有烧死的字,两层叠在一起。只跳过被烧的那个语种,其余语种照旧——
+    # 同一时刻播放器只显示选中的那条,不会和烧死的字打架。
+    # 注意主片首次合成时通常还没有任何译文,那一轮 subs 会是空的、整片不封字幕轨;
+    # 英文轨跑完后由 api._remux_main_subtitles 重算一遍再纯 copy 封进来。
     burned = DEFAULT_LANG if (project.params.burn_subtitles and lang == DEFAULT_LANG) else None
+    if burned:
+        # 光是"不写"还不够:烧录上线前完成的作品盘上留着 final.zh.srt/.vtt,而 _serialize
+        # 是按文件在不在下发给 <track> 的。不删掉,重跑 S6 之后网页上就是画面烧死的字
+        # 加 VTT 各一份——正好是烧录要避免的那个双份。
+        for ext in ("srt", "vtt"):
+            (out_dir / f"final{suffix}.{burned}.{ext}").unlink(missing_ok=True)
     for sub_lang in _subtitle_langs(project, lang):
         if sub_lang == burned:
             continue

@@ -253,6 +253,20 @@ def test_no_burn_keeps_chinese_soft_track(tmp_path: Path):
     assert (out_dir / "final.zh.vtt").exists()
 
 
+def test_burn_subtitles_removes_stale_soft_subtitles(tmp_path: Path):
+    """本次上线前完成的作品盘上留着 final.zh.vtt,而 _serialize 是按文件在不在下发的。
+    重跑 S6 烧了硬字幕却不清掉它,网页上就是画面烧死的字 + VTT 各一份——正是烧录
+    要避免的双份。写不出来还不够,得把陈留的删掉。"""
+    p = _multi_page_project(tmp_path, 2)
+    out_dir = tmp_path / "output"
+    out_dir.mkdir(parents=True)
+    (out_dir / "final.zh.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    (out_dir / "final.zh.srt").write_text("1\n", encoding="utf-8")
+    _burn_run(p, tmp_path)
+    assert not (out_dir / "final.zh.vtt").exists()
+    assert not (out_dir / "final.zh.srt").exists()
+
+
 def test_burn_subtitles_does_not_touch_english_film(tmp_path: Path):
     """英文片本期不烧(typeset 逐字符换行会把单词拦腰断开),仍走软字幕。"""
     p = _multi_page_project(tmp_path, 2)

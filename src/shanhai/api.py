@@ -1173,7 +1173,14 @@ def _remux_main_subtitles(p: Project, workdir: Path) -> None:
     重跑 lang="en",不会回头动它。结果就是用户在主成片播放器里怎么也找不到英文字幕。
     这一趟是纯 copy(音视频都不重编码),几秒钟。
 
-    失败必须吞掉:中文版少一条字幕轨是瑕疵,让已经跑完的英文轨整个报错是事故。"""
+    失败必须吞掉:中文版少一条字幕轨是瑕疵,让已经跑完的英文轨整个报错是事故。
+
+    ⚠️ 字幕文件必须**现算**,不能去盘上找 `final.{lg}.srt`:那批文件只有主片那一轮
+    才写得出来,而主片是在英文译文还不存在时合成的,`final.en.srt` 从来没被写过
+    (英文轮的 suffix 是 ".en",产出的是 `final.en.en.srt`)。原先按文件名去找,
+    命中数恒为 1,这个函数在默认时序上整个是死代码——用户在主播放器里永远找不到
+    英文字幕,而这正是它被写出来要解决的问题。_write_subtitles 按主片时间轴重算一遍,
+    文件自然就齐了,顺带保证时间轴用的是**中文片**的画面节奏(跨语种串轨的老病根)。"""
     mp4 = p.output.get("mp4")
     if not mp4:
         return
@@ -1183,10 +1190,8 @@ def _remux_main_subtitles(p: Project, workdir: Path) -> None:
         if not src.exists():
             return
         out_dir = workdir / "output"
-        subs = [(out_dir / f"final.{lg}.srt", s6_compose.SUB_LANG_TAGS.get(lg, lg))
-                for lg in (MAIN_LANG, *TRACK_LANGS)
-                if (out_dir / f"final.{lg}.srt").exists()]
-        if len(subs) < 2:      # 只有主语言一条时无事可做
+        subs = s6_compose._write_subtitles(p, workdir, out_dir, MAIN_LANG)
+        if not subs:      # 一条都没有(例如烧了硬字幕又还没有任何译文)
             return
         staged = out_dir / "final.remux.mp4"
         ffmpeg.sh(ffmpeg.mux_subtitles_cmd(
