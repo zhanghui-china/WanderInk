@@ -1253,6 +1253,10 @@ function PageCard({
       onChanged()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+      // 保存本身可能已经成功、错在后面的标脏/触发那几步(典型:此刻项目已有作业在跑 → 409)。
+      // 不刷新的话卡片会继续显示保存前的旧文案,而服务端其实已经改了——用户会以为没存上、
+      // 再改一遍。刷新拿服务端真实状态;配合 err 在编辑态与展示态都渲染,失败才是可见的。
+      onChanged()
     } finally {
       setBusy(null)
     }
@@ -1449,6 +1453,10 @@ function PageCard({
         </div>
       ) : (
         <div className="space-y-2.5 p-3.5">
+          {/* 展示态也要渲染 err:保存成功后 setEditing(false) 已经把编辑区收起来了,
+              而后续标脏/触发若失败(典型 409),错误只挂在编辑态里就等于没有提示——
+              用户看到的是弹窗一闪而过、什么都没发生。 */}
+          {err && <p className="text-xs text-alarm">{err}</p>}
           {pg.visual_desc && (
             <div>
               <span className="text-[10px] tracking-[2px] text-muted">画面</span>

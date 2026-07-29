@@ -22,6 +22,17 @@ def test_project_dir_rejects_path_traversal(tmp_path):
         store.project_dir("", root=tmp_path)
 
 
+def test_project_dir_rejects_reserved_underscore_namespace(tmp_path):
+    """下划线开头是共享目录的保留命名空间(VOICE_SAMPLE_DIRNAME = "_voice_samples"),
+    不是作品。此前 project_dir 放行它,于是 DELETE /api/projects/_voice_samples
+    会 rmtree 掉全站音色样本——delete_project 只判 is_dir 就删,不要求含 project.json。
+    共享目录有自己的入口 voice_sample_dir(),不经过这里,拒掉不影响任何合法用途。"""
+    with pytest.raises(ValueError):
+        store.project_dir(store.VOICE_SAMPLE_DIRNAME, root=tmp_path)
+    with pytest.raises(ValueError):
+        store.project_dir("_anything", root=tmp_path)
+
+
 def test_project_dir_accepts_legal_id(tmp_path):
     assert store.project_dir("abc123_-XY", root=tmp_path) == tmp_path / "abc123_-XY"
 

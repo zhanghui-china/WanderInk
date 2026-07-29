@@ -656,7 +656,10 @@ def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
-    if p.owner != user:
+    # 判据必须与 _editable 逐字一致:历史项目 owner 为空视为无主。此前写的是
+    # `p.owner != user`,于是那些项目人人可编辑、却**没有人**能取消它们的作业
+    # (这里也没有 is_admin 旁路),作业只能靠重启进程停下,期间一直占着执行槽。
+    if p.owner and p.owner != user:
         raise HTTPException(403, "只能取消自己的生成任务")
     # 「取 f→判定 done/cancel→标记 _CANCELLED」整段收进 _JOBS_LOCK,与 _pipeline/_run_step finally
     # 里同锁的 _CANCELLED.discard 互斥:否则作业恰在此窗口跑完时,discard 先执行、随后此处 add 让
@@ -781,6 +784,11 @@ def export_project(project_id: str, user: str = Depends(current_user)) -> dict:
             p = store.load(project_id)
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(404, f"项目不存在: {project_id}") from e
+        # 归属校验必须单独写一遍,不能改调 _editable:导出刻意不受只读拦截(见上方 docstring),
+        # 而 _editable 头一件事就是拦只读。判据与 _editable 逐字一致——历史项目 owner 为空
+        # 视为无主,否则那些项目会连自己都导不出。
+        if p.owner and p.owner != user:
+            raise HTTPException(403, "只能导出自己的项目")
         p = export.build_exports(p, store.project_dir(project_id))
         store.save(p)
     return {
@@ -1073,17 +1081,19 @@ def _run_one_step(p: Project, project_id: str, name: str, cfg: AppConfig,
     if name == "s2":
         p = s2_storyboard.run(p, llm, use_skill=runtime_config.use_master_skill(p, s, "s2"))
     elif name == "s3":
-        # 跑之前先记下"谁还没有三视图":跑完凡是从无到有的角色,其出场页必须作废重画,
-        # 否则那次补画对已 confirmed 的页完全无效(S4 会幂等跳过它们),用户以为修好了其实没有。
-        was_missing = editing.missing_turnarounds(p)
+        # 跑之前先给三视图文件拍指纹:跑完凡是**变过**的角色,其出场页必须作废重画,
+        # 否则那次重画对已 confirmed 的页完全无效(S4 会幂等跳过它们),用户以为修好了其实没有。
+        # 判据是"文件变了"而不是"从无到有"——重绘/换参考图会保留 turnaround_image,
+        # 后者恒为空集(见 editing.turnaround_stamps 的说明)。
+        before = editing.turnaround_stamps(p, workdir)
         p = s3_characters.run(p, llm, image, workdir, s.image_size,
                               on_progress=lambda: _locked_save(p),
                               concurrency=image_concurrency(s),
                               cancel_check=lambda: _is_cancelled(project_id))
-        gained = was_missing - editing.missing_turnarounds(p)
-        hit = editing.invalidate_pages_of_characters(p, gained)
+        redrawn = editing.redrawn_characters(before, editing.turnaround_stamps(p, workdir))
+        hit = editing.invalidate_pages_of_characters(p, redrawn)
         if hit:
-            print(f"补出 {'、'.join(sorted(gained))} 的三视图,已作废其出场的第 "
+            print(f"{'、'.join(sorted(redrawn))} 的三视图有更新,已作废其出场的第 "
                   f"{'、'.join(str(i) for i in hit)} 页,重跑 S4 会重画")
     elif name == "s4":
         p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
@@ -1166,7 +1176,14 @@ def _remux_main_subtitles(p: Project, workdir: Path) -> None:
     重跑 lang="en",不会回头动它。结果就是用户在主成片播放器里怎么也找不到英文字幕。
     这一趟是纯 copy(音视频都不重编码),几秒钟。
 
-    失败必须吞掉:中文版少一条字幕轨是瑕疵,让已经跑完的英文轨整个报错是事故。"""
+    失败必须吞掉:中文版少一条字幕轨是瑕疵,让已经跑完的英文轨整个报错是事故。
+
+    ⚠️ 字幕文件必须**现算**,不能去盘上找 `final.{lg}.srt`:那批文件只有主片那一轮
+    才写得出来,而主片是在英文译文还不存在时合成的,`final.en.srt` 从来没被写过
+    (英文轮的 suffix 是 ".en",产出的是 `final.en.en.srt`)。原先按文件名去找,
+    命中数恒为 1,这个函数在默认时序上整个是死代码——用户在主播放器里永远找不到
+    英文字幕,而这正是它被写出来要解决的问题。_write_subtitles 按主片时间轴重算一遍,
+    文件自然就齐了,顺带保证时间轴用的是**中文片**的画面节奏(跨语种串轨的老病根)。"""
     mp4 = p.output.get("mp4")
     if not mp4:
         return
@@ -1176,10 +1193,8 @@ def _remux_main_subtitles(p: Project, workdir: Path) -> None:
         if not src.exists():
             return
         out_dir = workdir / "output"
-        subs = [(out_dir / f"final.{lg}.srt", s6_compose.SUB_LANG_TAGS.get(lg, lg))
-                for lg in (MAIN_LANG, *TRACK_LANGS)
-                if (out_dir / f"final.{lg}.srt").exists()]
-        if len(subs) < 2:      # 只有主语言一条时无事可做
+        subs = s6_compose._write_subtitles(p, workdir, out_dir, MAIN_LANG)
+        if not subs:      # 一条都没有(例如烧了硬字幕又还没有任何译文)
             return
         staged = out_dir / "final.remux.mp4"
         ffmpeg.sh(ffmpeg.mux_subtitles_cmd(
@@ -1344,6 +1359,11 @@ def write_config(body: AppConfig, user: str = Depends(current_user)) -> dict:
     合并语义(部分更新/密钥哨兵/环节保留与剪枝)见 runtime_config.apply_put。"""
     if _READONLY:
         raise HTTPException(403, "公开演示为只读,禁止修改配置")
+    # 管理员闸门:这个端点决定全站所有环节的上游地址与密钥。任意登录用户可写的话,
+    # 把 llm_base_url 指向自己的机器就能收走所有人的剧本与自备故事原文,顺带让全站
+    # 生成瘫痪。与 delete_project 同标准——影响面超出单个作品的操作只认 is_admin。
+    if not is_admin(user):
+        raise HTTPException(403, "仅管理员可修改端点配置")
     unknown = [st for st in body.stages if st not in STAGE_CLIENTS]
     if unknown:
         raise HTTPException(400, f"未知环节: {unknown}(合法环节 {list(STAGE_CLIENTS)})")

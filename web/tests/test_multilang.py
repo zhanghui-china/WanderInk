@@ -443,3 +443,31 @@ def test_cues_abut_across_pages(tmp_path: Path):
         spans.append((_sec(a), _sec(b)))
     for (_, end), (nxt, _) in zip(spans, spans[1:]):
         assert nxt == pytest.approx(end, abs=1e-3), f"cue 之间有重叠或空隙:{end} → {nxt}"
+
+
+def test_remux_main_regenerates_main_film_subtitle_files(tmp_path: Path):
+    """英文轨跑完后,把英文字幕补进中文主片。
+
+    _remux_main_subtitles 原先是去磁盘上找 `final.{lg}.srt`,但那些文件只有**主片那轮**
+    才写得出来,而主片是在英文译文还不存在时合成的——`final.en.srt` 从来没被写过
+    (英文轮的 suffix 是 ".en",产出的是 `final.en.en.srt`)。于是 len(subs) < 2 恒成立,
+    这个函数在默认时序上是死代码,用户在主播放器里永远找不到英文字幕。
+    改成按主片时间轴现算一遍(复用 _write_subtitles),文件自然就齐了。"""
+    from shanhai import api
+    from shanhai.steps import s6_compose
+
+    p = _bilingual(tmp_path)
+    _run_s6(p, tmp_path, "zh")                      # 主片:此时 en 译文已存在于 fixture
+    (tmp_path / "output" / "final.zh.srt").unlink(missing_ok=True)
+    (tmp_path / "output" / "final.en.srt").unlink(missing_ok=True)
+    p.output["mp4"] = str(tmp_path / "output" / "final.mp4")
+    (tmp_path / "output" / "final.mp4").write_bytes(b"mp4")
+
+    with patch("shanhai.api.ffmpeg.sh") as sh, \
+         patch("shanhai.api.os.replace"):
+        api._remux_main_subtitles(p, tmp_path)
+
+    assert sh.called, "英文字幕必须真的被封进主片,而不是因为找不到文件静默 return"
+    langs = [tag for _path, tag in
+             s6_compose._write_subtitles(p, tmp_path, tmp_path / "output", "zh")]
+    assert s6_compose.SUB_LANG_TAGS["en"] in langs   # 英文轨确实算得出来

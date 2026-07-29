@@ -146,13 +146,13 @@ def step(project_id: str, name: str):
     elif name == "s3":
         # 与 api._run_one_step 的 s3 分支同一套语义:补出来的三视图必须让其出场页作废,
         # 否则 s4 的幂等跳过会让那次补画对已有的页完全无效(单独跑 step s3 正是这个场景)。
-        was_missing = editing.missing_turnarounds(p)
+        before = editing.turnaround_stamps(p, workdir)
         p = s3_characters.run(p, llm, image, workdir, s.image_size,
                               concurrency=image_concurrency(s))
         hit = editing.invalidate_pages_of_characters(
-            p, was_missing - editing.missing_turnarounds(p))
+            p, editing.redrawn_characters(before, editing.turnaround_stamps(p, workdir)))
         if hit:
-            typer.echo(f"已作废第 {'、'.join(str(i) for i in hit)} 页(补出了它们缺的三视图),"
+            typer.echo(f"已作废第 {'、'.join(str(i) for i in hit)} 页(它们出场角色的三视图有更新),"
                        f"请接着跑 step s4")
     elif name == "s4":
         p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,

@@ -184,11 +184,14 @@ def _process_cell(cell, tts: TTSClient, voice: str, speed: float,
     out = audio_dir / f"page_{cell.index:02d}{suffix}.mp3"
     if not track.caption.strip():
         return   # 该语种还没有译文(如英文轨尚未翻译到这一页),跳过而不是合成空音频
-    # 静音兜底页不短路:即使已有音轨也应重试真人合成,以便 TTS 恢复后重跑补回解说。
-    if track.audio and not track.silent and out.exists():
-        track.duration_ms = max(probe_duration_ms(out), MIN_MS)   # M6:续跑复用也套 MIN_MS 下限
-        return
     try:
+        # 静音兜底页不短路:即使已有音轨也应重试真人合成,以便 TTS 恢复后重跑补回解说。
+        # ⚠️ 这个复用分支**必须**在 try 内:probe_duration_ms 对损坏的 mp3(上次进程被 kill、
+        # 磁盘写满)会抛,而它抛在 try 外就会穿透线程池炸掉整轮 S5——坏文件又一直躺在盘上,
+        # 每次重跑都在同一页炸,永远无法自愈。落进下面的静音兜底才能让这一轮跑完。
+        if track.audio and not track.silent and out.exists():
+            track.duration_ms = max(probe_duration_ms(out), MIN_MS)  # M6:续跑复用也套 MIN_MS 下限
+            return
         # M6:成功路径抬到 MIN_MS,避免修剪后极短音频让页面一闪而过。
         track.duration_ms = max(
             _synthesize_full(tts, track.caption, voice, out, speed=speed, lang=lang), MIN_MS)

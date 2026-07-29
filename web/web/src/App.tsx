@@ -117,7 +117,20 @@ export default function App() {
         // 仅对疑似瞬时错误(网络抖动/5xx)用比正常 2000 更长的退避重排,既能自愈又不高频空转;
         // 组件卸载时下方 clearTimeout 照常清理。
         const status = (e as { status?: number }).status
-        if (alive && status !== 404 && status !== 401) timer = window.setTimeout(tick, 4000)
+        if (!alive) return
+        // 停表还不够:光停不动状态的话,页面会一直停在最后一次成功的快照上——生成中那页
+        // 就永远显示脉动的"正在生成…"和冻住的耗时,用户根本不知道自己已经登出或作品已被删。
+        // 未设 SHANHAI_SESSION_SECRET 时后端每次重启都换签名密钥、全员 401,很容易撞上。
+        if (status === 401) {
+          setUser(null)          // 回登录页,而不是假装还在跑
+          setDetail(null)
+        } else if (status === 404) {
+          setDetail(null)        // 作品已不存在,清掉陈旧详情
+          setSelectedId(null)
+          refreshList()
+        } else {
+          timer = window.setTimeout(tick, 4000)
+        }
       }
     }
     tick()
@@ -197,14 +210,18 @@ export default function App() {
                 {activeCount > 0 ? `${activeCount} 部生成中` : `${list.length} 部作品`}
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowSettings(true)}
-              aria-label="配置"
-              className="flex h-8 w-8 items-center justify-center rounded-full border border-gold/25 bg-white/5 text-rice/80 transition hover:text-gold-pale"
-            >
-              ⚙
-            </button>
+            {/* 配置面板是纯编辑用途,而 PUT /api/config 现在只认管理员(它决定全站上游端点)。
+                入口对非管理员开着的话,人家填完一整张表单才吃 403,不如不给入口。 */}
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setShowSettings(true)}
+                aria-label="配置"
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-gold/25 bg-white/5 text-rice/80 transition hover:text-gold-pale"
+              >
+                ⚙
+              </button>
+            )}
             <div className="flex items-center gap-2 rounded-full border border-gold/25 bg-white/5 px-3 py-[7px]">
               <span className="text-[13px] text-rice/85">{user}</span>
               <button

@@ -27,7 +27,11 @@ def voice_sample_dir(root: Path | None = None) -> Path:
     return (root or DEFAULT_ROOT) / VOICE_SAMPLE_DIRNAME
 
 # project_id 形状校验:仅允许字母数字下划线短横线,堵住路径遍历(../、/、空白等)。
-_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# 首字符另外排除下划线:那是共享目录的保留命名空间(VOICE_SAMPLE_DIRNAME = "_voice_samples"),
+# 放行的话 DELETE /api/projects/_voice_samples 会把全站音色样本 rmtree 掉——delete_project
+# 只判 is_dir 就删,不要求目录里有 project.json。共享目录有自己的入口 voice_sample_dir(),
+# 不经过 project_dir,故拒掉不影响任何合法用途。
+_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9-][A-Za-z0-9_-]*$")
 
 
 def project_dir(project_id: str, root: Path | None = None) -> Path:

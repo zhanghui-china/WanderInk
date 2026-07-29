@@ -106,6 +106,23 @@ def test_s5_skips_existing_audio(mock_probe, tmp_path: Path):
     tts.synthesize.assert_not_called()               # 已配音且文件在则跳过合成
 
 
+@patch("shanhai.ffmpeg.sh", side_effect=_sh_creates_out)
+@patch("shanhai.steps.s5_audio.probe_duration_ms", side_effect=ValueError("坏 mp3"))
+def test_s5_broken_existing_audio_falls_back_instead_of_aborting(mock_probe, mock_sh,
+                                                                 tmp_path: Path):
+    """续跑时遇到损坏的既有 mp3(上次进程被 kill / 磁盘满),probe 会抛。
+    这一抛若不被兜住就穿透线程池炸掉整轮 S5,而坏文件一直在,每次重跑都在同一页炸,
+    永远无法自愈——必须退化为静音兜底,让这一轮跑完。"""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"tracks": []}), encoding="utf-8")
+    p = _project()
+    (tmp_path / "audio").mkdir(parents=True)
+    (tmp_path / "audio" / "page_01.mp3").write_bytes(b"broken")
+    p.storyboard[0].audio = "audio/page_01.mp3"
+    s5_audio.run(p, MagicMock(), "alloy", tmp_path, manifest_path=manifest)   # 不抛
+    assert p.status["s5"] in ("done", "partial")
+
+
 @patch("shanhai.steps.s5_audio.probe_duration_ms", return_value=1200)
 def test_s5_existing_audio_raised_to_min_ms(mock_probe, tmp_path: Path):
     # M6:续跑复用既有真人音轨也要套 MIN_MS 下限,否则短音轨在成片里一闪而过。

@@ -269,14 +269,34 @@ def reorder_cells(project: Project, workdir: Path, order: list[int]) -> None:
     _invalidate_downstream(project, "s4")
 
 
-def missing_turnarounds(project: Project) -> set[str]:
-    """当前还没有三视图的角色名。在 S3 前后各取一次,差集就是"这轮补出来的"。
+def turnaround_stamps(project: Project, workdir: Path) -> dict[str, tuple]:
+    """每个角色三视图文件的指纹(不存在则为 ())。在 S3 前后各取一次,比对出"这轮真的重画了谁"。
 
     单独抽出来是因为 api 与 cli 两条入口都要跑这个判据,而本仓库已经反复因为
-    "同一个判断写两份"吃亏(见 _invalidate_page_image 的注释、大师 skill 闸门那次)。"""
-    if project.script is None:
-        return set()
-    return {c.name for c in project.script.characters if not c.turnaround_image}
+    "同一个判断写两份"吃亏(见 _invalidate_page_image 的注释、大师 skill 闸门那次)。
+
+    此前的判据是"谁从无图变有图"(missing_turnarounds 的差集),那是错的:用户点重绘、
+    换参考图时,mark_character_redraw 与上传端点都**刻意保留** turnaround_image
+    (清了卡片立刻变"未生成",空窗难看)。角色前后都"有图",差集恒为空,一页都不作废——
+    界面上 s3=done、s4=done、全部 confirmed,新形象却一页都没出现,毫无异常信号。
+    补画首张三视图是本判据的特例(() → 有指纹),仍然算数。
+
+    指纹取 (mtime_ns, size) 而非内容哈希:S3 是原地覆写同名文件,mtime 必变;
+    读全部三视图算哈希在 12 个角色上是几十 MB 的白工。"""
+    stamps: dict[str, tuple] = {}
+    for c in (project.script.characters if project.script else []):
+        f = workdir / c.turnaround_image if c.turnaround_image else None
+        try:
+            st = f.stat() if f is not None else None
+        except OSError:      # 文件被外部删掉:与"没有图"同义,不是异常路径
+            st = None
+        stamps[c.name] = (st.st_mtime_ns, st.st_size) if st else ()
+    return stamps
+
+
+def redrawn_characters(before: dict[str, tuple], after: dict[str, tuple]) -> set[str]:
+    """两次 turnaround_stamps 之间三视图变过的角色。新增角色(before 里没有)也算。"""
+    return {name for name, stamp in after.items() if before.get(name, ()) != stamp}
 
 
 def invalidate_pages_of_characters(project: Project, names: set[str]) -> list[int]:
