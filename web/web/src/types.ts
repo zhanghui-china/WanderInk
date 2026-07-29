@@ -45,6 +45,9 @@ export interface Page {
   // 本次请求指定的 LoRA 短名;空串不等于"没用 LoRA",而是"未指定,后端回落自己的默认权重"
   // (模板里 LoRA 节点是焊死的,不存在"不用 LoRA")
   image_lora: string
+  // 这一页生成时缺三视图参考的出场角色。非空 = 这些角色只有文字特征、没有视觉锚点,
+  // 一致性无保证。空数组是正常态(老数据也是空的,不区分"没缺"和"没记录",不值得为此加字段)。
+  missing_refs: string[]
   // 附加语种轨,key 是语种码(如 "en");没生成过就是空对象
   tracks: Record<string, LocalizedTrack>
 }
@@ -83,7 +86,10 @@ export interface ProjectDetail {
   params: { duration_min: number; audience: string; tone: string; voice?: string }
   status: Record<string, string>
   pipeline: string
-  legend: { title: string; summary: string; source_type: string } | null
+  legend: { title: string; summary: string; source_type: string; sources: string[] } | null
+  // 用户新建项目时自备的故事原文(≤20000 字)。历史项目当时根本没落盘,永远是 null。
+  // 只是"有没有原文"的标志位;原文本体走 api.story(id) 按需拉,不跟着详情轮询走
+  has_story: boolean
   script_title: string | null
   characters: Character[]
   pages: Page[]
@@ -126,6 +132,7 @@ export interface NewProjectInput {
   speed?: number
   multi_panel?: boolean
   bgm?: boolean
+  burn_subtitles?: boolean
   use_hermes_agent?: boolean
   master_skill?: boolean
 }

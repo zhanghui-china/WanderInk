@@ -35,6 +35,7 @@ from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig, apply_put,
                                      config_view, image_concurrency,
                                      load_overrides, resolve_settings,
                                      update_overrides)
+from shanhai.safety import find_sensitive
 from shanhai.schema import Project
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s5t_translate, s6_compose)
@@ -220,18 +221,6 @@ def _save_error(project_id: str, e: Exception) -> None:
 
 # ---------- 后台管线 ----------
 
-def _use_master_skill(p: Project, stage_settings: Settings, stage_label: str) -> bool:
-    """该环节是否调"大师"skill(S1 编剧大师 / S2 导演大师):仅当作品勾了开关**且**该环节
-    后端确为 hermes-agent(/screenwriter-master、/director-master 发给别的模型会被当乱码)。
-    开关开了但后端不是 hermes 时提示并静默退化为普通生成,不报错。"""
-    if not p.params.master_skill:
-        return False
-    if stage_settings.llm_model == "hermes-agent":
-        return True
-    print(f"⚠️ 大师 skill 需 hermes-agent 后端,当前 {stage_label} 用 {stage_settings.llm_model},已忽略该开关")
-    return False
-
-
 def _deliverable_status(p: Project) -> str:
     """诚实闸门:据当前状态判定「整体是否已交付一部成片」。
     无 output['mp4'](未合成/编辑后已失效)→ partial:尚未合成,而非 done(单步重跑 s2–s5 会走到这)。
@@ -388,11 +377,12 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         _locked_save(p)
         stages = [
             ("s1", lambda: s1_script.run(p, clients["s1"][0],
-                                         use_skill=_use_master_skill(p, settings["s1"], "S1"))),
+                                         use_skill=runtime_config.use_master_skill(p, settings["s1"], "s1"))),
             ("s2", lambda: s2_storyboard.run(p, clients["s2"][0],
-                                             use_skill=_use_master_skill(p, settings["s2"], "S2"))),
+                                             use_skill=runtime_config.use_master_skill(p, settings["s2"], "s2"))),
             ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
                                              settings["s3"].image_size,
+                                             on_progress=lambda: _locked_save(p),
                                              concurrency=image_concurrency(settings["s3"]),
                                              cancel_check=lambda: _is_cancelled(project_id))),
             ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
@@ -473,6 +463,8 @@ def _serialize(p: Project) -> dict:
         # 这一页实际走的生成路径与本次指定的 LoRA:只有 "edit" 那条路带 LoRA 节点,
         # "text2img" 的模板没有,所选 LoRA 对那些页静默不生效——前端据此给出提示。
         "image_route": c.image_route, "image_lora": c.image_lora,
+        # 这一页生成时缺三视图锚点的角色——一致性无保证,必须让用户看得见。
+        "missing_refs": c.missing_refs,
         "image": _file_url(p.project_id, c.image, workdir),
         "audio": _file_url(p.project_id, c.audio, workdir),
         "tracks": {lg: {"caption": t.caption, "duration_ms": t.duration_ms,
@@ -494,6 +486,10 @@ def _serialize(p: Project) -> dict:
         "status": p.status,
         "pipeline": p.status.get("pipeline", "pending"),
         "legend": p.legend.model_dump() if p.legend else None,
+        # 只给布尔位,原文走 /api/projects/{id}/story 按需拉。原文上限 20000 字,
+        # 而详情端点在管线跑动时被前端每 2 秒轮询一次(App.tsx 的 tick),
+        # 把它放进这里等于每 2 秒重传一遍 ~60KB,而绝大多数轮询根本没人在看原文。
+        "has_story": bool(p.story),
         "script_title": p.script.title if p.script else None,
         "characters": characters,
         "pages": pages,
@@ -586,6 +582,7 @@ class NewProject(BaseModel):
     speed: float = 1.0
     multi_panel: bool = False
     bgm: bool = True
+    burn_subtitles: bool = True
     # 命名沿用历史,真实机制见 _pipeline:关闭时 S0/S1 跳过按环节覆盖、回退全局默认 LLM,
     # 而非字面的"是否用编剧大师"——仅当 hermes 恰配成 s0/s1 stage 覆盖时两者才等价。
     use_hermes_agent: bool = True
@@ -605,6 +602,12 @@ def _validate(body: NewProject) -> None:
         raise HTTPException(400, f"style 须为 {list(STYLE_PRESETS)}")
     if not 0.5 <= body.speed <= 2.0:
         raise HTTPException(400, "speed 须落在 [0.5, 2.0]")
+    # 与 s0_legend.from_text 用同一把尺子,但提前到落盘前:否则原文先写进 project.json、
+    # 后台线程里才拒绝生成,未过审文本永久留在盘上并经 GET /api/projects/{id} 泄给任意登录用户。
+    if body.story:
+        hits = find_sensitive(body.story)
+        if hits:
+            raise HTTPException(400, f"自备故事涉及敏感内容({'、'.join(hits)}),已阻止生成")
 
 
 @app.post("/api/projects")
@@ -632,9 +635,12 @@ def create_project(body: NewProject, user: str = Depends(current_user)) -> dict:
         p.params.speed = body.speed
         p.params.multi_panel = body.multi_panel
         p.params.bgm = body.bgm
+        p.params.burn_subtitles = body.burn_subtitles
         p.params.use_hermes_agent = body.use_hermes_agent
         p.params.master_skill = body.master_skill
         p.style_preset = body.style
+        # 原文落盘:S0 只把它压成 ≤200 字梗概写进 legend.summary,不存这里原文就随栈帧消失
+        p.story = body.story
         p.status["pipeline"] = "queued"
         store.save(p)
         _CANCELLED.discard(p.project_id)  # 兜底:清掉上一轮作业可能残留的陈旧取消标记,不污染本次
@@ -729,6 +735,16 @@ def get_project(project_id: str, user: str = Depends(current_user)) -> dict:
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
     return _serialize(p)
+
+
+@app.get("/api/projects/{project_id}/story")
+def get_project_story(project_id: str, user: str = Depends(current_user)) -> dict:
+    """自备故事原文,单独一个端点:用户点开按钮时才拉一次(见 _serialize 里 has_story 的注释)。"""
+    try:
+        p = store.load(project_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(404, f"项目不存在: {project_id}") from e
+    return {"story": p.story}
 
 
 @app.delete("/api/projects/{project_id}")
@@ -1055,11 +1071,20 @@ def _run_one_step(p: Project, project_id: str, name: str, cfg: AppConfig,
     p.status.pop(name, None)
     _locked_save(p)
     if name == "s2":
-        p = s2_storyboard.run(p, llm, use_skill=_use_master_skill(p, s, "S2"))
+        p = s2_storyboard.run(p, llm, use_skill=runtime_config.use_master_skill(p, s, "s2"))
     elif name == "s3":
+        # 跑之前先记下"谁还没有三视图":跑完凡是从无到有的角色,其出场页必须作废重画,
+        # 否则那次补画对已 confirmed 的页完全无效(S4 会幂等跳过它们),用户以为修好了其实没有。
+        was_missing = editing.missing_turnarounds(p)
         p = s3_characters.run(p, llm, image, workdir, s.image_size,
+                              on_progress=lambda: _locked_save(p),
                               concurrency=image_concurrency(s),
                               cancel_check=lambda: _is_cancelled(project_id))
+        gained = was_missing - editing.missing_turnarounds(p)
+        hit = editing.invalidate_pages_of_characters(p, gained)
+        if hit:
+            print(f"补出 {'、'.join(sorted(gained))} 的三视图,已作废其出场的第 "
+                  f"{'、'.join(str(i) for i in hit)} 页,重跑 S4 会重画")
     elif name == "s4":
         p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
                           on_progress=lambda: _locked_save(p),

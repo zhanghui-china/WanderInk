@@ -116,6 +116,11 @@ class StoryboardCell(BaseModel):
     # silent=True 表示该页音频是静音兜底(非真人解说);用于状态诚实化与重跑重合成。
     silent: bool = False
     status: Literal["draft", "confirmed", "failed"] = "draft"
+    # 生成这一页时,出场角色里**没有三视图可用**的那些名字(S4 每轮重算并覆盖)。
+    # 这些角色只有文字特征约束、没有视觉锚点,一致性无从保证——而在此之前这件事完全静默:
+    # S4 唯一的护栏是"所有角色里至少有一个有三视图",三个角色活一个就通过,界面上什么都看不到。
+    # 实测 DGX 上的 8f41283a 有 7 页在第一主角三视图产出前 18~33 分钟就画完了,全程无任何提示。
+    missing_refs: list[str] = Field(default_factory=list)
     panels: list[Panel] = Field(default_factory=list)  # 空 = 单图模式(现状不变)
     # 语种码 -> 该语种的译文与配音(如 "en");中文不进这里,仍用上面的原字段。
     tracks: dict[str, LocalizedTrack] = Field(default_factory=dict)
@@ -133,6 +138,11 @@ class GenerationParams(BaseModel):
     # 的工作流模板路径写错、每次秒返 500 被静默降级吞掉,所以从未成功过)。
     # 有默认值 → 老 project.json 零迁移。
     bgm: bool = True
+    # 把解说词烧进画面(而非只封 MP4 软字幕轨)。默认开:浏览器根本不解析 MP4 内的
+    # mov_text,下载的成片拿到微信/抖音这类地方软轨也等于不存在——用户看到的就是
+    # "没有字幕"。关掉则回到纯软字幕轨。仅中文片生效(英文烧录待解决词级断行)。
+    # 有默认值 → 老 project.json 零迁移。
+    burn_subtitles: bool = True
     use_hermes_agent: bool = True
     master_skill: bool = False   # S1 用"编剧大师"+S2 用"导演大师"深度创作(需对应环节为 hermes-agent 后端,更慢更贵)
 
@@ -144,6 +154,7 @@ class Project(BaseModel):
     created_at: str = ""   # ISO 8601 UTC;建作品时写入,历史项目(改造前所建)留空,列表按 project.json mtime 兜底排序
     params: GenerationParams = Field(default_factory=GenerationParams)
     status: dict[str, str] = Field(default_factory=dict)
+    story: str | None = None   # 用户自备故事原文;None = 走自动检索传说
     legend_candidates: list[Legend] = Field(default_factory=list)
     legend: Legend | None = None
     script: Script | None = None

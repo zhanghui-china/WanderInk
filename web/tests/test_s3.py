@@ -107,11 +107,11 @@ def test_s3_parallel_one_failure_does_not_abort_others(tmp_path: Path):
     p = Project(project_id="x", scenic_spot="雷峰塔")
     p.script = Script(title="t", theme="th", acts=[], characters=chars)
     llm = MagicMock()
-    llm.chat.side_effect = lambda _sys, user: f"特征-{user.splitlines()[0]}"  # 特征含角色名,可定向
+    llm.chat.side_effect = lambda _sys, user: f"特征-{user}"  # 特征含各自外貌,可定向
     image = MagicMock()
 
     def gen(prompt, **kw):
-        if "角色1" in prompt:
+        if "衣1" in prompt:
             raise RuntimeError("Server disconnected")
         return b"png"
     image.generate.side_effect = gen
@@ -272,7 +272,7 @@ def test_reference_and_fallback_both_fail_keeps_reference_image(tmp_path: Path, 
 def test_fifth_character_with_reference_failure_marks_partial(tmp_path: Path):
     # 报告点名的最容易漏判的一行:有参考图的次要角色(突破 MAX_TURNAROUND)生成失败,
     # status["s3"] 必须是 partial,不能因为它本是"次要角色"就被 _draw_flags 豁免判定。
-    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance="白衣")
+    chars = [CharacterCard(name=f"角色{i}", role="r", personality="p", appearance=f"衣{i}")
              for i in range(5)]
     ref_dir = tmp_path / "characters" / "refs"
     ref_dir.mkdir(parents=True)
@@ -281,10 +281,10 @@ def test_fifth_character_with_reference_failure_marks_partial(tmp_path: Path):
     p = Project(project_id="x", scenic_spot="雷峰塔")
     p.script = Script(title="t", theme="th", acts=[], characters=chars)
     llm = MagicMock()
-    llm.chat.side_effect = lambda _sys, user: f"特征-{user.splitlines()[0]}"   # 特征含角色名,可定向失败
+    llm.chat.side_effect = lambda _sys, user: f"特征-{user}"   # 特征含各自外貌,可定向失败
 
     def gen(prompt, **kw):
-        if "角色4" in prompt:
+        if "衣4" in prompt:
             raise RuntimeError("boom")
         return b"png"
     image = MagicMock(); image.generate.side_effect = gen
@@ -323,6 +323,25 @@ def test_feature_system_handles_non_human_characters():
     assert "物种" in system or "形体" in system
     # 人类分支的原有槽位不能丢,回归保护
     assert "发型发色" in system and "服饰" in system
+    # 物种判断只能依据身份与外貌,不许从名字推断(「小虎」不是老虎)
+    assert "角色名" in system
+
+
+def test_s3_feature_prompt_input_excludes_character_name(tmp_path: Path):
+    """喂给 LLM 的角色信息不得带姓名:「小虎」这种名字会让 LLM 把人判成幼虎,
+    对外貌描述零信息量,只有污染。"""
+    chars = [CharacterCard(name="小虎", role="放牛娃", personality="莽撞",
+                           appearance="十岁男孩,粗布短衫")]
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=chars)
+    llm = MagicMock(); llm.chat.return_value = "十岁男孩,粗布短衫"
+    image = MagicMock(); image.generate.return_value = b"png"
+    s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+
+    _system, user = llm.chat.call_args[0]
+    assert "姓名" not in user
+    assert "小虎" not in user
+    assert "放牛娃" in user and "粗布短衫" in user   # 身份/外貌等有效信息仍在
 
 
 def test_s3_budget_not_consumed_by_already_locked_characters(tmp_path: Path):

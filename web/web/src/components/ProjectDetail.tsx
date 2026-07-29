@@ -124,6 +124,16 @@ const ghostBtn =
 const toolBtn =
   'rounded-md border border-line bg-white/50 px-2 py-1 text-[11px] text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
 
+// 自备故事原文按空行分段;段内的单换行仍交给 whitespace-pre-wrap 保留。
+// 只排版、不改动用户原文的任何一个字——叫「原文」就得是原文。整段没有换行的
+// 长文本因此仍是一整段,那是用户自己贴进来的样子,系统不替他改写。
+function paragraphs(text: string): string[] {
+  return text
+    .split(/\n\s*\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
 export function ProjectDetailView({
   project,
   meta,
@@ -139,6 +149,9 @@ export function ProjectDetailView({
   const [trackBusy, setTrackBusy] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [s2Open, setS2Open] = useState(false)
+  const [sourcesOpen, setSourcesOpen] = useState(false)
+  // 原文不随详情下发(详情每 2 秒轮询一次),点开时才拉一次;null = 还没拿到
+  const [storyText, setStoryText] = useState<string | null>(null)
   const [voiceOpen, setVoiceOpen] = useState(false)
   const [voicePicked, setVoicePicked] = useState<{ blob: Blob; filename: string } | null>(null)
   const [voiceBusy, setVoiceBusy] = useState(false)
@@ -149,6 +162,24 @@ export function ProjectDetailView({
   const pendingCount = project.pages.filter(
     (p) => p.status === 'draft' || p.status === 'failed' || !p.audio,
   ).length
+
+  // 展开「故事来源」。自备故事的原文按需拉:同一作品拉到后缓存,重复展开不再请求;
+  // 失败折回并保持 storyText 为 null,让下次展开还能重试。
+  async function toggleSources() {
+    if (sourcesOpen) {
+      setSourcesOpen(false)
+      return
+    }
+    setSourcesOpen(true)
+    if (!project.has_story || storyText !== null) return
+    try {
+      const r = await api.story(project.project_id)
+      setStoryText(r.story ?? '')
+    } catch (e) {
+      setSourcesOpen(false)
+      alert(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   function handleDrop(targetIndex: number) {
     const from0 = dragIndex
@@ -239,6 +270,17 @@ export function ProjectDetailView({
                 <> · 音色 {project.params.voice.startsWith('clone:') ? '自定义' : project.params.voice}</>
               )}
             </p>
+            {/* 剧本/分镜这两步实际用的引擎(模型 + 是否走大师 skill)。勾了大师开关但该环节
+                后端不是 hermes-agent 时后端会静默退化,退化原因也写在这两个值里——在此之前
+                这件事只 print 到服务端 stdout,事后完全无法回答"这部作品到底走没走 skill"。
+                历史作品没有这两个键,整行不渲染;绝不写"未知",那是在替旧数据编造结论。 */}
+            {(project.status.s1_engine || project.status.s2_engine) && (
+              <p className="mt-0.5 text-[11px] tracking-wide text-muted">
+                {project.status.s1_engine && <>剧本 {project.status.s1_engine}</>}
+                {project.status.s1_engine && project.status.s2_engine && ' · '}
+                {project.status.s2_engine && <>分镜 {project.status.s2_engine}</>}
+              </p>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -449,21 +491,61 @@ export function ProjectDetailView({
         </div>
       )}
 
-      {/* 传说来源 */}
-      {project.legend && (
+      {/* 传说来源 / 自备故事。渲染条件里的 has_story 不能省:S0 未跑完、或 from_text 因敏感词
+          报错时 legend 恒为 null,而原文早已落盘——那恰恰是最需要看原文的时候。
+          历史项目 story 为 null(改造前根本没落盘),整块不显示是预期行为。 */}
+      {(project.legend || project.has_story) && (
         <div className={`relative ${card} border-l-[3px] border-l-cinnabar`}>
           <span className="absolute right-5 top-5">
             <Seal char="源" size={38} rot={6} />
           </span>
           <div className="mb-1 flex items-center gap-2">
             <h2 className="font-serif text-base font-semibold tracking-wide text-ink">
-              {project.legend.title}
+              {project.legend ? project.legend.title : '自备故事'}
             </h2>
-            <span className="rounded-full border border-line px-2 py-0.5 text-[11px] text-muted">
-              来源 · {project.legend.source_type}
-            </span>
+            {project.legend && (
+              <span className="rounded-full border border-line px-2 py-0.5 text-[11px] text-muted">
+                来源 · {project.legend.source_type}
+              </span>
+            )}
           </div>
-          <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
+          {project.legend && (
+            <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
+          )}
+          {/* 自备故事时 legend.sources 只是占位词「用户自备文本」(s0_legend.from_text 写死的),
+              列出来毫无信息量——用户点「故事来源」要的就是自己贴的那段文本,故优先展开原文。
+              自动检索传说的作品没有 story,照旧列书目;S0 允许给不出可靠出处时留空,空列表不给按钮。 */}
+          {(project.has_story || (project.legend && project.legend.sources.length > 0)) && (
+            <div className="mt-3">
+              <button className={toolBtn} onClick={toggleSources}>
+                {sourcesOpen ? '收起' : '故事来源'}
+              </button>
+              {sourcesOpen &&
+                (project.has_story ? (
+                  // 原文最长两万字,就地展开必须限高滚动,否则把整页撑成一条长廊
+                  <div className="mt-2 max-h-[60vh] space-y-3 overflow-y-auto text-sm leading-loose text-ink-soft">
+                    {storyText === null ? (
+                      <p>正在读取原文…</p>
+                    ) : (
+                      paragraphs(storyText).map((para, i) => (
+                        <p key={i} className="indent-[2em] whitespace-pre-wrap">
+                          {para}
+                        </p>
+                      ))
+                    )}
+                  </div>
+                ) : (
+                  <ul className="mt-2 space-y-1 text-sm leading-loose text-ink-soft">
+                    {project.legend?.sources.map((s) => (
+                      <li key={s} className="flex gap-2">
+                        <span className="text-muted">·</span>
+                        <span>{s}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ))}
+            </div>
+          )}
         </div>
       )}
       {s2Open && (
@@ -632,7 +714,9 @@ function CharacterCard({
   onChanged: () => void
 }) {
   const [busy, setBusy] = useState(false)
-  const [lightboxOpen, setLightboxOpen] = useState(false)
+  // 存 src 而非布尔:三视图与参考图共用这一个 lightbox,用标志位就得开两个 state,
+  // 也就凭空多出"两个弹窗同时开着"这种状态。存 src 则天然互斥。
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   // 弹窗由两处触发,复用同一个 CharacterRedrawDialog:手动点"重绘"走 doRedraw,
   // 上传参考图成功后自动弹出则走 afterUpload(不再重新生成设定图,只决定是否连带重绘旧页)
@@ -647,6 +731,11 @@ function CharacterCard({
   // 独立于 toolBtn 定义(不叠加覆盖字号):卡片变宽后两个按钮各占一半、居中、不换行
   const charBtn =
     'flex-1 justify-center whitespace-nowrap rounded-md border border-line bg-white/50 px-2 py-1 text-center text-[10px] text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
+
+  // 绑成局部常量,TS 才能在 onClick 闭包里收窄掉 null(c.image 是 props 上的属性,
+  // 编译器不认为它在闭包执行时仍然非空)。这样不必写非空断言——本文件一处都没有。
+  const artSrc = c.image
+  const refSrc = c.reference_image
 
   // 该角色设定图重绘后,哪些已生成页会因画风不一致而过期(仅已成功出图的 confirmed 页算数)
   const affected = pages.filter(
@@ -750,6 +839,20 @@ function CharacterCard({
         <span className="absolute right-2 top-2 rounded bg-cinnabar/85 px-1.5 py-0.5 font-serif text-[10px] text-rice">
           正·侧·背
         </span>
+        {/* 看参考图放在图片区左下,与右下的"换参考图"对称,**不能**并进下方 figcaption 那行:
+            那行两颗按钮各 flex-1 占一半(见 charBtn 注释),挤成三等分后「按参考图重绘」
+            配 whitespace-nowrap 会直接溢出卡片。
+            也刻意不受 editable 约束——查看是只读动作,只读演示模式与生成过程中都该看得到
+            自己传的图;右下那颗要改数据,才需要 editable。 */}
+        {refSrc && (
+          <button
+            type="button"
+            onClick={() => setLightbox({ src: refSrc, alt: `${c.name} 参考图` })}
+            className="absolute bottom-2 left-2 rounded-full bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice transition hover:bg-cinnabar/85"
+          >
+            看参考图
+          </button>
+        )}
         {editable && (
           <button
             type="button"
@@ -764,8 +867,12 @@ function CharacterCard({
         <div className="font-serif text-sm font-semibold tracking-wide text-ink">{c.name}</div>
         <div className="text-[11px] text-muted">{c.role}</div>
         <div className="mt-2 flex gap-1.5">
-          {c.image && (
-            <button type="button" onClick={() => setLightboxOpen(true)} className={charBtn}>
+          {artSrc && (
+            <button
+              type="button"
+              onClick={() => setLightbox({ src: artSrc, alt: c.name })}
+              className={charBtn}
+            >
               查看详情
             </button>
           )}
@@ -777,8 +884,8 @@ function CharacterCard({
         </div>
         {applyNotice && <div className="mt-1.5 text-[10px] text-muted">{applyNotice}</div>}
       </figcaption>
-      {lightboxOpen && c.image && (
-        <ImageLightbox src={c.image} alt={c.name} onClose={() => setLightboxOpen(false)} />
+      {lightbox && (
+        <ImageLightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />
       )}
       {dialogOpen && (
         <CharacterRedrawDialog
@@ -1093,21 +1200,87 @@ function PageCard({
   }
 
   async function save() {
+    // 先按字段算出这次改动作废了什么,用来决定保存后问哪一句。必须在 updateCell 之前算:
+    // 判据要和后端 editing.update_cell 的级联规则严格对齐——画面/人物作废图,旁白作废音,
+    // 情绪不级联。比较用 trim 后的值,与真正提交上去的值一致,免得只多敲一个空格也弹窗。
+    const nextCaption = caption.trim()
+    const nextVisual = visualDesc.trim()
+    const needRedraw =
+      nextVisual !== pg.visual_desc ||
+      characters.length !== pg.characters.length ||
+      characters.some((c, i) => c !== pg.characters[i])
+    const needRevoice = nextCaption !== pg.caption
+
     setBusy('save')
     setErr(null)
     try {
       await api.updateCell(projectId, pg.index, {
-        caption: caption.trim(),
-        visual_desc: visualDesc.trim(),
+        caption: nextCaption,
+        visual_desc: nextVisual,
         emotion,
         characters,
       })
       setEditing(false)
+      if (needRedraw && needRevoice) {
+        if (
+          window.confirm(
+            `已保存。第 ${pg.index} 页的图片和配音都已作废,现在一并重新生成吗?将调用生图与 TTS API,并清空已合成的成片。`,
+          )
+        ) {
+          // 不能连着发两次 runStep:同一项目已有任务在跑时端点直接 409。改成两次标脏后
+          // 只触发一次 S4 并带 cascade——api._INVALIDATES 里 s4 会带出 s5/s6,配音会接着跑。
+          await api.redrawCell(projectId, pg.index)
+          await api.revoiceCell(projectId, pg.index)
+          await triggerStep('s4', true, '已标记重绘与重配音', '可点漫画页步骤重试')
+        }
+      } else if (needRedraw) {
+        if (
+          window.confirm(
+            `已保存。第 ${pg.index} 页的图片已作废,现在重新生成吗?将调用配置的生图 API。`,
+          )
+        ) {
+          await regen('redraw')
+        }
+      } else if (needRevoice) {
+        if (
+          window.confirm(
+            `已保存。第 ${pg.index} 页的配音已作废,现在重新生成吗?将调用配置的 TTS API,并清空已合成的成片。`,
+          )
+        ) {
+          await regen('revoice')
+        }
+      }
       onChanged()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(null)
+    }
+  }
+
+  /** 触发某步,并在触发失败时刷新 + 给出可自行重试的指引。
+   *  标脏接口已经清掉了本页的 image/audio 与成片,触发失败时若不刷新,UI 会停在陈旧画面、
+   *  让用户以为还在。返回 false 表示触发失败(调用方据此跳过后续动作)。 */
+  async function triggerStep(name: 's4' | 's5', cascade: boolean, what: string, hint: string) {
+    try {
+      await api.runStep(projectId, name, cascade)
+      return true
+    } catch (e) {
+      onChanged()
+      alert(`${what},但触发生成失败:${e instanceof Error ? e.message : String(e)},${hint}`)
+      return false
+    }
+  }
+
+  /** 标脏 + 立即触发对应步骤(不含二次确认,确认由调用方负责)。
+   *  S4/S5 对已完成的页幂等跳过,所以整步重跑实际只会重做本页。 */
+  async function regen(kind: 'redraw' | 'revoice') {
+    if (kind === 'redraw') {
+      await api.redrawCell(projectId, pg.index)
+      await triggerStep('s4', false, '已标记重绘', '可点漫画页步骤重试')
+    } else {
+      await api.revoiceCell(projectId, pg.index)
+      await triggerStep('s5', false, '已标记重配音', '可点配音步骤重试')
     }
   }
 
@@ -1119,34 +1292,8 @@ function PageCard({
         !window.confirm(`确定重新生成第 ${pg.index} 页的配音?将调用配置的 TTS API,并清空已合成的成片。`)) return
     setBusy(kind)
     try {
-      if (kind === 'redraw') {
-        await api.redrawCell(projectId, pg.index)
-        try {
-          await api.runStep(projectId, 's4') // 标记后立即触发 S4 重跑,只会重画本页等待中的页
-        } catch (e) {
-          // redrawCell 已清掉本页 image/output,若触发生成失败要刷新让用户看到已被清的状态,
-          // 否则 UI 停在陈旧画面、以为还在;并给出可自行重试的明确指引。
-          onChanged()
-          alert(
-            `已标记重绘,但触发生成失败:${e instanceof Error ? e.message : String(e)},可点漫画页步骤重试`,
-          )
-          return
-        }
-      }
-      if (kind === 'revoice') {
-        await api.revoiceCell(projectId, pg.index)
-        try {
-          await api.runStep(projectId, 's5') // 同 redraw:标记后立即触发 S5,只会重配本页(其余页幂等跳过)
-        } catch (e) {
-          // revoiceCell 已清掉本页 audio/output,若触发生成失败要刷新让用户看到已被清的状态。
-          onChanged()
-          alert(
-            `已标记重配音,但触发生成失败:${e instanceof Error ? e.message : String(e)},可点配音步骤重试`,
-          )
-          return
-        }
-      }
       if (kind === 'delete') await api.deleteCell(projectId, pg.index)
+      else await regen(kind)
       onChanged()
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e))
@@ -1356,6 +1503,18 @@ function PageCard({
                 title={LORA_MISS[pg.image_route]}
               >
                 {LORA_MISS_SHORT[pg.image_route]}
+              </span>
+            )}
+            {/* 缺三视图锚点:这些角色画这一页时只有文字特征、没有参考图,长相不受约束。
+                必须同时看 pg.image——图已被作废/失败的页,这条记录描述的是一张不存在的图
+                (与上面 LORA_MISS 同一判据)。用 alarm 色而非 muted:这是实打实的质量问题,
+                不是可有可无的元信息,补画三视图后重跑该页才会消失。 */}
+            {pg.image && pg.missing_refs.length > 0 && (
+              <span
+                className="rounded-full bg-kraft px-2 py-0.5 text-alarm"
+                title={`${pg.missing_refs.join('、')} 画这一页时没有三视图参考,长相不受约束。补出三视图后重画本页可修复。`}
+              >
+                缺参考 {pg.missing_refs.join('、')}
               </span>
             )}
             {pg.status === 'failed' && <span className="text-alarm">生成失败</span>}

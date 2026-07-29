@@ -51,7 +51,8 @@ def test_s4_generates_and_composes(tmp_path: Path):
     assert p.storyboard[0].status == "confirmed"
     assert (tmp_path / "pages" / "page_01.png").exists()
     refs = image.generate.call_args.kwargs["references"]
-    assert refs and refs[0].name == "白素贞.png"      # 三视图作为参考图传入
+    # 参考图是三视图裁出的正面像(文件名带缓存版本号,见 _downscaled_ref 的说明)
+    assert refs and refs[0].name == f"白素贞.{s4_pages.REF_CACHE_VERSION}.png"
     prompt = image.generate.call_args.args[0]
     assert "白衣女子" in prompt and "不要出现任何文字" in prompt
 
@@ -209,8 +210,9 @@ def test_s4_downscaled_ref_rebuilds_on_newer_source(tmp_path: Path):
     src = tmp_path / "白素贞.png"
     Image.new("RGB", (100, 100), "red").save(src, "PNG")
     cache = tmp_path / "_refs"
-    old = s4_pages._downscaled_ref(src, cache).read_bytes()
-    out_mtime = (cache / "白素贞.png").stat().st_mtime
+    out = s4_pages._downscaled_ref(src, cache)
+    old = out.read_bytes()
+    out_mtime = out.stat().st_mtime
     Image.new("RGB", (100, 100), "blue").save(src, "PNG")   # S3 重绘该角色
     os.utime(src, (out_mtime + 100, out_mtime + 100))
     new = s4_pages._downscaled_ref(src, cache).read_bytes()
@@ -485,3 +487,225 @@ def test_s4_failure_clears_stale_route_from_previous_success(tmp_path: Path):
     p = s4_pages.run(p, image, tmp_path, "1536x1024")
     assert p.storyboard[0].status == "failed"
     assert p.storyboard[0].image_route == "" and p.storyboard[0].image_lora == ""
+
+
+# ---------- 逐页三视图锚点校验(8f41283a 事故的回归) ----------
+# 旧护栏是 `if not any(c.turnaround_image for c in characters)`——**所有**角色都没图才告警。
+# 实测 DGX 上的 8f41283a:3 个角色里 2 个有图,第一主角的三视图比 7 页画面晚 18~33 分钟
+# 才产出,那 7 页全程无锚点而护栏一声不吭。这一组用例锁住"部分缺失"这个真实场景。
+
+def _mixed_refs_project(tmp_path: Path) -> Project:
+    """两个角色:有图的「白素贞」与无图的「法海」;三页分别是 只有图的 / 只无图的 / 混合。"""
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    (tmp_path / "characters").mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (64, 64), "red").save(tmp_path / "characters" / "白素贞.png")
+    have = CharacterCard(name="白素贞", role="r", personality="p", appearance="a",
+                         feature_prompt="白衣女子", turnaround_image="characters/白素贞.png")
+    lack = CharacterCard(name="法海", role="r", personality="p", appearance="a",
+                         feature_prompt="金衣僧人")   # 三视图生成失败 → turnaround_image 为空
+    p.script = Script(title="t", theme="th", acts=[], characters=[have, lack])
+    p.storyboard = [
+        StoryboardCell(index=1, scene_ref="1-1", visual_desc="断桥", characters=["白素贞"],
+                       caption="c", emotion="宁静"),
+        StoryboardCell(index=2, scene_ref="1-2", visual_desc="金山", characters=["法海"],
+                       caption="c", emotion="紧张"),
+        StoryboardCell(index=3, scene_ref="1-3", visual_desc="对峙", characters=["白素贞", "法海"],
+                       caption="c", emotion="紧张"),
+    ]
+    return p
+
+
+def test_s4_records_missing_refs_per_page(tmp_path: Path, capsys):
+    p = _mixed_refs_project(tmp_path)
+    image = _mock_image(); image.generate.return_value = _png()
+    p = s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert p.storyboard[0].missing_refs == []            # 该页唯一角色有三视图
+    assert p.storyboard[1].missing_refs == ["法海"]
+    assert p.storyboard[2].missing_refs == ["法海"]      # 混合页只报缺的那个
+    out = capsys.readouterr().out
+    assert "一致性" in out and "2、3" in out             # 告警点名到页,不再是笼统一句
+
+
+def test_s4_strict_raises_on_partial_missing_refs(tmp_path: Path):
+    # 旧护栏在这个场景下**不会**触发(白素贞有图,any() 为真),这正是事故能发生的原因。
+    p = _mixed_refs_project(tmp_path)
+    image = _mock_image(); image.generate.return_value = _png()
+    with pytest.raises(ValueError):
+        s4_pages.run(p, image, tmp_path, "1536x1024", strict=True)
+
+
+def test_s4_clears_stale_missing_refs_after_turnaround_filled(tmp_path: Path):
+    # 补出三视图后重跑,旧的缺失记录必须消失——否则界面会照着它一直报"缺参考",
+    # 描述的却是上一轮的状态(同 image_route/image_lora 那类陈旧元数据的教训)。
+    p = _mixed_refs_project(tmp_path)
+    image = _mock_image(); image.generate.return_value = _png()
+    p = s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert p.storyboard[2].missing_refs == ["法海"]
+    Image.new("RGB", (64, 64), "green").save(tmp_path / "characters" / "法海.png")
+    p.script.characters[1].turnaround_image = "characters/法海.png"
+    for c in p.storyboard:            # 模拟 editing.invalidate_pages_of_characters 的效果
+        c.status, c.image = "draft", ""
+    p = s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert all(c.missing_refs == [] for c in p.storyboard)
+
+
+# ---------- 参考图裁成单一正面像(同一角色画多次的回归) ----------
+# S3 的三视图是"同一角色正面/侧面/背面并排"的设定图,整张喂进 image edit 工作流时
+# 传递的是**结构**:实测泰山那部作品抽样 7 页有 5 页出现同一角色画两三次,
+# 其中一页直接是三个同款冠袍男子并排、恰好一正面一侧面一背面。
+
+def _sheet(tmp_path: Path, w: int = 1260, h: int = 840) -> Path:
+    """仿三视图设定图:左中右三段涂不同颜色,便于断言裁到的是最左那段(正面)。"""
+    img = Image.new("RGB", (w, h), "white")
+    for i, color in enumerate(("red", "green", "blue")):
+        img.paste(Image.new("RGB", (w // 3, h), color), (i * (w // 3), 0))
+    p = tmp_path / "sheet.png"
+    img.save(p)
+    return p
+
+
+def test_downscaled_ref_crops_to_front_view(tmp_path: Path):
+    src = _sheet(tmp_path)
+    out = s4_pages._downscaled_ref(src, tmp_path / "_refs")
+    got = Image.open(out)
+    src_ratio = 1260 / 840
+    # 裁掉侧面/背面后宽高比应缩到约原图的 FRONT_VIEW_RATIO 倍
+    assert got.width / got.height == pytest.approx(src_ratio * s4_pages.FRONT_VIEW_RATIO, rel=0.05)
+    # 且内容是最左那段(正面像),不是中间的侧面或右边的背面
+    assert got.convert("RGB").getpixel((got.width // 4, got.height // 2))[0] > 200   # 偏红
+
+
+def test_downscaled_ref_cache_name_carries_version(tmp_path: Path):
+    # 线上 _refs/ 里已有一批**旧的整张缩略图**,mtime 还比源文件新。缓存名不带版本的话
+    # 新裁切逻辑会直接复用旧文件、改动完全不生效——是那种"跑完一切正常、就是没效果"的静默失效。
+    src = _sheet(tmp_path)
+    cache = tmp_path / "_refs"
+    stale = cache / src.name          # 旧版命名:与源文件同名
+    cache.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (900, 600), "black").save(stale)
+    out = s4_pages._downscaled_ref(src, cache)
+    assert out != stale
+    assert s4_pages.REF_CACHE_VERSION in out.name
+    assert Image.open(out).convert("RGB").getpixel((10, 10))[0] > 200   # 不是那张黑图
+
+
+def test_downscaled_ref_reuses_cache(tmp_path: Path):
+    src = _sheet(tmp_path)
+    cache = tmp_path / "_refs"
+    first = s4_pages._downscaled_ref(src, cache)
+    mtime = first.stat().st_mtime_ns
+    assert s4_pages._downscaled_ref(src, cache) == first
+    assert first.stat().st_mtime_ns == mtime      # 命中缓存,没重裁
+
+
+# ---------- 出图前去名化(中文名被当成画面内容的回归) ----------
+# 「小虎」这类角色名原样进 prompt,文生图模型会照字面画出一只老虎。
+# 名字对成图没有任何用处(身份锚是参考图),故 features 与 scene 两处一并换成中性代号。
+
+def test_anonymize_handles_overlapping_name_prefixes():
+    # 必须按名字长度降序替换,否则「小虎」会先把「小虎子」截成「角色甲子」
+    cards = [
+        CharacterCard(name="小虎", role="r", personality="p", appearance="a",
+                      feature_prompt="十岁男童"),
+        CharacterCard(name="小虎子", role="r", personality="p", appearance="a",
+                      feature_prompt="八岁女童"),
+    ]
+    features, scene = s4_pages._anonymize(cards, "小虎子牵着小虎走过山门")
+    # 断言必须锁住"谁被换成谁":乱序替换时 scene 会变成「角色甲子牵着角色甲走过山门」,
+    # 只断言集合关系的话该用例照样绿,等于没有回归保护。
+    assert scene == "角色乙牵着角色甲走过山门"
+    assert features == "角色甲(十岁男童);角色乙(八岁女童)"
+
+
+def test_anonymize_masks_names_beyond_present():
+    # scene 里提到的"本页/本格没出场"的角色名同样是名字,漏掉两种后果:
+    # (a) 原样进 prompt 被画成字面意思;(b) 短名把长名截碎成「角色甲女」。
+    cards = [CharacterCard(name=n, role="r", personality="p", appearance="a",
+                           feature_prompt="F" + n) for n in ("小龙", "小龙女")]
+    features, scene = s4_pages._anonymize([cards[0]], "小龙女递给小龙一柄剑", cards)
+    assert "小龙" not in scene
+    assert features == "角色甲(F小龙)"          # 未出场角色不进 features
+
+
+def test_anonymize_masks_names_without_cards():
+    # storyboard 写了 cast 名单里没有的名字(模型改名/用别称),cards 查不到就被静默丢掉,
+    # 该名字原样留在 visual_desc 里直接进 image prompt。
+    features, scene = s4_pages._anonymize([], "小虎站在少林寺山门前", names=["小虎"])
+    assert "小虎" not in scene
+    assert features == "无固定角色"
+
+
+def test_s4_masks_storyboard_name_missing_from_cast(tmp_path: Path):
+    p = _tiger_project(tmp_path)
+    p.storyboard[0].characters = ["虎娃"]
+    p.storyboard[0].visual_desc = "虎娃站在少林寺山门前"
+    image = _mock_image(); image.generate.return_value = _png()
+    s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert "虎娃" not in image.generate.call_args.args[0]
+
+
+def test_s4_panel_masks_other_character_in_same_frame(tmp_path: Path):
+    # panel.characters 是页面角色的子集,但 panel.visual_desc 常提到同框的另一角色。
+    p = _tiger_project(tmp_path)
+    p.params.multi_panel = True
+    p.script.characters.append(
+        CharacterCard(name="阿虎", role="r", personality="p", appearance="a",
+                      feature_prompt="老僧"))
+    p.storyboard[0].characters = ["小虎", "阿虎"]
+    p.storyboard[0].panels = [Panel(visual_desc="小虎与阿虎隔着山门对望",
+                                    shot_type="medium", characters=["小虎"])]
+    image = _mock_image(); image.generate.return_value = _png()
+    s4_pages.run(p, image, tmp_path, "1536x1024")
+    prompt = image.generate.call_args.args[0]
+    assert "小虎" not in prompt and "阿虎" not in prompt
+
+
+def test_anonymize_degrades_when_more_characters_than_aliases():
+    cards = [CharacterCard(name=f"角色{i}号", role="r", personality="p", appearance="a",
+                           feature_prompt=f"特征{i}") for i in range(12)]
+    features, scene = s4_pages._anonymize(cards, "众人齐聚")   # 不该 IndexError
+    assert features.count(";") == 11
+
+
+def _tiger_project(tmp_path: Path) -> Project:
+    """角色名「小虎」——原样进 prompt 就会被画成老虎。"""
+    p = Project(project_id="x", scenic_spot="少林寺")
+    (tmp_path / "characters").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "characters" / "小虎.png").write_bytes(_png())
+    card = CharacterCard(name="小虎", role="r", personality="p", appearance="a",
+                         feature_prompt="十岁男童,灰布僧衣",
+                         turnaround_image="characters/小虎.png", locked=True)
+    p.script = Script(title="t", theme="th", acts=[], characters=[card])
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="小虎站在少林寺山门前",
+                                   characters=["小虎"], caption="c", emotion="宁静")]
+    return p
+
+
+def test_s4_single_page_prompt_has_no_character_name(tmp_path: Path):
+    image = _mock_image(); image.generate.return_value = _png()
+    s4_pages.run(_tiger_project(tmp_path), image, tmp_path, "1536x1024")
+    prompt = image.generate.call_args.args[0]
+    assert "小虎" not in prompt                 # scene 与 features 两处都不能漏
+    assert "角色甲" in prompt
+    assert "十岁男童,灰布僧衣" in prompt          # 外观特征仍要保留
+
+
+def test_s4_panel_prompt_has_no_character_name(tmp_path: Path):
+    p = _tiger_project(tmp_path)
+    p.params.multi_panel = True
+    p.storyboard[0].panels = [Panel(visual_desc="小虎推开山门", shot_type="medium",
+                                    characters=["小虎"])]
+    image = _mock_image(); image.generate.return_value = _png()
+    s4_pages.run(p, image, tmp_path, "1536x1024")
+    prompt = image.generate.call_args.args[0]
+    assert "小虎" not in prompt
+    assert "角色甲" in prompt
+
+
+def test_page_prompts_forbid_duplicate_instances():
+    # 与裁切互补的语义约束。两条都要锁:少了"只出现一次"压不住分身,
+    # 少了"仅用于识别身份"模型会把"保持一致"理解成"贴近这张参考图(含它的排版)"。
+    for tmpl in (s4_pages.PAGE_TMPL, s4_pages.PANEL_TMPL):
+        assert "只出现一次" in tmpl
+        assert "仅用于识别角色的外观身份" in tmpl
+        assert "单一瞬间" in tmpl

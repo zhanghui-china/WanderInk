@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from shanhai import store
 from shanhai.config import Settings
+from shanhai.schema import Project
 
 # 各环节用到的 client 组:前端据此只渲染相关字段组,校验 PUT 的 stage 名。
 # S6 纯 ffmpeg 无端点,故不在此表。
@@ -203,6 +204,37 @@ def defaults_view() -> dict:
                 else getattr(base, field, None))
         for field in ConfigOverride.model_fields
     }
+
+
+# "大师"skill 只存在于 hermes-agent 后端(/screenwriter-master、/director-master 发给别的
+# 模型会被当乱码),故每个环节各自绑定自己的 skill 名,用于开关判定与引擎记录。
+MASTER_SKILLS = {"s1": "编剧大师", "s2": "导演大师"}
+MASTER_SKILL_BACKEND = "hermes-agent"
+
+
+def use_master_skill(p: Project, stage_settings: Settings, stage: str) -> bool:
+    """该环节是否调"大师"skill,并把**本次实际用的引擎**记进 p.status[f"{stage}_engine"]。
+
+    判定仍是老规则:作品勾了开关**且**该环节后端确为 hermes-agent;开关开了但后端不是
+    hermes 时静默退化为普通生成,不报错(退化比失败对用户更有价值)。
+
+    之所以顺带记录:退化原先只 print 一行到服务端 stdout,而 project.json 里不存任何模型
+    或 skill 信息,事后完全无法回答"这部作品到底走没走 skill"——实测正是这个盲区让一批
+    质量可疑的旁白无从归因。记录跟着作品走,status 已被 api._serialize 整体透传给前端,
+    因此这里写完即可见,不必再动 _serialize(那里漏一行就静默失效,是本仓库的老坑)。
+
+    只写内存里的 p.status,落盘交给调用方原有的 store.save / _locked_save。"""
+    skill = MASTER_SKILLS[stage]
+    model = stage_settings.llm_model
+    if not p.params.master_skill:
+        p.status[f"{stage}_engine"] = f"{model} · 普通"
+        return False
+    if model == MASTER_SKILL_BACKEND:
+        p.status[f"{stage}_engine"] = f"{model} · {skill}"
+        return True
+    p.status[f"{stage}_engine"] = f"{model} · 普通(已忽略大师开关:后端非 {MASTER_SKILL_BACKEND})"
+    print(f"⚠️ 大师 skill 需 {MASTER_SKILL_BACKEND} 后端,当前 {stage.upper()} 用 {model},已忽略该开关")
+    return False
 
 
 def config_view(readonly: bool) -> dict:

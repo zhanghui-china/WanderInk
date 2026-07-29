@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from shanhai.schema import Legend, Project, StoryboardCell
+from shanhai.schema import Legend, LocalizedTrack, Project, StoryboardCell
 from shanhai.steps import s6_compose
 from shanhai.steps.s6_compose import _credits_lines
 
@@ -103,9 +103,10 @@ def test_s6_skips_missing_and_unconfirmed_cells(tmp_path: Path):
          patch("shanhai.steps.s6_compose.typeset.credits_card"), \
          patch("shanhai.steps.s6_compose.typeset.overlay_layer") as ov:
         p = s6_compose.run(p, tmp_path)
-    # 片头 + 1 正文页 + 片尾 + concat + finalize + 封字幕轨,跳过另两页
-    assert sh.call_count == 6
-    assert ov.call_count == 1           # 仅入选页生成 overlay
+    # 片头 + 1 正文页 + 片尾 + concat + finalize,跳过另两页。
+    # 没有封字幕轨那一趟:默认烧中文硬字幕,中文软轨被排除,此片再无其它语种可封。
+    assert sh.call_count == 5
+    assert ov.call_count == 1           # 仅入选页生成 overlay(另两页被跳过,不出图层)
     assert p.status["s6"] == "partial"  # 有页被跳过,不能诚实地标 done(见 2026-07-16 反馈)
 
 
@@ -147,8 +148,8 @@ def test_s6_parallel_encode_preserves_page_order(tmp_path: Path):
          patch("shanhai.steps.s6_compose.typeset.overlay_layer") as ov:
         s6_compose.run(p, tmp_path)
 
-    # 字幕改走软字幕轨后 overlay 只剩水印,内容与页码无关 → 全片共用一张,不再逐页生成
-    assert ov.call_count == 1
+    # 默认烧中文硬字幕 → 每页各一张 overlay(关掉开关才回到全片共用一张,另有专门用例)
+    assert ov.call_count == n
     page_calls = [c.args[0] for c in sh.call_args_list if "zoompan" in " ".join(c.args[0])]
     assert len(page_calls) == n                      # 每页各编码一次
 
@@ -203,6 +204,71 @@ def test_s6_page_encode_exception_propagates(tmp_path: Path):
         with pytest.raises(RuntimeError, match="ffmpeg 崩了"):
             s6_compose.run(p, tmp_path)
     assert "s6" not in p.status
+
+
+# ---- 硬字幕烧录(burn_subtitles) ----
+
+def _burn_run(p: Project, tmp_path: Path, lang: str = "zh"):
+    """跑一轮 S6,返回 (overlay_layer 的 mock, 产出目录)。ffmpeg 全程打桩。"""
+    with patch("shanhai.steps.s6_compose.ffmpeg.sh"), \
+         patch("shanhai.steps.s6_compose.typeset.title_card"), \
+         patch("shanhai.steps.s6_compose.typeset.credits_card"), \
+         patch("shanhai.steps.s6_compose.typeset.overlay_layer") as ov:
+        s6_compose.run(p, tmp_path, lang=lang)
+    return ov, tmp_path / "output"
+
+
+def test_burn_subtitles_renders_each_page_caption(tmp_path: Path):
+    """开烧录:逐页各出一张 overlay,且烧的是该页自己的解说词。"""
+    p = _multi_page_project(tmp_path, 3)
+    ov, _ = _burn_run(p, tmp_path)
+    captions = [c.args[0] for c in ov.call_args_list]
+    assert captions == ["第1页", "第2页", "第3页"]      # 逐页各自的文案,不是共用空串
+    outs = [c.args[1] for c in ov.call_args_list]
+    assert len({str(o) for o in outs}) == 3              # 三张互不覆盖
+
+
+def test_burn_subtitles_off_shares_one_watermark(tmp_path: Path):
+    """关烧录:回到全片共用一张空 caption 水印层,与烧录功能上线前逐字一致。"""
+    p = _multi_page_project(tmp_path, 3)
+    p.params.burn_subtitles = False
+    ov, _ = _burn_run(p, tmp_path)
+    assert ov.call_count == 1
+    assert ov.call_args.args[0] == ""                    # 空 caption = 只留水印
+
+
+def test_burn_subtitles_skips_chinese_soft_track(tmp_path: Path):
+    """烧了中文硬字幕就不该再出中文软轨/VTT,否则网页播放器上是双份字幕。"""
+    p = _multi_page_project(tmp_path, 2)
+    _, out_dir = _burn_run(p, tmp_path)
+    assert not (out_dir / "final.zh.srt").exists()
+    assert not (out_dir / "final.zh.vtt").exists()
+
+
+def test_no_burn_keeps_chinese_soft_track(tmp_path: Path):
+    p = _multi_page_project(tmp_path, 2)
+    p.params.burn_subtitles = False
+    _, out_dir = _burn_run(p, tmp_path)
+    assert (out_dir / "final.zh.srt").exists()
+    assert (out_dir / "final.zh.vtt").exists()
+
+
+def test_burn_subtitles_does_not_touch_english_film(tmp_path: Path):
+    """英文片本期不烧(typeset 逐字符换行会把单词拦腰断开),仍走软字幕。"""
+    p = _multi_page_project(tmp_path, 2)
+    for cell in p.storyboard:
+        cell.tracks["en"] = LocalizedTrack(caption=f"page {cell.index}",
+                                           audio=cell.audio, duration_ms=6800)
+    ov, out_dir = _burn_run(p, tmp_path, lang="en")
+    assert ov.call_count == 1                            # 共用水印,画面不烧字
+    assert ov.call_args.args[0] == ""
+    assert (out_dir / "final.en.en.srt").exists()        # 英文软字幕照旧产出
+
+
+def test_burn_subtitles_defaults_on_for_legacy_projects():
+    """老 project.json 没有这个键,反序列化取默认 True——重跑 S6 就能拿到带字幕的版本。"""
+    p = Project.model_validate({"project_id": "old", "scenic_spot": "雷峰塔"})
+    assert p.params.burn_subtitles is True
 
 
 def test_credits_original_not_labeled_as_legend():
