@@ -139,6 +139,7 @@ export function ProjectDetailView({
   const [trackBusy, setTrackBusy] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [s2Open, setS2Open] = useState(false)
+  const [sourcesOpen, setSourcesOpen] = useState(false)
   const [voiceOpen, setVoiceOpen] = useState(false)
   const [voicePicked, setVoicePicked] = useState<{ blob: Blob; filename: string } | null>(null)
   const [voiceBusy, setVoiceBusy] = useState(false)
@@ -475,6 +476,24 @@ export function ProjectDetailView({
             </span>
           </div>
           <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
+          {/* S0 允许给不出可靠出处时留空,空列表就别给按钮 */}
+          {project.legend.sources.length > 0 && (
+            <div className="mt-3">
+              <button className={toolBtn} onClick={() => setSourcesOpen((v) => !v)}>
+                {sourcesOpen ? '收起' : '故事来源'}
+              </button>
+              {sourcesOpen && (
+                <ul className="mt-2 space-y-1 text-sm leading-loose text-ink-soft">
+                  {project.legend.sources.map((s) => (
+                    <li key={s} className="flex gap-2">
+                      <span className="text-muted">·</span>
+                      <span>{s}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
       )}
       {s2Open && (

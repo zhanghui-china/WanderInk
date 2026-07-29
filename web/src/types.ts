@@ -86,7 +86,7 @@ export interface ProjectDetail {
   params: { duration_min: number; audience: string; tone: string; voice?: string }
   status: Record<string, string>
   pipeline: string
-  legend: { title: string; summary: string; source_type: string } | null
+  legend: { title: string; summary: string; source_type: string; sources: string[] } | null
   script_title: string | null
   characters: Character[]
   pages: Page[]
