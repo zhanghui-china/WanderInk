@@ -269,6 +269,16 @@ def reorder_cells(project: Project, workdir: Path, order: list[int]) -> None:
     _invalidate_downstream(project, "s4")
 
 
+def missing_turnarounds(project: Project) -> set[str]:
+    """当前还没有三视图的角色名。在 S3 前后各取一次,差集就是"这轮补出来的"。
+
+    单独抽出来是因为 api 与 cli 两条入口都要跑这个判据,而本仓库已经反复因为
+    "同一个判断写两份"吃亏(见 _invalidate_page_image 的注释、大师 skill 闸门那次)。"""
+    if project.script is None:
+        return set()
+    return {c.name for c in project.script.characters if not c.turnaround_image}
+
+
 def invalidate_pages_of_characters(project: Project, names: set[str]) -> list[int]:
     """作废这些角色出场的所有页(置 draft + 清图),返回被作废的页号。
 

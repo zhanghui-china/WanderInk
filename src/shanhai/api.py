@@ -1050,14 +1050,12 @@ def _run_one_step(p: Project, project_id: str, name: str, cfg: AppConfig,
     elif name == "s3":
         # 跑之前先记下"谁还没有三视图":跑完凡是从无到有的角色,其出场页必须作废重画,
         # 否则那次补画对已 confirmed 的页完全无效(S4 会幂等跳过它们),用户以为修好了其实没有。
-        was_missing = {c.name for c in p.script.characters if not c.turnaround_image} \
-            if p.script else set()
+        was_missing = editing.missing_turnarounds(p)
         p = s3_characters.run(p, llm, image, workdir, s.image_size,
                               on_progress=lambda: _locked_save(p),
                               concurrency=image_concurrency(s),
                               cancel_check=lambda: _is_cancelled(project_id))
-        gained = {c.name for c in p.script.characters
-                  if c.turnaround_image and c.name in was_missing} if p.script else set()
+        gained = was_missing - editing.missing_turnarounds(p)
         hit = editing.invalidate_pages_of_characters(p, gained)
         if hit:
             print(f"补出 {'、'.join(sorted(gained))} 的三视图,已作废其出场的第 "
