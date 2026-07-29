@@ -598,6 +598,110 @@ def test_downscaled_ref_reuses_cache(tmp_path: Path):
     assert first.stat().st_mtime_ns == mtime      # 命中缓存,没重裁
 
 
+# ---------- 出图前去名化(中文名被当成画面内容的回归) ----------
+# 「小虎」这类角色名原样进 prompt,文生图模型会照字面画出一只老虎。
+# 名字对成图没有任何用处(身份锚是参考图),故 features 与 scene 两处一并换成中性代号。
+
+def test_anonymize_handles_overlapping_name_prefixes():
+    # 必须按名字长度降序替换,否则「小虎」会先把「小虎子」截成「角色甲子」
+    cards = [
+        CharacterCard(name="小虎", role="r", personality="p", appearance="a",
+                      feature_prompt="十岁男童"),
+        CharacterCard(name="小虎子", role="r", personality="p", appearance="a",
+                      feature_prompt="八岁女童"),
+    ]
+    features, scene = s4_pages._anonymize(cards, "小虎子牵着小虎走过山门")
+    # 断言必须锁住"谁被换成谁":乱序替换时 scene 会变成「角色甲子牵着角色甲走过山门」,
+    # 只断言集合关系的话该用例照样绿,等于没有回归保护。
+    assert scene == "角色乙牵着角色甲走过山门"
+    assert features == "角色甲(十岁男童);角色乙(八岁女童)"
+
+
+def test_anonymize_masks_names_beyond_present():
+    # scene 里提到的"本页/本格没出场"的角色名同样是名字,漏掉两种后果:
+    # (a) 原样进 prompt 被画成字面意思;(b) 短名把长名截碎成「角色甲女」。
+    cards = [CharacterCard(name=n, role="r", personality="p", appearance="a",
+                           feature_prompt="F" + n) for n in ("小龙", "小龙女")]
+    features, scene = s4_pages._anonymize([cards[0]], "小龙女递给小龙一柄剑", cards)
+    assert "小龙" not in scene
+    assert features == "角色甲(F小龙)"          # 未出场角色不进 features
+
+
+def test_anonymize_masks_names_without_cards():
+    # storyboard 写了 cast 名单里没有的名字(模型改名/用别称),cards 查不到就被静默丢掉,
+    # 该名字原样留在 visual_desc 里直接进 image prompt。
+    features, scene = s4_pages._anonymize([], "小虎站在少林寺山门前", names=["小虎"])
+    assert "小虎" not in scene
+    assert features == "无固定角色"
+
+
+def test_s4_masks_storyboard_name_missing_from_cast(tmp_path: Path):
+    p = _tiger_project(tmp_path)
+    p.storyboard[0].characters = ["虎娃"]
+    p.storyboard[0].visual_desc = "虎娃站在少林寺山门前"
+    image = _mock_image(); image.generate.return_value = _png()
+    s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert "虎娃" not in image.generate.call_args.args[0]
+
+
+def test_s4_panel_masks_other_character_in_same_frame(tmp_path: Path):
+    # panel.characters 是页面角色的子集,但 panel.visual_desc 常提到同框的另一角色。
+    p = _tiger_project(tmp_path)
+    p.params.multi_panel = True
+    p.script.characters.append(
+        CharacterCard(name="阿虎", role="r", personality="p", appearance="a",
+                      feature_prompt="老僧"))
+    p.storyboard[0].characters = ["小虎", "阿虎"]
+    p.storyboard[0].panels = [Panel(visual_desc="小虎与阿虎隔着山门对望",
+                                    shot_type="medium", characters=["小虎"])]
+    image = _mock_image(); image.generate.return_value = _png()
+    s4_pages.run(p, image, tmp_path, "1536x1024")
+    prompt = image.generate.call_args.args[0]
+    assert "小虎" not in prompt and "阿虎" not in prompt
+
+
+def test_anonymize_degrades_when_more_characters_than_aliases():
+    cards = [CharacterCard(name=f"角色{i}号", role="r", personality="p", appearance="a",
+                           feature_prompt=f"特征{i}") for i in range(12)]
+    features, scene = s4_pages._anonymize(cards, "众人齐聚")   # 不该 IndexError
+    assert features.count(";") == 11
+
+
+def _tiger_project(tmp_path: Path) -> Project:
+    """角色名「小虎」——原样进 prompt 就会被画成老虎。"""
+    p = Project(project_id="x", scenic_spot="少林寺")
+    (tmp_path / "characters").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "characters" / "小虎.png").write_bytes(_png())
+    card = CharacterCard(name="小虎", role="r", personality="p", appearance="a",
+                         feature_prompt="十岁男童,灰布僧衣",
+                         turnaround_image="characters/小虎.png", locked=True)
+    p.script = Script(title="t", theme="th", acts=[], characters=[card])
+    p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="小虎站在少林寺山门前",
+                                   characters=["小虎"], caption="c", emotion="宁静")]
+    return p
+
+
+def test_s4_single_page_prompt_has_no_character_name(tmp_path: Path):
+    image = _mock_image(); image.generate.return_value = _png()
+    s4_pages.run(_tiger_project(tmp_path), image, tmp_path, "1536x1024")
+    prompt = image.generate.call_args.args[0]
+    assert "小虎" not in prompt                 # scene 与 features 两处都不能漏
+    assert "角色甲" in prompt
+    assert "十岁男童,灰布僧衣" in prompt          # 外观特征仍要保留
+
+
+def test_s4_panel_prompt_has_no_character_name(tmp_path: Path):
+    p = _tiger_project(tmp_path)
+    p.params.multi_panel = True
+    p.storyboard[0].panels = [Panel(visual_desc="小虎推开山门", shot_type="medium",
+                                    characters=["小虎"])]
+    image = _mock_image(); image.generate.return_value = _png()
+    s4_pages.run(p, image, tmp_path, "1536x1024")
+    prompt = image.generate.call_args.args[0]
+    assert "小虎" not in prompt
+    assert "角色甲" in prompt
+
+
 def test_page_prompts_forbid_duplicate_instances():
     # 与裁切互补的语义约束。两条都要锁:少了"只出现一次"压不住分身,
     # 少了"仅用于识别身份"模型会把"保持一致"理解成"贴近这张参考图(含它的排版)"。

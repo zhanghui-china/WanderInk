@@ -36,7 +36,9 @@ FEATURE_SYSTEM = (
     "若是人类,包含性别年龄、发型发色、服饰与颜色、标志性道具;"
     "若是非人类,必须先明确写出其物种或形体(如「一只丹顶鹤」「一头麒麟」),"
     "再描述体型、体表覆盖物(羽毛/鳞片/毛发等)与颜色、标志性特征或道具,"
-    "不要套用人类的发型/服饰措辞。只输出这一段描述。"
+    "不要套用人类的发型/服饰措辞。"
+    "人类还是非人类只依据身份与外貌判断,不得从角色名推断物种或形体。"
+    "只输出这一段描述。"
 )
 
 
@@ -104,8 +106,10 @@ def _process_character(c: CharacterCard, llm: LLMClient, image: ImageClient,
     characters/<name>.png,不共享可变态。生图失败已在此吞掉并退化;LLM 特征失败向上抛(同串行版语义)。"""
     if _already_done(c, workdir):
         return                                        # 已定稿角色不重绘(续跑幂等)
+    # 刻意不传姓名:名字对外貌描述零信息量,却会带偏物种判断(「小虎」被写成一只幼虎,
+    # 画面里就真出现老虎)。落盘文件名仍用 c.name,那不进 prompt。
     c.feature_prompt = llm.chat(
-        FEATURE_SYSTEM, f"姓名:{c.name}\n身份:{c.role}\n性格:{c.personality}\n外貌:{c.appearance}")
+        FEATURE_SYSTEM, f"身份:{c.role}\n性格:{c.personality}\n外貌:{c.appearance}")
     if should_draw:
         ref = _resolve_ref(c, workdir)
         out = char_dir / f"{c.name}.png"

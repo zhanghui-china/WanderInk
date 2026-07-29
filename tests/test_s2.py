@@ -83,6 +83,13 @@ def test_s2_system_keeps_suspense_but_bans_rhetorical_questions():
     assert "连起来" in system or "独立讲通" in system, "Missing hard constraint about story continuity"
 
 
+def test_s2_system_bans_character_names_in_visual_desc():
+    """角色中文名(如"小虎")原样进入 visual_desc,会一路流到文生图 prompt 被画成真老虎。
+    源头上让模型用外貌/身份指代,S4 的强制替换只是兜底。"""
+    system = s2_storyboard.SYSTEM
+    assert "不要写角色名" in system, "Missing ban on character names in visual_desc"
+
+
 @respx.mock
 def test_s2_single_page_mode_omits_panel_rules_in_system_prompt():
     cells = {"cells": [

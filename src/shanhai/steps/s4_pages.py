@@ -107,11 +107,42 @@ def _downscaled_ref(src: Path, cache_dir: Path) -> Path:
     return out
 
 
-def _panel_prompt(panel: Panel, style: str, cards: dict) -> tuple[str, list[CharacterCard]]:
+ALIAS_CHARS = "甲乙丙丁戊己庚辛"
+
+
+def _anonymize(present: list[CharacterCard], scene: str,
+               cast: list[CharacterCard] | None = None,
+               names: list[str] | None = None) -> tuple[str, str]:
+    """把角色中文名从 features 与 scene 两处一起换成中性代号,返回 (features, scene)。
+
+    为什么:名字是给人看的,对生图模型只是画面内容——「小虎」原样进 prompt,
+    模型就照字面画出一只真老虎;「小龙女」「铁牛」同理。身份锚本来就是参考图,
+    名字对成图零贡献,删掉没有代价。
+    scene 这条路必须一起处理:S2 的 visual_desc 里同样写着「小虎站在山门前」,
+    只洗 features 等于没洗。
+    代号只需页内稳定(features 与 scene 用同一个),跨页不必一致。
+    替换表必须覆盖 present 之外的名字(cast 全表 + storyboard 声明但 cast 里查不到的 names):
+    (a) scene 常提到本页/本格没出场的角色,漏掉就是原样进 prompt;
+    (b) present 里的短名会把 scene 里更长的未覆盖名字截碎(「小龙女」→「角色甲女」)。
+    features 仍然只列 present——没出场的角色不该给参考特征。"""
+    ordered = [c.name for c in present]
+    ordered += [c.name for c in (cast or [])] + list(names or [])
+    aliases = {n: f"角色{ALIAS_CHARS[i] if i < len(ALIAS_CHARS) else i + 1}"
+               for i, n in enumerate(dict.fromkeys(ordered))}
+    # 必须按名字长度降序替换,否则「小虎」会先把「小虎子」截成「角色甲子」
+    for name in sorted(aliases, key=len, reverse=True):
+        scene = scene.replace(name, aliases[name])
+    features = ";".join(f"{aliases[c.name]}({c.feature_prompt})" for c in present) or "无固定角色"
+    return features, scene
+
+
+def _panel_prompt(panel: Panel, style: str, cards: dict,
+                  names: list[str] | None = None) -> tuple[str, list[CharacterCard]]:
     present = [cards[n] for n in panel.characters if n in cards]
-    features = ";".join(f"{c.name}({c.feature_prompt})" for c in present) or "无固定角色"
+    features, scene = _anonymize(present, panel.visual_desc,
+                                 cast=list(cards.values()), names=names)
     shot = SHOT_HINTS.get(panel.shot_type, SHOT_HINTS["medium"])
-    prompt = PANEL_TMPL.format(style=style, scene=panel.visual_desc, features=features, shot=shot)
+    prompt = PANEL_TMPL.format(style=style, scene=scene, features=features, shot=shot)
     return prompt, present
 
 
@@ -133,7 +164,7 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
     # 算的比例又对不上了——那种情况靠 paneling 的 PANEL_ANCHOR_Y 保头兜底。
     sizes = paneling.slot_sizes(cell.panels)
     for i, panel in enumerate(cell.panels, 1):
-        prompt, present = _panel_prompt(panel, style, cards)
+        prompt, present = _panel_prompt(panel, style, cards, names=cell.characters)
         sw, sh = sizes[i - 1]
         panel_size = f"{sw}x{sh}"
         t0 = time.monotonic()
@@ -183,8 +214,9 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
         _render_panel_cell(cell, style, cards, image, workdir, pages_dir, ref_cache)
         return
     present = [cards[n] for n in cell.characters if n in cards]
-    features = ";".join(f"{c.name}({c.feature_prompt})" for c in present) or "无固定角色"
-    prompt = PAGE_TMPL.format(style=style, scene=cell.visual_desc, features=features)
+    features, scene = _anonymize(present, cell.visual_desc,
+                                 cast=list(cards.values()), names=cell.characters)
+    prompt = PAGE_TMPL.format(style=style, scene=scene, features=features)
     out = pages_dir / f"page_{cell.index:02d}.png"
     t0 = time.monotonic()
     for attempt in range(MAX_ATTEMPTS):
