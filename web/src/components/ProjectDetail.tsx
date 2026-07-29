@@ -124,6 +124,16 @@ const ghostBtn =
 const toolBtn =
   'rounded-md border border-line bg-white/50 px-2 py-1 text-[11px] text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
 
+// 自备故事原文按空行分段;段内的单换行仍交给 whitespace-pre-wrap 保留。
+// 只排版、不改动用户原文的任何一个字——叫「原文」就得是原文。整段没有换行的
+// 长文本因此仍是一整段,那是用户自己贴进来的样子,系统不替他改写。
+function paragraphs(text: string): string[] {
+  return text
+    .split(/\n\s*\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
 export function ProjectDetailView({
   project,
   meta,
@@ -140,8 +150,6 @@ export function ProjectDetailView({
   const [copied, setCopied] = useState(false)
   const [s2Open, setS2Open] = useState(false)
   const [sourcesOpen, setSourcesOpen] = useState(false)
-  // 原文最长两万字,只能弹窗看;就地展开会把整张卡撑成一屏
-  const [storyOpen, setStoryOpen] = useState(false)
   // 原文不随详情下发(详情每 2 秒轮询一次),点开时才拉一次;null = 还没拿到
   const [storyText, setStoryText] = useState<string | null>(null)
   const [voiceOpen, setVoiceOpen] = useState(false)
@@ -155,15 +163,20 @@ export function ProjectDetailView({
     (p) => p.status === 'draft' || p.status === 'failed' || !p.audio,
   ).length
 
-  // 原文按需拉:同一作品拉到后缓存,重复点开不再请求;失败保持 null 让下次点开重试
-  async function openStory() {
-    setStoryOpen(true)
-    if (storyText !== null) return
+  // 展开「故事来源」。自备故事的原文按需拉:同一作品拉到后缓存,重复展开不再请求;
+  // 失败折回并保持 storyText 为 null,让下次展开还能重试。
+  async function toggleSources() {
+    if (sourcesOpen) {
+      setSourcesOpen(false)
+      return
+    }
+    setSourcesOpen(true)
+    if (!project.has_story || storyText !== null) return
     try {
       const r = await api.story(project.project_id)
       setStoryText(r.story ?? '')
     } catch (e) {
-      setStoryOpen(false)
+      setSourcesOpen(false)
       alert(e instanceof Error ? e.message : String(e))
     }
   }
@@ -478,80 +491,61 @@ export function ProjectDetailView({
         </div>
       )}
 
-      {/* 传说来源 */}
-      {project.legend && (
+      {/* 传说来源 / 自备故事。渲染条件里的 has_story 不能省:S0 未跑完、或 from_text 因敏感词
+          报错时 legend 恒为 null,而原文早已落盘——那恰恰是最需要看原文的时候。
+          历史项目 story 为 null(改造前根本没落盘),整块不显示是预期行为。 */}
+      {(project.legend || project.has_story) && (
         <div className={`relative ${card} border-l-[3px] border-l-cinnabar`}>
           <span className="absolute right-5 top-5">
             <Seal char="源" size={38} rot={6} />
           </span>
           <div className="mb-1 flex items-center gap-2">
             <h2 className="font-serif text-base font-semibold tracking-wide text-ink">
-              {project.legend.title}
+              {project.legend ? project.legend.title : '自备故事'}
             </h2>
-            <span className="rounded-full border border-line px-2 py-0.5 text-[11px] text-muted">
-              来源 · {project.legend.source_type}
-            </span>
+            {project.legend && (
+              <span className="rounded-full border border-line px-2 py-0.5 text-[11px] text-muted">
+                来源 · {project.legend.source_type}
+              </span>
+            )}
           </div>
-          <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
-          {/* S0 允许给不出可靠出处时留空,空列表就别给按钮 */}
-          {project.legend.sources.length > 0 && (
+          {project.legend && (
+            <p className="text-sm leading-loose text-ink-soft">{project.legend.summary}</p>
+          )}
+          {/* 自备故事时 legend.sources 只是占位词「用户自备文本」(s0_legend.from_text 写死的),
+              列出来毫无信息量——用户点「故事来源」要的就是自己贴的那段文本,故优先展开原文。
+              自动检索传说的作品没有 story,照旧列书目;S0 允许给不出可靠出处时留空,空列表不给按钮。 */}
+          {(project.has_story || (project.legend && project.legend.sources.length > 0)) && (
             <div className="mt-3">
-              <button className={toolBtn} onClick={() => setSourcesOpen((v) => !v)}>
+              <button className={toolBtn} onClick={toggleSources}>
                 {sourcesOpen ? '收起' : '故事来源'}
               </button>
-              {sourcesOpen && (
-                <ul className="mt-2 space-y-1 text-sm leading-loose text-ink-soft">
-                  {project.legend.sources.map((s) => (
-                    <li key={s} className="flex gap-2">
-                      <span className="text-muted">·</span>
-                      <span>{s}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              {sourcesOpen &&
+                (project.has_story ? (
+                  // 原文最长两万字,就地展开必须限高滚动,否则把整页撑成一条长廊
+                  <div className="mt-2 max-h-[60vh] space-y-3 overflow-y-auto text-sm leading-loose text-ink-soft">
+                    {storyText === null ? (
+                      <p>正在读取原文…</p>
+                    ) : (
+                      paragraphs(storyText).map((para, i) => (
+                        <p key={i} className="indent-[2em] whitespace-pre-wrap">
+                          {para}
+                        </p>
+                      ))
+                    )}
+                  </div>
+                ) : (
+                  <ul className="mt-2 space-y-1 text-sm leading-loose text-ink-soft">
+                    {project.legend?.sources.map((s) => (
+                      <li key={s} className="flex gap-2">
+                        <span className="text-muted">·</span>
+                        <span>{s}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ))}
             </div>
           )}
-        </div>
-      )}
-
-      {/* 自备故事原文入口:不能挂在 legend 卡片里——S0 未跑完或 from_text 因敏感词/报错而失败时
-          legend 恒为 null,而原文早已落盘,那恰恰是最需要看原文的时候。历史项目 story 为 null,
-          不显示是预期行为。 */}
-      {project.has_story && (
-        <div className={card}>
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="font-serif text-base font-semibold tracking-wide text-ink">自备故事</h2>
-            <button className={toolBtn} onClick={openStory}>
-              查看原文
-            </button>
-          </div>
-        </div>
-      )}
-
-      {storyOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-6"
-          onClick={() => setStoryOpen(false)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            onClick={(e) => e.stopPropagation()}
-            className="flex w-full max-w-2xl flex-col rounded-2xl border border-band bg-paper p-5 shadow-paper-lg"
-          >
-            <h3 className="font-serif text-sm font-semibold tracking-wide text-ink">
-              自备故事 · 原文
-            </h3>
-            {/* whitespace-pre-wrap 保原文换行:用户贴进来的多半是分段的故事 */}
-            <p className="mt-3 max-h-[60vh] overflow-y-auto whitespace-pre-wrap text-sm leading-loose text-ink-soft">
-              {storyText ?? '正在读取原文…'}
-            </p>
-            <div className="mt-4 flex justify-end">
-              <button type="button" onClick={() => setStoryOpen(false)} className={ghostBtn}>
-                关闭
-              </button>
-            </div>
-          </div>
         </div>
       )}
       {s2Open && (
