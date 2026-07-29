@@ -714,7 +714,9 @@ function CharacterCard({
   onChanged: () => void
 }) {
   const [busy, setBusy] = useState(false)
-  const [lightboxOpen, setLightboxOpen] = useState(false)
+  // 存 src 而非布尔:三视图与参考图共用这一个 lightbox,用标志位就得开两个 state,
+  // 也就凭空多出"两个弹窗同时开着"这种状态。存 src 则天然互斥。
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   // 弹窗由两处触发,复用同一个 CharacterRedrawDialog:手动点"重绘"走 doRedraw,
   // 上传参考图成功后自动弹出则走 afterUpload(不再重新生成设定图,只决定是否连带重绘旧页)
@@ -729,6 +731,11 @@ function CharacterCard({
   // 独立于 toolBtn 定义(不叠加覆盖字号):卡片变宽后两个按钮各占一半、居中、不换行
   const charBtn =
     'flex-1 justify-center whitespace-nowrap rounded-md border border-line bg-white/50 px-2 py-1 text-center text-[10px] text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
+
+  // 绑成局部常量,TS 才能在 onClick 闭包里收窄掉 null(c.image 是 props 上的属性,
+  // 编译器不认为它在闭包执行时仍然非空)。这样不必写非空断言——本文件一处都没有。
+  const artSrc = c.image
+  const refSrc = c.reference_image
 
   // 该角色设定图重绘后,哪些已生成页会因画风不一致而过期(仅已成功出图的 confirmed 页算数)
   const affected = pages.filter(
@@ -832,6 +839,20 @@ function CharacterCard({
         <span className="absolute right-2 top-2 rounded bg-cinnabar/85 px-1.5 py-0.5 font-serif text-[10px] text-rice">
           正·侧·背
         </span>
+        {/* 看参考图放在图片区左下,与右下的"换参考图"对称,**不能**并进下方 figcaption 那行:
+            那行两颗按钮各 flex-1 占一半(见 charBtn 注释),挤成三等分后「按参考图重绘」
+            配 whitespace-nowrap 会直接溢出卡片。
+            也刻意不受 editable 约束——查看是只读动作,只读演示模式与生成过程中都该看得到
+            自己传的图;右下那颗要改数据,才需要 editable。 */}
+        {refSrc && (
+          <button
+            type="button"
+            onClick={() => setLightbox({ src: refSrc, alt: `${c.name} 参考图` })}
+            className="absolute bottom-2 left-2 rounded-full bg-ink/70 px-2 py-0.5 text-[10px] tracking-wide text-rice transition hover:bg-cinnabar/85"
+          >
+            看参考图
+          </button>
+        )}
         {editable && (
           <button
             type="button"
@@ -846,8 +867,12 @@ function CharacterCard({
         <div className="font-serif text-sm font-semibold tracking-wide text-ink">{c.name}</div>
         <div className="text-[11px] text-muted">{c.role}</div>
         <div className="mt-2 flex gap-1.5">
-          {c.image && (
-            <button type="button" onClick={() => setLightboxOpen(true)} className={charBtn}>
+          {artSrc && (
+            <button
+              type="button"
+              onClick={() => setLightbox({ src: artSrc, alt: c.name })}
+              className={charBtn}
+            >
               查看详情
             </button>
           )}
@@ -859,8 +884,8 @@ function CharacterCard({
         </div>
         {applyNotice && <div className="mt-1.5 text-[10px] text-muted">{applyNotice}</div>}
       </figcaption>
-      {lightboxOpen && c.image && (
-        <ImageLightbox src={c.image} alt={c.name} onClose={() => setLightboxOpen(false)} />
+      {lightbox && (
+        <ImageLightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />
       )}
       {dialogOpen && (
         <CharacterRedrawDialog
