@@ -35,6 +35,7 @@ from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig, apply_put,
                                      config_view, image_concurrency,
                                      load_overrides, resolve_settings,
                                      update_overrides)
+from shanhai.safety import find_sensitive
 from shanhai.schema import Project
 from shanhai.steps import (s0_legend, s1_script, s2_storyboard, s3_characters,
                            s4_pages, s5_audio, s5t_translate, s6_compose)
@@ -485,6 +486,10 @@ def _serialize(p: Project) -> dict:
         "status": p.status,
         "pipeline": p.status.get("pipeline", "pending"),
         "legend": p.legend.model_dump() if p.legend else None,
+        # 只给布尔位,原文走 /api/projects/{id}/story 按需拉。原文上限 20000 字,
+        # 而详情端点在管线跑动时被前端每 2 秒轮询一次(App.tsx 的 tick),
+        # 把它放进这里等于每 2 秒重传一遍 ~60KB,而绝大多数轮询根本没人在看原文。
+        "has_story": bool(p.story),
         "script_title": p.script.title if p.script else None,
         "characters": characters,
         "pages": pages,
@@ -596,6 +601,12 @@ def _validate(body: NewProject) -> None:
         raise HTTPException(400, f"style 须为 {list(STYLE_PRESETS)}")
     if not 0.5 <= body.speed <= 2.0:
         raise HTTPException(400, "speed 须落在 [0.5, 2.0]")
+    # 与 s0_legend.from_text 用同一把尺子,但提前到落盘前:否则原文先写进 project.json、
+    # 后台线程里才拒绝生成,未过审文本永久留在盘上并经 GET /api/projects/{id} 泄给任意登录用户。
+    if body.story:
+        hits = find_sensitive(body.story)
+        if hits:
+            raise HTTPException(400, f"自备故事涉及敏感内容({'、'.join(hits)}),已阻止生成")
 
 
 @app.post("/api/projects")
@@ -626,6 +637,8 @@ def create_project(body: NewProject, user: str = Depends(current_user)) -> dict:
         p.params.use_hermes_agent = body.use_hermes_agent
         p.params.master_skill = body.master_skill
         p.style_preset = body.style
+        # 原文落盘:S0 只把它压成 ≤200 字梗概写进 legend.summary,不存这里原文就随栈帧消失
+        p.story = body.story
         p.status["pipeline"] = "queued"
         store.save(p)
         _CANCELLED.discard(p.project_id)  # 兜底:清掉上一轮作业可能残留的陈旧取消标记,不污染本次
@@ -720,6 +733,16 @@ def get_project(project_id: str, user: str = Depends(current_user)) -> dict:
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
     return _serialize(p)
+
+
+@app.get("/api/projects/{project_id}/story")
+def get_project_story(project_id: str, user: str = Depends(current_user)) -> dict:
+    """自备故事原文,单独一个端点:用户点开按钮时才拉一次(见 _serialize 里 has_story 的注释)。"""
+    try:
+        p = store.load(project_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(404, f"项目不存在: {project_id}") from e
+    return {"story": p.story}
 
 
 @app.delete("/api/projects/{project_id}")

@@ -87,6 +87,9 @@ export interface ProjectDetail {
   status: Record<string, string>
   pipeline: string
   legend: { title: string; summary: string; source_type: string; sources: string[] } | null
+  // 用户新建项目时自备的故事原文(≤20000 字)。历史项目当时根本没落盘,永远是 null。
+  // 只是"有没有原文"的标志位;原文本体走 api.story(id) 按需拉,不跟着详情轮询走
+  has_story: boolean
   script_title: string | null
   characters: Character[]
   pages: Page[]

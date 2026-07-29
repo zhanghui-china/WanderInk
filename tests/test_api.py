@@ -93,6 +93,15 @@ def test_create_rejects_oversized_story():
     assert r.status_code == 422
 
 
+def test_create_rejects_sensitive_story():
+    # 敏感原文若先落盘再由后台 s0_legend.from_text 拒绝,未过审的文本会永久留在 project.json,
+    # 并经 GET /api/projects/{id} 的 story 字段回给任意登录用户。须在落盘前同门校验并 400。
+    r = client.post("/api/projects",
+                    json={"scenic_spot": "雷峰塔", "story": "从前有座塔。毛泽东的故事。"})
+    assert r.status_code == 400
+    assert "敏感" in r.json()["detail"]
+
+
 def test_get_missing_project_404():
     assert client.get("/api/projects/does_not_exist_xyz").status_code == 404
 
@@ -1873,3 +1882,83 @@ def test_serialize_page_exposes_every_field_the_web_uses(tmp_path: Path):
         page = api._serialize(p)["pages"][0]
     # 用相等而不是包含:少了会静默不渲染,多了说明前端类型没跟上,两边都该被发现
     assert set(page) == _PAGE_FIELDS_USED_BY_WEB
+
+
+# ---- 自备故事原文持久化 ----
+
+def test_create_persists_story_verbatim(tmp_path, monkeypatch):
+    """自备故事原文必须一字不差落盘(含换行):S0 只取 ≤200 字梗概,原文丢了就再也找不回来。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    story = "第一段\n\n第二段:白娘子与许仙。   末尾留白 "
+    with patch("shanhai.api._pipeline"), patch("shanhai.api.Settings"):
+        r = client.post("/api/projects",
+                        json={"scenic_spot": "雷峰塔", "minutes": 1, "story": story})
+    assert r.status_code == 200
+    pid = r.json()["project_id"]
+    api._JOBS[pid].result(timeout=2)
+    assert store.load(pid, root=tmp_path).story == story
+
+
+def test_create_without_story_leaves_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    with patch("shanhai.api._pipeline"), patch("shanhai.api.Settings"):
+        r = client.post("/api/projects", json={"scenic_spot": "雷峰塔", "minutes": 1})
+    assert r.status_code == 200
+    pid = r.json()["project_id"]
+    api._JOBS[pid].result(timeout=2)
+    assert store.load(pid, root=tmp_path).story is None   # None = 走自动检索传说
+
+
+def test_legacy_project_json_without_story_loads(tmp_path):
+    """改造前落盘的 project.json 没有 story 键,反序列化不能炸。"""
+    (tmp_path / "oldid01").mkdir()
+    (tmp_path / "oldid01" / "project.json").write_text(
+        '{"project_id": "oldid01", "scenic_spot": "雷峰塔"}', encoding="utf-8")
+    assert store.load("oldid01", root=tmp_path).story is None
+
+
+def test_serialize_exposes_only_story_flag(tmp_path):
+    """详情响应只带一个布尔位,不带原文。原文最长 20000 字,而详情端点在管线跑动时
+    被前端每 2 秒轮询一次(App.tsx 的 tick),塞进去等于每 2 秒重传一遍 60KB。"""
+    p = Project(project_id="storyId01", scenic_spot="雷峰塔", story="很久以前")
+    with patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        out = api._serialize(p)
+    assert out["has_story"] is True
+    assert "story" not in out
+
+
+def test_serialize_story_flag_false_without_story(tmp_path):
+    p = Project(project_id="storyId02", scenic_spot="雷峰塔")
+    with patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        assert api._serialize(p)["has_story"] is False
+
+
+def test_story_endpoint_returns_verbatim(tmp_path, monkeypatch):
+    """原文改走独立端点,用户点开按钮时才拉一次。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.story = "第一段\n\n第二段"
+    store.save(p, root=tmp_path)
+    r = client.get(f"/api/projects/{p.project_id}/story")
+    assert r.status_code == 200
+    assert r.json()["story"] == "第一段\n\n第二段"
+
+
+def test_story_endpoint_null_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    assert client.get(f"/api/projects/{p.project_id}/story").json()["story"] is None
+
+
+def test_story_endpoint_404_for_missing_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    assert client.get("/api/projects/nosuchid/story").status_code == 404
+
+
+def test_list_projects_omits_story(tmp_path, monkeypatch):
+    """列表端点逐字段白名单输出,不得带上原文:20000 字 × N 个项目会把列表拖垮。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.story = "很久以前" * 100
+    store.save(p, root=tmp_path)
+    assert "story" not in client.get("/api/projects").json()[0]

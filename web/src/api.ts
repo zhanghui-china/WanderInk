@@ -91,6 +91,11 @@ export const api = {
 
   get: (id: string) => fetch(`/api/projects/${id}`, CREDS).then((r) => j<ProjectDetail>(r)),
 
+  // 自备故事原文单独拉:详情端点在管线跑动时每 2 秒轮询一次,原文最长 20000 字,
+  // 跟着轮询走等于反复重传几十 KB,而绝大多数时候没人在看它。
+  story: (id: string) =>
+    fetch(`/api/projects/${id}/story`, CREDS).then((r) => j<{ story: string | null }>(r)),
+
   deleteProject: (id: string) =>
     fetch(`/api/projects/${id}`, { ...CREDS, method: 'DELETE' }).then((r) =>
       j<{ deleted: boolean }>(r)

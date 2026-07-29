@@ -140,6 +140,10 @@ export function ProjectDetailView({
   const [copied, setCopied] = useState(false)
   const [s2Open, setS2Open] = useState(false)
   const [sourcesOpen, setSourcesOpen] = useState(false)
+  // 原文最长两万字,只能弹窗看;就地展开会把整张卡撑成一屏
+  const [storyOpen, setStoryOpen] = useState(false)
+  // 原文不随详情下发(详情每 2 秒轮询一次),点开时才拉一次;null = 还没拿到
+  const [storyText, setStoryText] = useState<string | null>(null)
   const [voiceOpen, setVoiceOpen] = useState(false)
   const [voicePicked, setVoicePicked] = useState<{ blob: Blob; filename: string } | null>(null)
   const [voiceBusy, setVoiceBusy] = useState(false)
@@ -150,6 +154,19 @@ export function ProjectDetailView({
   const pendingCount = project.pages.filter(
     (p) => p.status === 'draft' || p.status === 'failed' || !p.audio,
   ).length
+
+  // 原文按需拉:同一作品拉到后缓存,重复点开不再请求;失败保持 null 让下次点开重试
+  async function openStory() {
+    setStoryOpen(true)
+    if (storyText !== null) return
+    try {
+      const r = await api.story(project.project_id)
+      setStoryText(r.story ?? '')
+    } catch (e) {
+      setStoryOpen(false)
+      alert(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   function handleDrop(targetIndex: number) {
     const from0 = dragIndex
@@ -494,6 +511,47 @@ export function ProjectDetailView({
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* 自备故事原文入口:不能挂在 legend 卡片里——S0 未跑完或 from_text 因敏感词/报错而失败时
+          legend 恒为 null,而原文早已落盘,那恰恰是最需要看原文的时候。历史项目 story 为 null,
+          不显示是预期行为。 */}
+      {project.has_story && (
+        <div className={card}>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="font-serif text-base font-semibold tracking-wide text-ink">自备故事</h2>
+            <button className={toolBtn} onClick={openStory}>
+              查看原文
+            </button>
+          </div>
+        </div>
+      )}
+
+      {storyOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-6"
+          onClick={() => setStoryOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            className="flex w-full max-w-2xl flex-col rounded-2xl border border-band bg-paper p-5 shadow-paper-lg"
+          >
+            <h3 className="font-serif text-sm font-semibold tracking-wide text-ink">
+              自备故事 · 原文
+            </h3>
+            {/* whitespace-pre-wrap 保原文换行:用户贴进来的多半是分段的故事 */}
+            <p className="mt-3 max-h-[60vh] overflow-y-auto whitespace-pre-wrap text-sm leading-loose text-ink-soft">
+              {storyText ?? '正在读取原文…'}
+            </p>
+            <div className="mt-4 flex justify-end">
+              <button type="button" onClick={() => setStoryOpen(false)} className={ghostBtn}>
+                关闭
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {s2Open && (

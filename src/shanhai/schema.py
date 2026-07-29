@@ -149,6 +149,7 @@ class Project(BaseModel):
     created_at: str = ""   # ISO 8601 UTC;建作品时写入,历史项目(改造前所建)留空,列表按 project.json mtime 兜底排序
     params: GenerationParams = Field(default_factory=GenerationParams)
     status: dict[str, str] = Field(default_factory=dict)
+    story: str | None = None   # 用户自备故事原文;None = 走自动检索传说
     legend_candidates: list[Legend] = Field(default_factory=list)
     legend: Legend | None = None
     script: Script | None = None
