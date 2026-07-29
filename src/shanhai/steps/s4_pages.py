@@ -183,11 +183,6 @@ def run(project: Project, image: ImageClient, workdir: Path, image_size: str,
         cancel_check: Callable[[], bool] | None = None) -> Project:
     if project.script is None or not project.storyboard:
         raise ValueError("先完成 S2/S3")
-    if not any(c.turnaround_image for c in project.script.characters):
-        msg = "无任何角色三视图参考(S3 未运行/未产出),M0 角色一致性机制被绕过"
-        if strict:
-            raise ValueError(msg)
-        print(f"⚠️ {msg}")
     style = STYLE_PRESETS[project.style_preset]
     cards = {c.name: c for c in project.script.characters}
     pages_dir = workdir / "pages"
@@ -195,6 +190,24 @@ def run(project: Project, image: ImageClient, workdir: Path, image_size: str,
     ref_cache = workdir / "characters" / "_refs"
     pending = [c for c in project.storyboard
                if not (c.status == "confirmed" and c.image and (workdir / c.image).exists())]
+    # 逐页记录"这一页有哪些出场角色没有三视图可用"。
+    # 此前这里是 `if not any(c.turnaround_image for c in characters)` ——**所有**角色都没图才告警,
+    # 三个角色活一个就通过。实测 DGX 上的 8f41283a 正是这样:第一主角的三视图比 7 页画面晚
+    # 18~33 分钟才产出,那 7 页全程无锚点,而这道护栏一声不吭(另两个角色有图)。
+    # 判据用 cell.characters(该页声明的出场阵容)而不是分格页各格的 present 并集:
+    # 后者是前者的子集,极少数"列了角色但没有任何一格用到"的 S2 不一致会被多报一个名字——
+    # 多报一个缺锚点是安全方向,漏报才是这次事故本身。
+    # 每轮无条件覆盖(含空列表):补画三视图后重跑,旧的缺失记录必须消失,否则它描述的是上一轮。
+    for cell in pending:
+        cell.missing_refs = [n for n in cell.characters
+                             if n in cards and not cards[n].turnaround_image]
+    short = [c.index for c in pending if c.missing_refs]
+    if short:
+        msg = (f"第 {'、'.join(str(i) for i in short)} 页的出场角色缺三视图参考"
+               f"(S3 未运行/未产出/部分失败),这些页的角色一致性无保证")
+        if strict:
+            raise ValueError(msg)
+        print(f"⚠️ {msg}")
     with cf.ThreadPoolExecutor(max_workers=concurrency) as ex:
         futures = [ex.submit(_render_cell, cell, style, cards, image, image_size,
                              workdir, pages_dir, ref_cache, project.params.multi_panel)

@@ -302,3 +302,41 @@ def test_update_cell_clears_image_route_and_lora(tmp_path: Path):
         editing.update_cell(p, 1, **{field: value})
         assert cell.image == "" and cell.image_gen_ms == 0, field
         assert cell.image_route == "" and cell.image_lora == "", field
+
+
+# ---------- 补画三视图后作废其出场页 ----------
+
+def _two_character_project() -> Project:
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[], characters=[
+        CharacterCard(name="白素贞", role="r", personality="p", appearance="a"),
+        CharacterCard(name="法海", role="r", personality="p", appearance="a")])
+    p.storyboard = [
+        StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc="v", characters=chars,
+                       caption="c", emotion="宁静", status="confirmed",
+                       image=f"pages/page_{i:02d}.png", image_route="edit", image_gen_ms=1234)
+        for i, chars in enumerate([["白素贞"], ["法海"], ["白素贞", "法海"]], 1)]
+    p.status["s4"] = "done"
+    p.output["mp4"] = "output/final.mp4"
+    return p
+
+
+def test_invalidate_pages_of_characters_hits_only_appearances():
+    # 这是 8f41283a 那条最隐蔽的路径:不作废的话,补画的三视图对已 confirmed 的页毫无作用——
+    # s4_pages 的幂等条件(confirmed + image + 文件在)三条全占,旧页永远停在无锚点的版本。
+    p = _two_character_project()
+    hit = editing.invalidate_pages_of_characters(p, {"法海"})
+    assert hit == [2, 3]
+    assert p.storyboard[0].status == "confirmed" and p.storyboard[0].image  # 没他的页不动
+    for c in (p.storyboard[1], p.storyboard[2]):
+        assert c.status == "draft" and c.image == "" and c.image_route == ""
+    assert p.output == {}                                   # 成片跟着作废
+    assert "s4" not in p.status
+
+
+def test_invalidate_pages_of_characters_noop_when_nothing_gained():
+    # S3 重跑但一个角色都没从"无图"变"有图"时不能动任何东西,否则每次跑 S3 都白毁一次成片。
+    p = _two_character_project()
+    assert editing.invalidate_pages_of_characters(p, set()) == []
+    assert all(c.status == "confirmed" for c in p.storyboard)
+    assert p.output["mp4"] == "output/final.mp4"

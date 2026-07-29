@@ -269,6 +269,27 @@ def reorder_cells(project: Project, workdir: Path, order: list[int]) -> None:
     _invalidate_downstream(project, "s4")
 
 
+def invalidate_pages_of_characters(project: Project, names: set[str]) -> list[int]:
+    """作废这些角色出场的所有页(置 draft + 清图),返回被作废的页号。
+
+    补画三视图之后必须调它,否则那次补画对**已经画好的页**完全无效:S4 的幂等跳过条件是
+    `status == "confirmed" and image and 文件存在`(s4_pages.run),旧页三条全占,于是永远
+    停留在没有该角色锚点的版本,而界面上 s3=done / s4=done / 全部 confirmed,一切正常。
+    实测 DGX 上的 8f41283a 就卡在这里:补出第一主角三视图后重跑 S4,9 页里只重画了当时
+    恰好不是 confirmed 的 2 页,其余 7 页至今仍是无锚点的旧图。
+
+    复用 _invalidate_page_image 而不是自己清字段:清图这件事的不变量只应有一处真源。"""
+    if not names:
+        return []
+    hit = [c.index for c in project.storyboard if names & set(c.characters)]
+    for cell in project.storyboard:
+        if names & set(cell.characters):
+            _invalidate_page_image(cell)
+    if hit:
+        _invalidate_downstream(project, "s4")
+    return hit
+
+
 def mark_character_redraw(project: Project, name: str) -> None:
     """标记角色需重绘:解锁(s3 只重画非 locked 角色,据此重出三视图)。
     刻意保留 reference_image——它是用户上传的输入而非产物,和 mark_redraw 保留

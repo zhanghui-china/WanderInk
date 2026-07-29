@@ -1409,6 +1409,18 @@ function PageCard({
                 {LORA_MISS_SHORT[pg.image_route]}
               </span>
             )}
+            {/* 缺三视图锚点:这些角色画这一页时只有文字特征、没有参考图,长相不受约束。
+                必须同时看 pg.image——图已被作废/失败的页,这条记录描述的是一张不存在的图
+                (与上面 LORA_MISS 同一判据)。用 alarm 色而非 muted:这是实打实的质量问题,
+                不是可有可无的元信息,补画三视图后重跑该页才会消失。 */}
+            {pg.image && pg.missing_refs.length > 0 && (
+              <span
+                className="rounded-full bg-kraft px-2 py-0.5 text-alarm"
+                title={`${pg.missing_refs.join('、')} 画这一页时没有三视图参考,长相不受约束。补出三视图后重画本页可修复。`}
+              >
+                缺参考 {pg.missing_refs.join('、')}
+              </span>
+            )}
             {pg.status === 'failed' && <span className="text-alarm">生成失败</span>}
           </div>
           {pg.audio && <audio src={pg.audio} controls className="h-9 w-full" />}

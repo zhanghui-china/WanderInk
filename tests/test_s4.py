@@ -485,3 +485,63 @@ def test_s4_failure_clears_stale_route_from_previous_success(tmp_path: Path):
     p = s4_pages.run(p, image, tmp_path, "1536x1024")
     assert p.storyboard[0].status == "failed"
     assert p.storyboard[0].image_route == "" and p.storyboard[0].image_lora == ""
+
+
+# ---------- 逐页三视图锚点校验(8f41283a 事故的回归) ----------
+# 旧护栏是 `if not any(c.turnaround_image for c in characters)`——**所有**角色都没图才告警。
+# 实测 DGX 上的 8f41283a:3 个角色里 2 个有图,第一主角的三视图比 7 页画面晚 18~33 分钟
+# 才产出,那 7 页全程无锚点而护栏一声不吭。这一组用例锁住"部分缺失"这个真实场景。
+
+def _mixed_refs_project(tmp_path: Path) -> Project:
+    """两个角色:有图的「白素贞」与无图的「法海」;三页分别是 只有图的 / 只无图的 / 混合。"""
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    (tmp_path / "characters").mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (64, 64), "red").save(tmp_path / "characters" / "白素贞.png")
+    have = CharacterCard(name="白素贞", role="r", personality="p", appearance="a",
+                         feature_prompt="白衣女子", turnaround_image="characters/白素贞.png")
+    lack = CharacterCard(name="法海", role="r", personality="p", appearance="a",
+                         feature_prompt="金衣僧人")   # 三视图生成失败 → turnaround_image 为空
+    p.script = Script(title="t", theme="th", acts=[], characters=[have, lack])
+    p.storyboard = [
+        StoryboardCell(index=1, scene_ref="1-1", visual_desc="断桥", characters=["白素贞"],
+                       caption="c", emotion="宁静"),
+        StoryboardCell(index=2, scene_ref="1-2", visual_desc="金山", characters=["法海"],
+                       caption="c", emotion="紧张"),
+        StoryboardCell(index=3, scene_ref="1-3", visual_desc="对峙", characters=["白素贞", "法海"],
+                       caption="c", emotion="紧张"),
+    ]
+    return p
+
+
+def test_s4_records_missing_refs_per_page(tmp_path: Path, capsys):
+    p = _mixed_refs_project(tmp_path)
+    image = _mock_image(); image.generate.return_value = _png()
+    p = s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert p.storyboard[0].missing_refs == []            # 该页唯一角色有三视图
+    assert p.storyboard[1].missing_refs == ["法海"]
+    assert p.storyboard[2].missing_refs == ["法海"]      # 混合页只报缺的那个
+    out = capsys.readouterr().out
+    assert "一致性" in out and "2、3" in out             # 告警点名到页,不再是笼统一句
+
+
+def test_s4_strict_raises_on_partial_missing_refs(tmp_path: Path):
+    # 旧护栏在这个场景下**不会**触发(白素贞有图,any() 为真),这正是事故能发生的原因。
+    p = _mixed_refs_project(tmp_path)
+    image = _mock_image(); image.generate.return_value = _png()
+    with pytest.raises(ValueError):
+        s4_pages.run(p, image, tmp_path, "1536x1024", strict=True)
+
+
+def test_s4_clears_stale_missing_refs_after_turnaround_filled(tmp_path: Path):
+    # 补出三视图后重跑,旧的缺失记录必须消失——否则界面会照着它一直报"缺参考",
+    # 描述的却是上一轮的状态(同 image_route/image_lora 那类陈旧元数据的教训)。
+    p = _mixed_refs_project(tmp_path)
+    image = _mock_image(); image.generate.return_value = _png()
+    p = s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert p.storyboard[2].missing_refs == ["法海"]
+    Image.new("RGB", (64, 64), "green").save(tmp_path / "characters" / "法海.png")
+    p.script.characters[1].turnaround_image = "characters/法海.png"
+    for c in p.storyboard:            # 模拟 editing.invalidate_pages_of_characters 的效果
+        c.status, c.image = "draft", ""
+    p = s4_pages.run(p, image, tmp_path, "1536x1024")
+    assert all(c.missing_refs == [] for c in p.storyboard)

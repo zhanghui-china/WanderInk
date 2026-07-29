@@ -116,6 +116,11 @@ class StoryboardCell(BaseModel):
     # silent=True 表示该页音频是静音兜底(非真人解说);用于状态诚实化与重跑重合成。
     silent: bool = False
     status: Literal["draft", "confirmed", "failed"] = "draft"
+    # 生成这一页时,出场角色里**没有三视图可用**的那些名字(S4 每轮重算并覆盖)。
+    # 这些角色只有文字特征约束、没有视觉锚点,一致性无从保证——而在此之前这件事完全静默:
+    # S4 唯一的护栏是"所有角色里至少有一个有三视图",三个角色活一个就通过,界面上什么都看不到。
+    # 实测 DGX 上的 8f41283a 有 7 页在第一主角三视图产出前 18~33 分钟就画完了,全程无任何提示。
+    missing_refs: list[str] = Field(default_factory=list)
     panels: list[Panel] = Field(default_factory=list)  # 空 = 单图模式(现状不变)
     # 语种码 -> 该语种的译文与配音(如 "en");中文不进这里,仍用上面的原字段。
     tracks: dict[str, LocalizedTrack] = Field(default_factory=dict)

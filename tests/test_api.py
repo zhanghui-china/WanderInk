@@ -1862,7 +1862,7 @@ def test_version_route_not_swallowed_by_static_catch_all():
 _PAGE_FIELDS_USED_BY_WEB = {
     "index", "caption", "emotion", "status", "duration_ms", "silent",
     "scene_ref", "visual_desc", "characters", "image", "audio", "tracks",
-    "image_gen_ms", "image_route", "image_lora",
+    "image_gen_ms", "image_route", "image_lora", "missing_refs",
 }
 
 

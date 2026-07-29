@@ -141,6 +141,7 @@ def _process_character(c: CharacterCard, llm: LLMClient, image: ImageClient,
 
 def run(project: Project, llm: LLMClient, image: ImageClient,
         workdir: Path, image_size: str, concurrency: int = CONCURRENCY,
+        on_progress: Callable[[], None] | None = None,
         cancel_check: Callable[[], bool] | None = None) -> Project:
     if project.script is None:
         raise ValueError("先完成 S1")
@@ -160,6 +161,11 @@ def run(project: Project, llm: LLMClient, image: ImageClient,
                     pending.cancel()  # 已开始的取消不了(Python 线程池物理限制),但能拦掉还没排上的
                 break
             f.result()   # 传播非预期错误(生图失败已在 _process_character 内吞掉并退化)
+            # 每完成一个角色就落盘一次(同 s4_pages 的做法)。此前 S3 全程一次不存,
+            # 角色卡在界面上始终是空的,直到本阶段结束那一刻才整体跳变——而同一刻 S4 就开始了,
+            # 观感上就是"三视图还没生成完就开始画漫画页"。用户正是这样报的这个问题。
+            if on_progress:
+                on_progress()
     # 诚实状态:该画三视图的角色(_draw_flags 判定为 True 的)都成功产出并锁定才算 done;
     # 任一失败(未锁定、无三视图)则 partial。不该画的角色(判据同 _draw_flags)不参与判定。
     project.status["s3"] = "done" if all(

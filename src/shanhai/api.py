@@ -381,6 +381,7 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
                                              use_skill=runtime_config.use_master_skill(p, settings["s2"], "s2"))),
             ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
                                              settings["s3"].image_size,
+                                             on_progress=lambda: _locked_save(p),
                                              concurrency=image_concurrency(settings["s3"]),
                                              cancel_check=lambda: _is_cancelled(project_id))),
             ("s4", lambda: s4_pages.run(p, clients["s4"][1], workdir, settings["s4"].image_size,
@@ -461,6 +462,8 @@ def _serialize(p: Project) -> dict:
         # 这一页实际走的生成路径与本次指定的 LoRA:只有 "edit" 那条路带 LoRA 节点,
         # "text2img" 的模板没有,所选 LoRA 对那些页静默不生效——前端据此给出提示。
         "image_route": c.image_route, "image_lora": c.image_lora,
+        # 这一页生成时缺三视图锚点的角色——一致性无保证,必须让用户看得见。
+        "missing_refs": c.missing_refs,
         "image": _file_url(p.project_id, c.image, workdir),
         "audio": _file_url(p.project_id, c.audio, workdir),
         "tracks": {lg: {"caption": t.caption, "duration_ms": t.duration_ms,
@@ -1045,9 +1048,20 @@ def _run_one_step(p: Project, project_id: str, name: str, cfg: AppConfig,
     if name == "s2":
         p = s2_storyboard.run(p, llm, use_skill=runtime_config.use_master_skill(p, s, "s2"))
     elif name == "s3":
+        # 跑之前先记下"谁还没有三视图":跑完凡是从无到有的角色,其出场页必须作废重画,
+        # 否则那次补画对已 confirmed 的页完全无效(S4 会幂等跳过它们),用户以为修好了其实没有。
+        was_missing = {c.name for c in p.script.characters if not c.turnaround_image} \
+            if p.script else set()
         p = s3_characters.run(p, llm, image, workdir, s.image_size,
+                              on_progress=lambda: _locked_save(p),
                               concurrency=image_concurrency(s),
                               cancel_check=lambda: _is_cancelled(project_id))
+        gained = {c.name for c in p.script.characters
+                  if c.turnaround_image and c.name in was_missing} if p.script else set()
+        hit = editing.invalidate_pages_of_characters(p, gained)
+        if hit:
+            print(f"补出 {'、'.join(sorted(gained))} 的三视图,已作废其出场的第 "
+                  f"{'、'.join(str(i) for i in hit)} 页,重跑 S4 会重画")
     elif name == "s4":
         p = s4_pages.run(p, image, workdir, s.image_size, strict=s.strict_consistency,
                           on_progress=lambda: _locked_save(p),

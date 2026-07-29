@@ -45,6 +45,9 @@ export interface Page {
   // 本次请求指定的 LoRA 短名;空串不等于"没用 LoRA",而是"未指定,后端回落自己的默认权重"
   // (模板里 LoRA 节点是焊死的,不存在"不用 LoRA")
   image_lora: string
+  // 这一页生成时缺三视图参考的出场角色。非空 = 这些角色只有文字特征、没有视觉锚点,
+  // 一致性无保证。空数组是正常态(老数据也是空的,不区分"没缺"和"没记录",不值得为此加字段)。
+  missing_refs: string[]
   // 附加语种轨,key 是语种码(如 "en");没生成过就是空对象
   tracks: Record<string, LocalizedTrack>
 }
