@@ -127,12 +127,16 @@ def _anonymize(present: list[CharacterCard], scene: str,
     features 仍然只列 present——没出场的角色不该给参考特征。"""
     ordered = [c.name for c in present]
     ordered += [c.name for c in (cast or [])] + list(names or [])
+    # 空名必须滤掉:CharacterCard.name 没有 min_length,模型返回空名是可能的,而
+    # "少年推开山门".replace("", "角色甲") 会在**每个字之间**插一次代号,整段 scene
+    # 变成「角色甲少角色甲年角色甲推…」——该页 prompt 直接报废,还不抛异常、不进 status。
     aliases = {n: f"角色{ALIAS_CHARS[i] if i < len(ALIAS_CHARS) else i + 1}"
-               for i, n in enumerate(dict.fromkeys(ordered))}
+               for i, n in enumerate(n for n in dict.fromkeys(ordered) if n)}
     # 必须按名字长度降序替换,否则「小虎」会先把「小虎子」截成「角色甲子」
     for name in sorted(aliases, key=len, reverse=True):
         scene = scene.replace(name, aliases[name])
-    features = ";".join(f"{aliases[c.name]}({c.feature_prompt})" for c in present) or "无固定角色"
+    features = ";".join(f"{aliases[c.name]}({c.feature_prompt})"
+                        for c in present if c.name) or "无固定角色"
     return features, scene
 
 

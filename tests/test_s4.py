@@ -627,6 +627,20 @@ def test_anonymize_masks_names_beyond_present():
     assert features == "角色甲(F小龙)"          # 未出场角色不进 features
 
 
+def test_anonymize_ignores_empty_name():
+    """空名字必须跳过:str.replace("") 会在每个字之间插一次代号,把整段 scene 炸成
+    「角色甲少角色甲年角色甲推…」,该页 prompt 直接报废且不抛异常、不进 status。
+    CharacterCard.name 没有 min_length,模型返回空名是可能的。"""
+    cards = [
+        CharacterCard(name="", role="r", personality="p", appearance="a", feature_prompt="无名"),
+        CharacterCard(name="小虎", role="r", personality="p", appearance="a",
+                      feature_prompt="十岁男童"),
+    ]
+    _features, scene = s4_pages._anonymize(cards, "小虎推开山门")
+    # 空名不占代号,「小虎」仍拿第一个;关键是 scene 除了这个名字之外一字未动
+    assert scene == "角色甲推开山门"
+
+
 def test_anonymize_masks_names_without_cards():
     # storyboard 写了 cast 名单里没有的名字(模型改名/用别称),cards 查不到就被静默丢掉,
     # 该名字原样留在 visual_desc 里直接进 image prompt。

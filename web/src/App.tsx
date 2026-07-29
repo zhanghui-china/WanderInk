@@ -197,14 +197,18 @@ export default function App() {
                 {activeCount > 0 ? `${activeCount} 部生成中` : `${list.length} 部作品`}
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowSettings(true)}
-              aria-label="配置"
-              className="flex h-8 w-8 items-center justify-center rounded-full border border-gold/25 bg-white/5 text-rice/80 transition hover:text-gold-pale"
-            >
-              ⚙
-            </button>
+            {/* 配置面板是纯编辑用途,而 PUT /api/config 现在只认管理员(它决定全站上游端点)。
+                入口对非管理员开着的话,人家填完一整张表单才吃 403,不如不给入口。 */}
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setShowSettings(true)}
+                aria-label="配置"
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-gold/25 bg-white/5 text-rice/80 transition hover:text-gold-pale"
+              >
+                ⚙
+              </button>
+            )}
             <div className="flex items-center gap-2 rounded-full border border-gold/25 bg-white/5 px-3 py-[7px]">
               <span className="text-[13px] text-rice/85">{user}</span>
               <button

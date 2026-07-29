@@ -781,6 +781,11 @@ def export_project(project_id: str, user: str = Depends(current_user)) -> dict:
             p = store.load(project_id)
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(404, f"项目不存在: {project_id}") from e
+        # 归属校验必须单独写一遍,不能改调 _editable:导出刻意不受只读拦截(见上方 docstring),
+        # 而 _editable 头一件事就是拦只读。判据与 _editable 逐字一致——历史项目 owner 为空
+        # 视为无主,否则那些项目会连自己都导不出。
+        if p.owner and p.owner != user:
+            raise HTTPException(403, "只能导出自己的项目")
         p = export.build_exports(p, store.project_dir(project_id))
         store.save(p)
     return {
@@ -1344,6 +1349,11 @@ def write_config(body: AppConfig, user: str = Depends(current_user)) -> dict:
     合并语义(部分更新/密钥哨兵/环节保留与剪枝)见 runtime_config.apply_put。"""
     if _READONLY:
         raise HTTPException(403, "公开演示为只读,禁止修改配置")
+    # 管理员闸门:这个端点决定全站所有环节的上游地址与密钥。任意登录用户可写的话,
+    # 把 llm_base_url 指向自己的机器就能收走所有人的剧本与自备故事原文,顺带让全站
+    # 生成瘫痪。与 delete_project 同标准——影响面超出单个作品的操作只认 is_admin。
+    if not is_admin(user):
+        raise HTTPException(403, "仅管理员可修改端点配置")
     unknown = [st for st in body.stages if st not in STAGE_CLIENTS]
     if unknown:
         raise HTTPException(400, f"未知环节: {unknown}(合法环节 {list(STAGE_CLIENTS)})")

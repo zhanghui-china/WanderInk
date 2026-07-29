@@ -465,6 +465,41 @@ def test_list_projects_skips_non_object_json(tmp_path, monkeypatch):
     assert [it["project_id"] for it in items] == [good.project_id]  # 非对象项目全被跳过
 
 
+def test_write_config_requires_admin(monkeypatch):
+    """配置写入决定全站上游端点:任意登录用户可改的话,把 llm_base_url 指向自己的机器
+    就能拿到所有人的剧本与自备故事原文,同时让全站生成瘫痪。必须是管理员闸门。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    r = client.put("/api/config", json={"global": {"llm_base_url": "http://evil.example/v1"}})
+    assert r.status_code == 403
+
+
+def test_write_config_allows_admin(monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setattr(api, "update_overrides", lambda fn: None)
+    r = client.put("/api/config", json={"global": {}})
+    assert r.status_code == 200
+
+
+def test_export_rejects_other_owner(tmp_path, monkeypatch):
+    """导出会读改写他人的 project.json 并往他人目录落盘,必须校验归属。
+    注意不能改走 _editable:导出不受只读拦截是 export_project 里刻意的设计。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = "someone-else"
+    store.save(p, root=tmp_path)
+    assert client.post(f"/api/projects/{p.project_id}/export").status_code == 403
+
+
+def test_export_allows_ownerless_legacy_project(tmp_path, monkeypatch):
+    """历史项目 owner 为空视为无主,判据与 _editable 保持一致(不是 owner != user)。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = ""
+    store.save(p, root=tmp_path)
+    with patch("shanhai.api.export.build_exports", side_effect=lambda proj, _d: proj):
+        assert client.post(f"/api/projects/{p.project_id}/export").status_code == 200
+
+
 def test_delete_project_requires_admin(monkeypatch):
     monkeypatch.setattr(api, "is_admin", lambda user: False)
     r = client.delete("/api/projects/anything")
@@ -1402,8 +1437,12 @@ def test_patch_cell_rejects_oversized_fields():
 @pytest.fixture
 def _isolated_config_path(tmp_path, monkeypatch):
     """把配置路径指到 tmp_path,隔离测试对真实 config.json 的读写。
-    _config_path() 延迟读 SHANHAI_CONFIG_PATH,故设环境变量即可。"""
+    _config_path() 延迟读 SHANHAI_CONFIG_PATH,故设环境变量即可。
+
+    顺带把调用方当作管理员:PUT /api/config 现在有 is_admin 闸门,而这一组用例测的是
+    合并/脱敏/剪枝语义,不是鉴权(鉴权另有 test_write_config_requires_admin 专管)。"""
     monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
 
 
 def test_get_config_never_leaks_plaintext_api_key(_isolated_config_path):
