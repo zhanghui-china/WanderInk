@@ -69,11 +69,16 @@ def test_s2_renumbers_duplicate_indices():
     assert [c.index for c in p.storyboard] == [1, 2, 3]   # 重复/跳号 → 唯一连续 1..n
 
 
-def test_s2_system_contains_page_end_suspense_hint():
-    """Assert that SYSTEM prompt contains hint about page-end suspense."""
+def test_s2_system_keeps_suspense_but_bans_rhetorical_questions():
+    """悬念提示保留,但必须同时带上句式禁令。
+
+    原先这条只断言"含悬念提示",锁的是**每页都要悬念**那版设计;实测下来模型满足
+    "每页都要悬念"最省力的写法就是反问句,一部 22 页的作品里 18 页 caption 以问号结尾。
+    修法不是删掉悬念,而是限定频次(只在幕/场转折处)+ 明禁句式,所以这条断言也要跟着
+    锁住"禁令还在"——只断言"含悬念"会让禁令被误删时依旧全绿。"""
     system = s2_storyboard.SYSTEM
-    # Check for page-end suspense hint keywords
-    assert "悬念" in system or "期待" in system or "页尾" in system, "Missing page-end suspense hint"
+    assert "悬念" in system, "Missing suspense hint"
+    assert "问号" in system and "反问" in system, "Missing ban on rhetorical/question endings"
     # Ensure the hard constraint about story continuity is preserved
     assert "连起来" in system or "独立讲通" in system, "Missing hard constraint about story continuity"
 

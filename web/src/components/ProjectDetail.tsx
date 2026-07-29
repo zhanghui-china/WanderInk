@@ -239,6 +239,17 @@ export function ProjectDetailView({
                 <> · 音色 {project.params.voice.startsWith('clone:') ? '自定义' : project.params.voice}</>
               )}
             </p>
+            {/* 剧本/分镜这两步实际用的引擎(模型 + 是否走大师 skill)。勾了大师开关但该环节
+                后端不是 hermes-agent 时后端会静默退化,退化原因也写在这两个值里——在此之前
+                这件事只 print 到服务端 stdout,事后完全无法回答"这部作品到底走没走 skill"。
+                历史作品没有这两个键,整行不渲染;绝不写"未知",那是在替旧数据编造结论。 */}
+            {(project.status.s1_engine || project.status.s2_engine) && (
+              <p className="mt-0.5 text-[11px] tracking-wide text-muted">
+                {project.status.s1_engine && <>剧本 {project.status.s1_engine}</>}
+                {project.status.s1_engine && project.status.s2_engine && ' · '}
+                {project.status.s2_engine && <>分镜 {project.status.s2_engine}</>}
+              </p>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">

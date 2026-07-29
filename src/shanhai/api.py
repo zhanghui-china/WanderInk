@@ -220,18 +220,6 @@ def _save_error(project_id: str, e: Exception) -> None:
 
 # ---------- 后台管线 ----------
 
-def _use_master_skill(p: Project, stage_settings: Settings, stage_label: str) -> bool:
-    """该环节是否调"大师"skill(S1 编剧大师 / S2 导演大师):仅当作品勾了开关**且**该环节
-    后端确为 hermes-agent(/screenwriter-master、/director-master 发给别的模型会被当乱码)。
-    开关开了但后端不是 hermes 时提示并静默退化为普通生成,不报错。"""
-    if not p.params.master_skill:
-        return False
-    if stage_settings.llm_model == "hermes-agent":
-        return True
-    print(f"⚠️ 大师 skill 需 hermes-agent 后端,当前 {stage_label} 用 {stage_settings.llm_model},已忽略该开关")
-    return False
-
-
 def _deliverable_status(p: Project) -> str:
     """诚实闸门:据当前状态判定「整体是否已交付一部成片」。
     无 output['mp4'](未合成/编辑后已失效)→ partial:尚未合成,而非 done(单步重跑 s2–s5 会走到这)。
@@ -388,9 +376,9 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         _locked_save(p)
         stages = [
             ("s1", lambda: s1_script.run(p, clients["s1"][0],
-                                         use_skill=_use_master_skill(p, settings["s1"], "S1"))),
+                                         use_skill=runtime_config.use_master_skill(p, settings["s1"], "s1"))),
             ("s2", lambda: s2_storyboard.run(p, clients["s2"][0],
-                                             use_skill=_use_master_skill(p, settings["s2"], "S2"))),
+                                             use_skill=runtime_config.use_master_skill(p, settings["s2"], "s2"))),
             ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
                                              settings["s3"].image_size,
                                              concurrency=image_concurrency(settings["s3"]),
@@ -1055,7 +1043,7 @@ def _run_one_step(p: Project, project_id: str, name: str, cfg: AppConfig,
     p.status.pop(name, None)
     _locked_save(p)
     if name == "s2":
-        p = s2_storyboard.run(p, llm, use_skill=_use_master_skill(p, s, "S2"))
+        p = s2_storyboard.run(p, llm, use_skill=runtime_config.use_master_skill(p, s, "s2"))
     elif name == "s3":
         p = s3_characters.run(p, llm, image, workdir, s.image_size,
                               concurrency=image_concurrency(s),

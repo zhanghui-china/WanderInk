@@ -603,22 +603,8 @@ def test_create_project_passes_master_skill(mock_create, _save, _settings, _pipe
     assert p.params.master_skill is True
 
 
-def test_use_master_skill_gate_requires_hermes_backend():
-    # 开关开了但该环节后端不是 hermes-agent → gate 落为 False(退化普通生成,不把斜杠发给别的模型)。
-    # 用 S1/S2 两个 stage_label 分别验证,gate 逻辑与调用哪个环节无关,只看 stage_settings。
-    from shanhai.config import Settings
-    p = Project(project_id="g1", scenic_spot="花果山")
-    p.params.master_skill = True
-    hermes = Settings(_env_file=None, base_url="http://127.0.0.1:8642/v1", api_key="x",
-                      llm_model="hermes-agent")
-    other = Settings(_env_file=None, base_url="https://api.stepfun.com/v1", api_key="x",
-                     llm_model="step-3.7-flash")
-    assert api._use_master_skill(p, hermes, "S1") is True
-    assert api._use_master_skill(p, other, "S1") is False
-    assert api._use_master_skill(p, hermes, "S2") is True
-    assert api._use_master_skill(p, other, "S2") is False
-    p.params.master_skill = False
-    assert api._use_master_skill(p, hermes, "S1") is False   # 开关关 → 恒 False
+# gate 本身的用例已随 _use_master_skill 迁到 tests/test_runtime_config.py
+# (它现在还负责往 status 写引擎记录,与 runtime_config 的其余职责同处)。
 
 
 def test_cancel_rejects_non_owner():

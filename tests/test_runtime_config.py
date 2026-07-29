@@ -6,10 +6,11 @@ import pytest
 from shanhai import runtime_config
 from shanhai.cli import _clients
 from shanhai.config import Settings
+from shanhai.schema import Project
 from shanhai.runtime_config import (MASK, SECRET_FIELDS, SENTINEL, STAGE_CLIENTS,
                                      AppConfig, ConfigOverride, apply_put,
                                      defaults_view, load_overrides,
-                                     merge_override, override_view,
+                                     merge_override, override_view, use_master_skill,
                                      resolve_settings, save_overrides,
                                      update_overrides)
 
@@ -217,3 +218,45 @@ def test_defaults_view_includes_music_fields():
 def test_override_view_masks_music_api_key():
     ov = ConfigOverride(music_api_key="sk-music")
     assert override_view(ov)["music_api_key"] == MASK
+
+
+# ---------- 大师 skill 闸门 + 引擎记录 ----------
+# 从 tests/test_api.py 迁来(闸门随 _use_master_skill 移到本模块),并补上记录断言:
+# 记录的意义全在"退化那一路也要留痕"——原先退化只 print 到服务端 stdout,project.json
+# 里不存任何模型/skill 信息,事后无法回答"这部作品到底走没走 skill"。
+
+def _p_with_skill(on: bool) -> Project:
+    p = Project(project_id="g1", scenic_spot="花果山")
+    p.params.master_skill = on
+    return p
+
+
+HERMES = dict(base_url="http://127.0.0.1:8642/v1", api_key="x", llm_model="hermes-agent")
+OTHER = dict(base_url="https://api.stepfun.com/v1", api_key="x", llm_model="step-3.7-flash")
+
+
+def test_use_master_skill_on_hermes_returns_true_and_records_skill_name():
+    p = _p_with_skill(True)
+    s = Settings(_env_file=None, **HERMES)
+    assert use_master_skill(p, s, "s1") is True
+    assert use_master_skill(p, s, "s2") is True
+    assert p.status["s1_engine"] == "hermes-agent · 编剧大师"
+    assert p.status["s2_engine"] == "hermes-agent · 导演大师"
+
+
+def test_use_master_skill_off_records_plain_engine():
+    p = _p_with_skill(False)
+    s = Settings(_env_file=None, **HERMES)
+    assert use_master_skill(p, s, "s1") is False   # 开关关 → 恒 False,即便后端是 hermes
+    assert p.status["s1_engine"] == "hermes-agent · 普通"
+
+
+def test_use_master_skill_on_non_hermes_degrades_and_records_reason():
+    # 开关开了但该环节后端不是 hermes-agent → 退化普通生成(不把斜杠命令发给别的模型),
+    # 且记录里必须写明退化原因,否则这次退化在事后完全不可见。
+    p = _p_with_skill(True)
+    s = Settings(_env_file=None, **OTHER)
+    assert use_master_skill(p, s, "s2") is False
+    rec = p.status["s2_engine"]
+    assert rec.startswith("step-3.7-flash · 普通")
+    assert "已忽略大师开关" in rec and "hermes-agent" in rec
