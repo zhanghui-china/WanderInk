@@ -51,7 +51,8 @@ def test_s4_generates_and_composes(tmp_path: Path):
     assert p.storyboard[0].status == "confirmed"
     assert (tmp_path / "pages" / "page_01.png").exists()
     refs = image.generate.call_args.kwargs["references"]
-    assert refs and refs[0].name == "白素贞.png"      # 三视图作为参考图传入
+    # 参考图是三视图裁出的正面像(文件名带缓存版本号,见 _downscaled_ref 的说明)
+    assert refs and refs[0].name == f"白素贞.{s4_pages.REF_CACHE_VERSION}.png"
     prompt = image.generate.call_args.args[0]
     assert "白衣女子" in prompt and "不要出现任何文字" in prompt
 
@@ -209,8 +210,9 @@ def test_s4_downscaled_ref_rebuilds_on_newer_source(tmp_path: Path):
     src = tmp_path / "白素贞.png"
     Image.new("RGB", (100, 100), "red").save(src, "PNG")
     cache = tmp_path / "_refs"
-    old = s4_pages._downscaled_ref(src, cache).read_bytes()
-    out_mtime = (cache / "白素贞.png").stat().st_mtime
+    out = s4_pages._downscaled_ref(src, cache)
+    old = out.read_bytes()
+    out_mtime = out.stat().st_mtime
     Image.new("RGB", (100, 100), "blue").save(src, "PNG")   # S3 重绘该角色
     os.utime(src, (out_mtime + 100, out_mtime + 100))
     new = s4_pages._downscaled_ref(src, cache).read_bytes()
@@ -545,3 +547,61 @@ def test_s4_clears_stale_missing_refs_after_turnaround_filled(tmp_path: Path):
         c.status, c.image = "draft", ""
     p = s4_pages.run(p, image, tmp_path, "1536x1024")
     assert all(c.missing_refs == [] for c in p.storyboard)
+
+
+# ---------- 参考图裁成单一正面像(同一角色画多次的回归) ----------
+# S3 的三视图是"同一角色正面/侧面/背面并排"的设定图,整张喂进 image edit 工作流时
+# 传递的是**结构**:实测泰山那部作品抽样 7 页有 5 页出现同一角色画两三次,
+# 其中一页直接是三个同款冠袍男子并排、恰好一正面一侧面一背面。
+
+def _sheet(tmp_path: Path, w: int = 1260, h: int = 840) -> Path:
+    """仿三视图设定图:左中右三段涂不同颜色,便于断言裁到的是最左那段(正面)。"""
+    img = Image.new("RGB", (w, h), "white")
+    for i, color in enumerate(("red", "green", "blue")):
+        img.paste(Image.new("RGB", (w // 3, h), color), (i * (w // 3), 0))
+    p = tmp_path / "sheet.png"
+    img.save(p)
+    return p
+
+
+def test_downscaled_ref_crops_to_front_view(tmp_path: Path):
+    src = _sheet(tmp_path)
+    out = s4_pages._downscaled_ref(src, tmp_path / "_refs")
+    got = Image.open(out)
+    src_ratio = 1260 / 840
+    # 裁掉侧面/背面后宽高比应缩到约原图的 FRONT_VIEW_RATIO 倍
+    assert got.width / got.height == pytest.approx(src_ratio * s4_pages.FRONT_VIEW_RATIO, rel=0.05)
+    # 且内容是最左那段(正面像),不是中间的侧面或右边的背面
+    assert got.convert("RGB").getpixel((got.width // 4, got.height // 2))[0] > 200   # 偏红
+
+
+def test_downscaled_ref_cache_name_carries_version(tmp_path: Path):
+    # 线上 _refs/ 里已有一批**旧的整张缩略图**,mtime 还比源文件新。缓存名不带版本的话
+    # 新裁切逻辑会直接复用旧文件、改动完全不生效——是那种"跑完一切正常、就是没效果"的静默失效。
+    src = _sheet(tmp_path)
+    cache = tmp_path / "_refs"
+    stale = cache / src.name          # 旧版命名:与源文件同名
+    cache.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (900, 600), "black").save(stale)
+    out = s4_pages._downscaled_ref(src, cache)
+    assert out != stale
+    assert s4_pages.REF_CACHE_VERSION in out.name
+    assert Image.open(out).convert("RGB").getpixel((10, 10))[0] > 200   # 不是那张黑图
+
+
+def test_downscaled_ref_reuses_cache(tmp_path: Path):
+    src = _sheet(tmp_path)
+    cache = tmp_path / "_refs"
+    first = s4_pages._downscaled_ref(src, cache)
+    mtime = first.stat().st_mtime_ns
+    assert s4_pages._downscaled_ref(src, cache) == first
+    assert first.stat().st_mtime_ns == mtime      # 命中缓存,没重裁
+
+
+def test_page_prompts_forbid_duplicate_instances():
+    # 与裁切互补的语义约束。两条都要锁:少了"只出现一次"压不住分身,
+    # 少了"仅用于识别身份"模型会把"保持一致"理解成"贴近这张参考图(含它的排版)"。
+    for tmpl in (s4_pages.PAGE_TMPL, s4_pages.PANEL_TMPL):
+        assert "只出现一次" in tmpl
+        assert "仅用于识别角色的外观身份" in tmpl
+        assert "单一瞬间" in tmpl

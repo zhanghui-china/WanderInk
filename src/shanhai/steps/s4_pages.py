@@ -24,9 +24,19 @@ CONCURRENCY = 3  # S4 逐页生成并发上限,平衡速度与代理过载(观�
 NO_FRAME = ("画面必须满幅铺满整个画布,四周不要有任何边框、画框、分格线或白色留白边,"
             "不是漫画分格页。")
 
+# 与 _downscaled_ref 的裁切互补:裁切从条件输入里拿掉"三个人并排"这个结构信号,
+# 这两句从语义上补住裁切之后可能残留的情形。单靠提示词压不住 edit 条件的结构黏性
+# (实测 5/7 的页出现同一角色画两三次),故两手都要,不是二选一。
+ONE_INSTANCE = (
+    "参考图仅用于识别角色的外观身份,不要复制参考图的构图、并排排列或纯白背景。"
+    "画面表现单一瞬间的一个场景,每个角色在画面中只出现一次,"
+    "不要画成拼贴、分身或同一角色的多个视角。"
+)
+
 PAGE_TMPL = (
     "{style}。整幅横向插画:{scene}。出场角色:{features}。"
     "严格保持角色与参考图中的形象一致(外观特征、色彩、服饰或体表覆盖物)。"
+    + ONE_INSTANCE +
     "横向宽幅构图(16:9 横图),主体居中、上下留出安全边距。"
     + NO_FRAME +
     "画面中不要出现任何文字。"
@@ -37,6 +47,9 @@ PANEL_TMPL = (
     # 模型再画一层就成了"框中框"。这里只描述这一格的画面内容。
     "{style}。整幅横向插画:{scene}。出场角色:{features}。{shot}。"
     "严格保持角色与参考图中的形象一致(外观特征、色彩、服饰或体表覆盖物)。"
+    # 分格页更需要这条:一格里画出同一角色的两个身位,和 paneling 的分格叠在一起
+    # 会读成"格中格",比单图页的重复更难辨认
+    + ONE_INSTANCE +
     # 与 PAGE_TMPL 同款的安全边距要求。分格页拼版时每格仍会按版位比例做少量裁切,
     # 主体贴边(尤其头顶/下巴)会被切掉——这是"人脸不全"投诉的一半原因。
     "主体居中,人物头顶与下巴距画面上下边缘留出充足安全边距(排版时边缘可能被裁切)。"
@@ -55,14 +68,40 @@ SHOT_HINTS = {
 }
 
 
+# 三视图里正面像所占的横向比例。s3 的两个模板都规定"正面、侧面、背面并排",
+# TURNAROUND_REF_TMPL 更是写死"左侧正面、中间侧面、右侧背面",故取最左一段。
+# 略大于 1/3:模型排版不会精确等分,留一点余量总比把正面像切掉半个肩膀好;
+# 多带进来的一点侧面像边缘会被后续 thumbnail 弱化,危害远小于漏切。
+FRONT_VIEW_RATIO = 0.38
+
+# 缓存文件名里的版本号。**改裁切逻辑必须同时改它**——_refs/ 下已有的旧缓存是
+# 整张三视图的缩略图,mtime 又比源文件新,不换名字的话新逻辑会直接复用旧文件、
+# 改动完全不生效(而且是那种"跑完一切正常、就是没效果"的静默失效)。
+REF_CACHE_VERSION = "v2front"
+
+
 def _downscaled_ref(src: Path, cache_dir: Path) -> Path:
+    """把角色三视图裁成**单个正面像**再缩略,作为生图的身份参考。
+
+    为什么必须裁:S3 产出的三视图是"同一角色正面/侧面/背面并排"的设定图
+    (s3_characters.TURNAROUND_TMPL),而 S4 走的是 image **edit** 工作流
+    (providers/image.py:route_for → 有参考图即 edit),图生图编辑传递的是**结构**,
+    不只是身份。整张喂进去,模型会照着"三个人并排"去构图——实测泰山那部作品抽样
+    7 页有 5 页出现同一角色画两三次,其中一页直接是三个同款冠袍男子并排、
+    恰好一正面一侧面一背面,就是三视图原样搬进了雨景。
+    提示词那句"严格保持角色与参考图中的形象一致"反而在帮倒忙:对 edit 模型而言
+    它就是"贴近这张参考图",包含那个三联排版。提示词只能和结构条件拔河,裁切是剪绳子。
+
+    已知代价:参考图不再含侧面/背面,需要背身构图的页一致性可能略降。
+    与 5/7 的重复率相比这个取舍是明确的。"""
     cache_dir.mkdir(parents=True, exist_ok=True)
-    out = cache_dir / src.name
+    out = cache_dir / f"{src.stem}.{REF_CACHE_VERSION}.png"
     if out.exists() and src.stat().st_mtime <= out.stat().st_mtime:
         return out
     img = Image.open(src).convert("RGB")   # 坏图在此抛,由调用方的 per-cell try 捕获
+    img = img.crop((0, 0, max(1, round(img.width * FRONT_VIEW_RATIO)), img.height))
     img.thumbnail((REF_MAX, REF_MAX))
-    tmp = cache_dir / f".{src.name}.{threading.get_ident()}.tmp"   # 线程唯一临时名 + 原子替换,并发安全
+    tmp = cache_dir / f".{out.name}.{threading.get_ident()}.tmp"   # 线程唯一临时名 + 原子替换,并发安全
     img.save(tmp, "PNG")
     os.replace(tmp, out)
     return out
