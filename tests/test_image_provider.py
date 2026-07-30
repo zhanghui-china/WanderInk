@@ -250,6 +250,42 @@ def test_generate_does_not_apply_frame_check():
     assert c.generate("a cat")           # 带框的图在 provider 层照常放行
 
 
+def _letterboxed_png(w=1024, h=1024, bar=0.12) -> bytes:
+    """模拟"模型自己加了信箱黑边"的图:上下各一整片纯黑,中间是内容。
+    线上 f50b97f4 第 10 页右格就是这样(上下各占 17%)。"""
+    im = Image.new("RGB", (w, h), (0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rectangle((0, round(h * bar), w, h - round(h * bar)), fill=(246, 244, 240))
+    d.ellipse((w // 3, h // 3, w * 2 // 3, h * 2 // 3), fill=(120, 110, 100))  # 画面内容
+    buf = io.BytesIO(); im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_reject_if_framed_catches_letterbox_bars():
+    """与画框线是两类缺陷:框线判据要求"外侧留白 + 内侧暗线",而整条边就是纯黑时
+    min(outer) > 200 不成立,查上下边也拦不住——线上 f50b97f4 第 10 页右格正是这么漏过去的。"""
+    from shanhai.providers.image import reject_if_framed
+    with pytest.raises(ImageGenError, match="黑边"):
+        reject_if_framed(_letterboxed_png())
+
+
+def test_letterbox_check_needs_both_opposing_edges():
+    """letterbox 恒是成对出现的。只有一条边黑(夜空、深色前景)不该拦——
+    误报要白烧一次重生成,这条守的是 992 张线上成图零误伤的标定结果。"""
+    from shanhai.providers.image import reject_if_framed
+    im = Image.open(io.BytesIO(_letterboxed_png())).convert("RGB")
+    d = ImageDraw.Draw(im)
+    d.rectangle((0, im.height - round(im.height * 0.12), im.width, im.height),
+                fill=(246, 244, 240))            # 抹掉下边那条,只剩上边黑
+    buf = io.BytesIO(); im.save(buf, format="PNG")
+    assert reject_if_framed(buf.getvalue())
+
+
+def test_letterbox_check_accepts_normal_full_bleed_image():
+    from shanhai.providers.image import reject_if_framed
+    assert reject_if_framed(_scene_png())        # 满幅渐变图不该被新判据误伤
+
+
 def test_frame_check_needs_both_sides():
     # 只有一侧有暗带(如画面本身左边是深色物体)不该判为边框,否则误报率会很高
     from shanhai.providers.image import reject_if_framed

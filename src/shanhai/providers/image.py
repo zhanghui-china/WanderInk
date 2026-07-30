@@ -29,6 +29,22 @@ FRAME_DEPTH_TO = 0.08     # 找到多深为止(再往里就是画面内容了)
 FRAME_SCANLINES = (0.3, 0.5, 0.7)   # 沿边取三条采样线
 FRAME_MIN_VOTES = 2       # 三条里至少两条都看到框线,才认定这条边有框
 
+# --- 信箱黑边检测(2026-07-30 实测标定) ---
+# 与上面的框线是**两类**缺陷:框线是"外侧留白 + 内侧一条暗线",而这里是整条边就是一整片
+# 纯黑(模型把画面当成带黑边的电影画幅来画)。上面那套判据要求 min(outer) > 200,遇到
+# 纯黑边直接不成立,查上下边也拦不住——线上 f50b97f4 第 10 页右格正是这么漏过去的。
+# 判据:一条边往内连续若干行/列都"近黑且极均匀",且**对边同时成立**。letterbox 恒是
+# 成对出现的,要求成对能把夜景/大片深色画面的误伤压到零。
+# 标定:DGX 全量 992 张成图扫描,命中 2 张,人眼复核**两张都是真黑边**,零误伤。
+LETTERBOX_DARK = 40      # 边带平均亮度上限
+LETTERBOX_FLAT = 12      # 边带亮度极差上限(纯色带才算,渐变的深色画面不算)
+LETTERBOX_MIN_DEPTH = 0.01   # 边带至少占这么深(实测命中值 0.014~0.17,远高于此)
+# 也必须是**少数**:整张图本身就暗且平(如纯色桩图、大片夜色)时,从任何一条边扫进去都
+# 满足"近黑且均匀",会一路扫到底——那不是信箱边,是这张图就长这样。实测真黑边最深 0.17,
+# 取 0.35 作上限,扫到上限即判定"不是边带"。少了这条,64×64 纯蓝的测试桩图会被全判成黑边。
+LETTERBOX_MAX_DEPTH = 0.35
+LETTERBOX_SAMPLES = 64   # 每行/列沿边取多少个采样点
+
 
 class ImageGenError(Exception):
     pass
@@ -60,8 +76,32 @@ def _edge_has_line(depth: int, span: int, at) -> bool:
     return votes >= FRAME_MIN_VOTES
 
 
+def _band_depth(at, span: int, depth: int) -> float:
+    """从某条边往内数,连续多少行/列是"近黑且均匀"的,返回占该方向的比例。
+    at(i, x):距该边第 i 行/列、沿边方向第 x 个像素。"""
+    step = max(1, span // LETTERBOX_SAMPLES)
+    cap = round(depth * LETTERBOX_MAX_DEPTH)
+    n = 0
+    for i in range(cap):
+        line = [at(i, x) for x in range(0, span, step)]
+        if sum(line) / len(line) > LETTERBOX_DARK or max(line) - min(line) > LETTERBOX_FLAT:
+            return n / depth
+        n += 1
+    return 0.0      # 一路扫到上限:整张图就是暗的,不是信箱边
+
+
+def _has_letterbox(px, w: int, h: int) -> bool:
+    """上下或左右**两条对边**都是整片纯黑边带。见文件头 LETTERBOX_* 的标定说明。"""
+    top = _band_depth(lambda i, x: px[x, i], w, h)
+    bottom = _band_depth(lambda i, x: px[x, h - 1 - i], w, h)
+    left = _band_depth(lambda i, x: px[i, x], h, w)
+    right = _band_depth(lambda i, x: px[w - 1 - i, x], h, w)
+    return (min(top, bottom) >= LETTERBOX_MIN_DEPTH
+            or min(left, right) >= LETTERBOX_MIN_DEPTH)
+
+
 def reject_if_framed(data: bytes) -> bytes:
-    """拦截"模型自己画了分格边框"的图。判据与阈值见文件头常量的标定说明。
+    """拦截"模型自己画了分格边框"或"自己加了信箱黑边"的图。判据与阈值见文件头常量的标定说明。
 
     ⚠️ 公开但**不在** generate() 里调用,由 s4_pages 在自己的调用点调:这是"S4 页面合格性"
     判据(阈值取自 646 个成图**页**样本),不是通用的图像合格性判据。挂在共享 generate() 上时
@@ -80,6 +120,8 @@ def reject_if_framed(data: bytes) -> bytes:
     right = _edge_has_line(w, h, lambda i, k: px[w - 1 - i, k])
     if left and right:
         raise ImageGenError("生成图片左右两侧都有框线,疑似被画成了漫画分格页(应为满幅插画)")
+    if _has_letterbox(px, w, h):
+        raise ImageGenError("生成图片有整片纯黑的信箱边,疑似被画成了带黑边的电影画幅(应为满幅插画)")
     return data
 
 
