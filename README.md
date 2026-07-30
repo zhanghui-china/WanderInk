@@ -672,6 +672,10 @@ WanderInk/
 
 ## 📆更新说明及团队动态
 
+[2026.7.29] **馄饨**制作决赛路演PPT。WanderInk提供**用户上传图片生成人物三视图**功能，允许用户**自创文旅IP形象**，并支持**MP4多语言字幕封装**。
+
+[2026.7.28] 赛事官方宣布决赛名单，恭喜WanderInk团队入围决赛。WanderInk提供用户自定义录音（声音克隆模型：Qwen3-TTS）连环画配音功能，可以实现景区游客用户**自主为文旅故事配音**生成有声连环画。WanderInk支持**英文配音和英文字幕**。
+
 [2026.7.21] **张小白**编写 WanderInk体验手册，参见：https://zhuanlan.zhihu.com/p/2062795404199073593 。Nancy编制DEMO讲解视频，参见：https://www.bilibili.com/video/BV1ymK865Et1 。 **般度五子**制作团队合影。
 
 [2026.7.20] **Nancy**编制项目演示PPT。
@@ -716,13 +720,13 @@ WanderInk/
 
 ## 📆项目团队
 
-| 成员                                        | 职责                                                |
-| ------------------------------------------- | --------------------------------------------------- |
-| [张小白](https://github.com/zhanghui-china) | 队长、项目策划、环境部署、项目测试、文档编写        |
-| [Nancy](https://github.com/nancysxy000)     | 队员、文档编制、景区故事生成、DEMO视频制作          |
-| [轻踏](https://github.com/DoubleCore)       | 队员、Skill 开发、Hermes 对接、编剧/导演 skill 迭代 |
-| [般度五子](https://github.com/Bandukids)    | 队员、ComfyUI 服务部署与开发、图像/音频管线         |
-| [馄饨](https://github.com/nativeas)         | 队员、Web 前后台开发、前端交互与多用户设计          |
+| 成员                                        | 职责                                             |
+| ------------------------------------------- | ------------------------------------------------ |
+| [张小白](https://github.com/zhanghui-china) | 队长、项目策划、环境部署、项目测试、文档编写     |
+| [Nancy](https://github.com/nancysxy000)     | 队员、文档编制、DEMO视频制作                     |
+| [轻踏](https://github.com/DoubleCore)       | 队员、Hermes 编剧/导演 skill 迭代                |
+| [般度五子](https://github.com/Bandukids)    | 队员、ComfyUI 服务部署与开发、图像/音频/音乐管线 |
+| [馄饨](https://github.com/nativeas)         | 队员、Web 前后台开发                             |
 
 ![合影](wanderink-group.jpg)
 
