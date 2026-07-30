@@ -43,10 +43,27 @@ def _plan(panels: list[Panel]) -> tuple[int | None, list[int], list[tuple[float,
     裁切量就失控(这正是本次人脸被裁的一半原因)。"""
     n = len(panels)
     insert_idx = next((i for i, p in enumerate(panels) if p.shot_type == "insert"), None)
-    if insert_idx is not None and n == 1:
-        insert_idx = None  # 唯一一格标了 insert 也没有宿主格可叠加,退化为普通整页
+    # 扣掉 insert 后至少要剩 2 个常规格,这个叠加才成立:
+    # - n == 1:没有宿主格可叠加,退化为普通整页。
+    # - n == 2(如 [medium, insert]):宿主格就是整页,而叠加尺寸是宿主格的 INSET_SCALE,
+    #   于是"小格"占掉半张页——那不是漫画的嵌入式特写,是被压在主图上的第二格。线上
+    #   f50b97f4 第 10 页正是如此:用户数分格页时数不到它,还反馈"分格有问题"。
+    #   降为普通格排成上下两格,这一页才真的看得出分格。
+    if insert_idx is not None and n <= 2:
+        insert_idx = None
     regular = [i for i in range(n) if i != insert_idx]
     return insert_idx, regular, LAYOUTS[len(regular)]
+
+
+def regular_slots(panels: list[Panel]) -> int:
+    """这一页最终会被排成几个**独立版位**。
+
+    与 len(panels) 不是一回事:insert 格是叠在别的格子上面的异形小格,不占独立版位。
+    于是 [medium, insert] 这样的两格页会走 LAYOUTS[1]——整页满铺再叠一个角标,肉眼
+    与不分格的单图页无异(线上 f50b97f4 第 10 页正是如此,用户数分格页时数不到它)。
+    "分格了没有"必须按这个数判断,不能按 len(panels)。走 _plan 而不是另写一遍判定:
+    版位规则只能有一处真源,否则迟早与实际排版漂移。"""
+    return len(_plan(panels)[1]) if panels else 0
 
 
 def _slot_wh(rect: tuple[float, float, float, float]) -> tuple[int, int]:

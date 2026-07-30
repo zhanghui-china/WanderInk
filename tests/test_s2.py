@@ -1,5 +1,6 @@
 import json
 import httpx, pytest, respx
+from shanhai import paneling
 from shanhai.providers.llm import LLMClient
 from shanhai.schema import CharacterCard, Project, Script
 from shanhai.steps import s2_storyboard
@@ -340,6 +341,27 @@ def test_s2_multi_panel_system_prompt_drops_the_one_panel_per_page_line():
     assert "一页一格" not in system
     assert "可以只给 1 格" not in system and "不必每页都用满格数" not in system
     assert "不允许只给 1 格" in system     # 许可式措辞换成禁止式
+
+
+@respx.mock
+def test_s2_judges_panels_by_layout_slots_not_panel_count():
+    """"分格了没有"按 paneling 的**独立版位数**判断,不按 len(panels)——两者不是一回事:
+    3 格里有一个 insert 只占 2 个版位。判据挂在 paneling 上,以后版位规则一变(比如
+    f50b97f4 第 10 页那次把 [medium, insert] 从"整页+半页叠加"改成真两格),
+    S2 的下限与 status["panels"] 会跟着一起动,不会各算各的。"""
+    def cell(i, shots):
+        return {"index": i, "scene_ref": "1-1", "visual_desc": f"画面{i}",
+                "characters": [], "caption": f"第{i}页的解说词。", "emotion": "宁静",
+                "panels": [{"visual_desc": f"{i}-{s}", "shot_type": s, "characters": []}
+                           for s in shots]}
+    cells = {"cells": [cell(1, ["medium", "insert"]),          # 降级后 = 2 个版位,达标
+                       cell(2, ["wide", "medium", "insert"])]}  # insert 不占版位 → 2 个,达标
+    route = respx.post(f"{BASE}/chat/completions").mock(side_effect=[_resp(cells)])
+    p = s2_storyboard.run(_panel_project(), LLMClient(BASE, "sk", "m"))
+    assert len(route.calls) == 1        # 两页都达标,不发补齐请求
+    assert p.status["panels"] == "2/2"
+    assert all(paneling.regular_slots(c.panels) >= s2_storyboard.MIN_PANELS_PER_PAGE
+               for c in p.storyboard)
 
 
 def test_s2_backfill_prompt_carries_the_no_character_name_rule():

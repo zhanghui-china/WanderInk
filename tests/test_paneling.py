@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 
 from shanhai.paneling import (GUTTER, LAYOUTS, PANEL_ANCHOR_Y, compose_manga_page,
-                              slot_sizes)
+                              regular_slots, slot_sizes)
 from shanhai.schema import Panel
 from shanhai.typeset import FRAME, cover
 
@@ -63,15 +63,16 @@ def test_compose_manga_page_four_panels_land_in_quadrants():
 
 
 def test_compose_manga_page_insert_overlays_host():
-    host = _solid((10, 10, 10))
-    insert = _solid((255, 255, 255))
+    host, second, insert = _solid((10, 10, 10)), _solid((0, 0, 200)), _solid((255, 255, 255))
     panels = [Panel(visual_desc="host", shot_type="wide"),
+              Panel(visual_desc="second", shot_type="medium"),
               Panel(visual_desc="closeup", shot_type="insert")]
-    out = Image.open(io.BytesIO(compose_manga_page([host, insert], panels)))
-    w, h = FRAME
+    out = Image.open(io.BytesIO(compose_manga_page([host, second, insert], panels)))
     assert out.getpixel((40, 40)) == (10, 10, 10)          # 宿主格左上角未被叠加覆盖
-    near = out.getpixel((w - 150, h - 150))
-    assert near[0] > 200 and near[1] > 200 and near[2] > 200  # 宿主格右下角能采到叠加的白色特写
+    # 宿主格是版式模板第一格(LAYOUTS[2] 的上半),叠加落在它的右下角
+    hx1, hy1 = FRAME[0], FRAME[1] // 2
+    near = out.getpixel((hx1 - 150, hy1 - 150))
+    assert near[0] > 200 and near[1] > 200 and near[2] > 200  # 能采到叠加的白色特写
 
 
 def test_compose_manga_page_lone_insert_falls_back_to_full_page():
@@ -80,6 +81,32 @@ def test_compose_manga_page_lone_insert_falls_back_to_full_page():
     out = Image.open(io.BytesIO(img))
     assert out.size == FRAME
     assert out.getpixel((FRAME[0] // 2, FRAME[1] // 2))[1] > 150
+
+
+def test_two_panels_with_insert_render_as_two_real_slots():
+    """[medium, insert] 曾经排成"整页铺满 + 占半张页的叠加格":宿主格就是整页,而叠加
+    尺寸是宿主格的 INSET_SCALE。那不是漫画的嵌入式特写,是被压在主图上的第二格——
+    线上 f50b97f4 第 10 页正是如此,用户反馈"分格有问题"、数分格页时也数不到它。
+    扣掉 insert 后剩不下 2 个常规格,就把 insert 降为普通格,排成真正的上下两格。"""
+    panels = [Panel(visual_desc="a", shot_type="medium"),
+              Panel(visual_desc="b", shot_type="insert")]
+    assert regular_slots(panels) == 2
+    out = Image.open(io.BytesIO(compose_manga_page([_solid((200, 0, 0)), _solid((0, 0, 200))],
+                                                   panels)))
+    w, h = FRAME
+    assert out.getpixel((w // 2, h // 4))[0] > 150      # 上半格是红
+    assert out.getpixel((w // 2, 3 * h // 4))[2] > 150  # 下半格是蓝
+
+
+def test_regular_slots_counts_layout_slots_not_panel_count():
+    """"分格了没有"要按独立版位数判断,不能按 len(panels)——S2 的分格下限卡的就是这个数。"""
+    assert regular_slots([]) == 0
+    assert regular_slots([Panel(visual_desc="a", shot_type="insert")]) == 1   # 孤立 insert 退化为整页
+    assert regular_slots([Panel(visual_desc="a", shot_type="wide"),
+                          Panel(visual_desc="b", shot_type="insert")]) == 2   # insert 降为普通格
+    three = [Panel(visual_desc="a", shot_type="wide"), Panel(visual_desc="b", shot_type="medium"),
+             Panel(visual_desc="c", shot_type="insert")]
+    assert regular_slots(three) == 2      # 3 格里有 insert → 只占 2 个版位,少于 len(panels)
 
 
 # ---------- 裁切保头(原有用例的盲区) ----------
@@ -148,10 +175,12 @@ def test_slot_sizes_match_layout_rects(n: int):
 
 
 def test_slot_sizes_gives_insert_its_inset_size():
-    # insert 格不占版位,它叠加在宿主格右下角,尺寸应明显小于宿主格
+    # insert 格不占版位,它叠加在宿主格右下角,尺寸应明显小于宿主格。
+    # 用三格:扣掉 insert 后要剩得下 2 个常规格,这个叠加才成立(见 _plan 的说明)。
     panels = [Panel(visual_desc="host", shot_type="wide"),
+              Panel(visual_desc="second", shot_type="medium"),
               Panel(visual_desc="face", shot_type="insert")]
-    host_size, insert_size = slot_sizes(panels)
+    host_size, _second, insert_size = slot_sizes(panels)
     assert insert_size[0] < host_size[0] and insert_size[1] < host_size[1]
 
 
@@ -159,3 +188,13 @@ def test_slot_sizes_lone_insert_falls_back_to_full_page():
     # 与 compose_manga_page 的退化逻辑保持一致:唯一一格标 insert 时按整页算
     only = slot_sizes([Panel(visual_desc="v", shot_type="insert")])
     assert only == slot_sizes([Panel(visual_desc="v", shot_type="wide")])
+
+
+def test_slot_sizes_two_panels_with_insert_are_two_equal_slots():
+    """与 compose 的降级保持一致:[medium, insert] 按上下两格出图,而不是"整页 + 半页叠加"。
+    生成时的尺寸与合成时的版位必须同源(_plan),否则裁切量失控。"""
+    with_insert = slot_sizes([Panel(visual_desc="a", shot_type="medium"),
+                              Panel(visual_desc="b", shot_type="insert")])
+    plain = slot_sizes([Panel(visual_desc="a", shot_type="medium"),
+                        Panel(visual_desc="b", shot_type="wide")])
+    assert with_insert == plain
