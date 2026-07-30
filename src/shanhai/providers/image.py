@@ -90,18 +90,49 @@ def _band_depth(at, span: int, depth: int) -> float:
     return 0.0      # 一路扫到上限:整张图就是暗的,不是信箱边
 
 
-def _has_letterbox(px, w: int, h: int) -> bool:
-    """上下或左右**两条对边**都是整片纯黑边带。见文件头 LETTERBOX_* 的标定说明。"""
+def _letterbox_bars(px, w: int, h: int) -> tuple[int, int, int, int]:
+    """返回上下左右各要裁掉多少像素(0 = 该边没有黑带)。见文件头 LETTERBOX_* 的标定说明。
+    只认**成对**出现的边带:letterbox 恒是对称的,要求成对能把夜景/深色画面的误伤压到零。"""
     top = _band_depth(lambda i, x: px[x, i], w, h)
     bottom = _band_depth(lambda i, x: px[x, h - 1 - i], w, h)
     left = _band_depth(lambda i, x: px[i, x], h, w)
     right = _band_depth(lambda i, x: px[w - 1 - i, x], h, w)
-    return (min(top, bottom) >= LETTERBOX_MIN_DEPTH
-            or min(left, right) >= LETTERBOX_MIN_DEPTH)
+    if min(top, bottom) < LETTERBOX_MIN_DEPTH:
+        top = bottom = 0.0
+    if min(left, right) < LETTERBOX_MIN_DEPTH:
+        left = right = 0.0
+    return (round(top * h), round(bottom * h), round(left * w), round(right * w))
+
+
+def trim_letterbox(data: bytes) -> bytes:
+    """裁掉模型自己加的信箱黑边,没有则原样返回。
+
+    ⚠️ 与 reject_if_framed **刻意不同:这里裁而不是拒**。黑边的位置是精确已知的,裁掉
+    就得到一张干净的图;而画进画面里的分格框线没法安全裁,只能重生成。
+    最初这条也写成了抛异常走重试,线上实测直接把 f50b97f4 第 10 页从"有黑边"变成
+    "两格都没图、整页 failed"——模型对某些提示词稳定输出带黑边的画幅,重试多少次都一样,
+    耗光单格时间预算后该格被丢弃。判据对、处置错。"""
+    try:
+        im = Image.open(io.BytesIO(data))
+        gray = im.convert("L")
+    except Exception:  # noqa: BLE001 解码失败交给 _reject_if_blank 统一报,这里不重复
+        return data
+    w, h = gray.size
+    px = gray.load()
+    if px is None:
+        return data
+    top, bottom, left, right = _letterbox_bars(px, w, h)
+    if not (top or bottom or left or right):
+        return data
+    cropped = im.convert("RGB").crop((left, top, w - right, h - bottom))
+    buf = io.BytesIO()
+    cropped.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def reject_if_framed(data: bytes) -> bytes:
-    """拦截"模型自己画了分格边框"或"自己加了信箱黑边"的图。判据与阈值见文件头常量的标定说明。
+    """拦截"模型自己画了分格边框"的图。判据与阈值见文件头常量的标定说明。
+    (信箱黑边是另一类,走 trim_letterbox 裁掉而不是拒绝。)
 
     ⚠️ 公开但**不在** generate() 里调用,由 s4_pages 在自己的调用点调:这是"S4 页面合格性"
     判据(阈值取自 646 个成图**页**样本),不是通用的图像合格性判据。挂在共享 generate() 上时
@@ -120,8 +151,6 @@ def reject_if_framed(data: bytes) -> bytes:
     right = _edge_has_line(w, h, lambda i, k: px[w - 1 - i, k])
     if left and right:
         raise ImageGenError("生成图片左右两侧都有框线,疑似被画成了漫画分格页(应为满幅插画)")
-    if _has_letterbox(px, w, h):
-        raise ImageGenError("生成图片有整片纯黑的信箱边,疑似被画成了带黑边的电影画幅(应为满幅插画)")
     return data
 
 
