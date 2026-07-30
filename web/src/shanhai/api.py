@@ -718,6 +718,9 @@ def list_projects(user: str = Depends(current_user)) -> list[dict]:
             "scenic_spot": d.get("scenic_spot", ""), "owner": d.get("owner", ""),
             "pipeline": (d.get("status") or {}).get("pipeline", "pending"),
             "mp4": _mp4_url((d.get("output") or {}).get("mp4", "")),
+            # 建作品时勾没勾分格排版。d 本来就是已解析的 dict,多取一个键零额外成本,
+            # 不必为它退回 store.load 全量反序列化(那正是上面这段注释在避免的事)。
+            "multi_panel": bool((d.get("params") or {}).get("multi_panel", False)),
         }
         loaded.append((item, d.get("created_at", ""), mtime))
     # 有 created_at 的项目整体排在前面(新到旧);历史项目(无 created_at)用 mtime 兜底,同样新到旧排在后面

@@ -305,6 +305,13 @@ export function ProjectDetailView({
               {project.scenic_spot} · {STYLE_LABEL[project.style_preset] ?? project.style_preset} ·{' '}
               {project.params.duration_min} 分钟 ·{' '}
               {project.params.audience} · {project.params.tone}
+              {/* 两态都显示,与旁边音色那段「有值才显示」的写法刻意不同:「没开分格」
+                  本身就是要登记的信息。multi_panel 有默认值 false,老作品零迁移,
+                  显示「整页单图」与它们当时的实际行为一致,不是替旧数据编造结论。
+                  进度卡上的「▦ 分格 4/10」是运行结果(跑之前/失败/老作品都是空),
+                  这里登记的是参数,两者不能互相替代。 */}
+              {' · '}
+              {project.params.multi_panel ? '分格排版' : '整页单图'}
               {project.params.voice && (
                 <> · 音色 {project.params.voice.startsWith('clone:') ? '自定义' : project.params.voice}</>
               )}
@@ -1067,15 +1074,32 @@ function TrackRow({
   // 还没翻译过这一页就整行不渲染,避免每页都挂一条空壳
   if (!track?.caption && !editing) return null
 
+  /** 标脏 + 立即触发该语种轨重跑。触发用 runTrack 而不是 runStep:语种轨的合成入口是
+   *  POST /tracks/{lang};该步对已有音频的页幂等跳过,整轨重跑实际只重做刚标脏的这一页。 */
+  async function regen() {
+    await api.revoiceCellTrack(projectId, pg.index, lang)
+    await api.runTrack(projectId, lang)
+  }
+
   async function save() {
+    // 与 PageCard.save 同一形状:改动作废了什么,保存后就直接问要不要现在重生成。
+    // 判据必须在 patch 之前算,且用 trim 后的值比——与真正提交上去的值一致,
+    // 免得只多敲一个空格也弹窗。
+    const changed = text.trim() !== (track?.caption ?? '')
     setBusy('save')
     setErr(null)
     try {
       await api.patchCellTrack(projectId, pg.index, lang, text.trim())
       setEditing(false)
+      if (changed && window.confirm(
+        `已保存。第 ${pg.index} 页的${label}配音已作废,现在重新生成吗?将调用配置的 TTS API,并清空该语种已合成的成片。`
+      )) await regen()
       onChanged()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+      // 保存本身可能已经成功、错在后面的标脏/触发那几步(典型:此刻项目已有作业在跑 → 409)。
+      // 不刷新的话这一行会继续显示旧译文,而服务端其实已经改了——用户会以为没存上、再改一遍。
+      onChanged()
     } finally {
       setBusy(null)
     }
@@ -1083,11 +1107,11 @@ function TrackRow({
 
   async function revoice() {
     if (!window.confirm(
-      `确定重配第 ${pg.index} 页的${label}配音?改完后需要再点一次「重新生成${label}」才会合成。`
+      `确定重新生成第 ${pg.index} 页的${label}配音?将调用配置的 TTS API,并清空该语种已合成的成片。`
     )) return
     setBusy('revoice')
     try {
-      await api.revoiceCellTrack(projectId, pg.index, lang)
+      await regen()
       onChanged()
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e))
@@ -1138,7 +1162,7 @@ function TrackRow({
               取消
             </button>
             <span className="text-[11px] text-muted">
-              改动会作废本页{label}配音,需重新生成
+              改动会作废本页{label}配音,保存后可直接重新生成
             </span>
           </div>
           {err && <p className="text-[11px] text-alarm">{err}</p>}
@@ -1623,6 +1647,17 @@ function PageCard({
               )}
               {editable && (
                 <>
+                  {/* 编辑入口原先只有图片角上那个无字的 ✎ 图标,而这一排全是文字按钮——
+                      用户因此反馈「只有英文旁白支持校对」,以为中文根本改不了。
+                      放在「重绘」之前:编辑是因,重绘是果。 */}
+                  <button
+                    type="button"
+                    onClick={startEdit}
+                    disabled={busy !== null}
+                    className={toolBtn}
+                  >
+                    修正文案
+                  </button>
                   <button
                     type="button"
                     onClick={() => act('redraw')}
