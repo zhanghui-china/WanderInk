@@ -70,7 +70,7 @@ WanderInk 是一个面向景区文化 IP 开发的多模态创作项目，围绕
 - **文本模型**：Sehyo-Qwen3.5-35B-A3B-NVFP4（本地）、Step-3.7-Flash（云端）：<https://modelscope.cn/models/hf/Sehyo-Qwen3.5-35B-A3B-NVFP4>
 - **图像编辑模型**：Qwen-Image-Edit-2511（本地） 、openAI GPT Image2（云端）：<https://modelscope.cn/models/Qwen/Qwen-Image-Edit-2511>
 - **语音合成模型**：Qwen3-TTS：<https://modelscope.cn/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base>
-- **音乐生成模型**：ACE-STEP XL Turbo（ACE Studio 与 StepFun）：<https://modelscope.cn/models/ACE-Step/acestep-v15-xl-turbo>
+- **音乐生成模型**：ACE-STEP XL Turbo（ACE Studio 时域科技 与 StepFun 阶跃星辰）：<https://modelscope.cn/models/ACE-Step/acestep-v15-xl-turbo>
 - **框架**：ComfyUI、FastAPI + Pydantic + ThreadPoolExecutor、React 18 + Vite 5 + Tailwind CSS + TypeScript
 
 ## 🚀 快速开始
@@ -672,9 +672,11 @@ WanderInk/
 
 ## 📆更新说明及团队动态
 
-[2026.7.29] **馄饨**制作决赛路演PPT。WanderInk提供**用户上传图片生成人物三视图**功能，允许用户**自创文旅IP形象**，并支持**MP4多语言字幕封装**。
+[2026.7.30] WanderInk完善**分格排版**功能，允许用户**修改分镜脚本**和**旁白文字**。
 
-[2026.7.28] 赛事官方宣布决赛名单，恭喜WanderInk团队入围决赛。WanderInk提供用户自定义录音（声音克隆模型：Qwen3-TTS）连环画配音功能，可以实现景区游客用户**自主为文旅故事配音**生成有声连环画。WanderInk支持**英文配音和英文字幕**。
+[2026.7.29] **馄饨**制作决赛路演PPT。WanderInk提供**用户上传图片生成人物三视图**功能，允许用户**自创文旅IP形象**，并支持**多语言字幕封装**。
+
+[2026.7.28] 赛事官方宣布决赛名单，恭喜WanderInk团队入围决赛。WanderInk提供**用户自定义录音**（声音克隆模型：Qwen3-TTS）连环画配音功能，可以实现景区游客用户**自主为文旅故事配音**生成有声连环画。WanderInk支持**英文配音和英文字幕**。
 
 [2026.7.21] **张小白**编写 WanderInk体验手册，参见：https://zhuanlan.zhihu.com/p/2062795404199073593 。Nancy编制DEMO讲解视频，参见：https://www.bilibili.com/video/BV1ymK865Et1 。 **般度五子**制作团队合影。
 
@@ -683,6 +685,8 @@ WanderInk/
 \[2026.7.19] **张小白**、**般度五子**完善部署文档、项目介绍文档等。
 
 \[2026.7.18]  项目组成员对项目进行一系列测试验证，**馄饨**对Web端BUG进行修复后，Web端代码封版。
+
+[2026.7.17] WanderInk内置359个全国5A级景区的快捷录入。
 
 \[2026.7.15]  项目组成员对 WanderInk产品进行密集测试。项目团队测试中发现Spark设备突然远程连不上了，**张小白**发现Spark自动熄火了。**馄饨**在**轻踏**的支持下，将LLM生成剧本和分镜，改为通过调用Hermes skill生成。
 
