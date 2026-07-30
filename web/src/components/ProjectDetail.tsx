@@ -355,8 +355,10 @@ export function ProjectDetailView({
           <div className="mb-2 text-xs font-medium tracking-wide text-muted">
             当前自定义音色(你上传的那段录音)
           </div>
+          {/* src 带上音色作版本:URL 恒定的话换音色后字符串不变,面板开着时 React 不会
+              重新加载,旧录音一直在播。 */}
           <audio
-            src={`/api/projects/${project.project_id}/voice-sample`}
+            src={`/api/projects/${project.project_id}/voice-sample?v=${encodeURIComponent(project.params.voice ?? '')}`}
             controls
             className="h-9 w-full"
           />

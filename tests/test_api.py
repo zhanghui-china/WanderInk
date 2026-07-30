@@ -10,7 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from shanhai import api, runtime_config, store
-from shanhai.schema import CharacterCard, Legend, Project, Script, StoryboardCell
+from shanhai.schema import (CharacterCard, Legend, LocalizedTrack, Project, Script,
+                            StoryboardCell)
 
 client = TestClient(api.app)
 
@@ -2063,6 +2064,37 @@ def test_voice_sample_endpoint_streams_the_wav(tmp_path, monkeypatch):
     r = client.get(f"/api/projects/{p.project_id}/voice-sample")
     assert r.status_code == 200
     assert r.content == b"RIFFhello"
+    # URL 不含音色标识,换音色后路径不变但指向另一个文件;不禁缓存浏览器会一直放旧录音。
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_update_voice_clears_every_page_audio(tmp_path, monkeypatch):
+    """换音色的核心回归:此前只复位 status,而 s5 的续跑复用分支只看 audio/silent +
+    文件在不在,于是旧嗓子的 mp3 被原样复用——用户点了【补全重生成】听到的还是旧音色。
+    voice_en 一并清空,否则英文轨的显式覆盖会盖过新音色。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.params.voice, p.params.voice_en = "clone:old.wav", "clone:old.wav"
+    p.storyboard = [StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc=f"v{i}",
+                                   characters=[], caption=f"cap{i}", emotion="宁静",
+                                   image=f"pages/page_{i:02d}.png",
+                                   audio=f"audio/page_{i:02d}.mp3", duration_ms=1000)
+                    for i in (1, 2)]
+    p.storyboard[0].tracks["en"] = LocalizedTrack(caption="en1", audio="audio/page_01.en.mp3",
+                                                  duration_ms=2000)
+    p.status.update({"s4": "done", "s5": "done", "s5_en": "done"})
+    store.save(p, root=tmp_path)
+
+    r = client.patch(f"/api/projects/{p.project_id}/params/voice",
+                     json={"voice": "clone:new.wav"})
+    assert r.status_code == 200
+    got = store.load(p.project_id, root=tmp_path)
+    assert got.params.voice == "clone:new.wav" and got.params.voice_en == ""
+    assert all(c.audio == "" and c.duration_ms == 0 for c in got.storyboard)
+    assert got.storyboard[0].tracks["en"].audio == ""
+    assert got.storyboard[0].image == "pages/page_01.png"   # 画面不受影响
+    assert "s5" not in got.status and "s5_en" not in got.status
+    assert got.status["s4"] == "done"
 
 
 def test_voice_sample_endpoint_404_when_no_custom_voice(tmp_path, monkeypatch):

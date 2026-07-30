@@ -1025,7 +1025,10 @@ def get_project_voice_sample(project_id: str, user: str = Depends(current_user))
     path = _voice_sample_path(p)
     if path is None:
         raise HTTPException(404, "该作品没有可回听的自定义音色")
-    return FileResponse(path, media_type="audio/wav")
+    # no-store:URL 不含音色标识,换音色后路径不变但指向的是另一个文件。浏览器对 <audio>
+    # 的缓存很黏(range 请求 + 只有 etag/last-modified 时可启发式复用不回源),不禁掉就会
+    # 一直放上一位音色的录音。
+    return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
 class VoiceParams(BaseModel):
@@ -1038,11 +1041,15 @@ def update_project_voice(project_id: str, body: VoiceParams,
     """换作品的配音音色。**只放 voice 这一个字段**——做成通用的 params 编辑会立刻牵出
     "改了 duration_min 要不要重跑 S2"之类一串问题,不值得。
 
-    换音色 = 所有已生成的配音都念错了嗓子,故走与编辑正文同一套下游作废。"""
+    换音色 = 所有已生成的配音都念错了嗓子,故清掉每一格(含各语种轨)的音轨字段,让 s5 重配;
+    只复位 status 是不够的,s5 的续跑复用分支只看 audio/silent + 文件是否存在。
+    voice_en 一并清空:它是英文轨的显式覆盖,不清就会盖过新音色,让英文轨留在旧嗓子上
+    (清空后回落到 runtime_config.default_track_voice 的跨语种继承)。"""
     with _project_lock(project_id):
         p = _editable(project_id, user)
         p.params.voice = body.voice
-        editing.invalidate_from(p, "s5")
+        p.params.voice_en = ""
+        editing.mark_all_revoice(p)
         store.save(p)
     return _serialize(p)
 

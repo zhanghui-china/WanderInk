@@ -37,13 +37,6 @@ def _invalidate_downstream(project: Project, from_step: str) -> None:
     project.status["pipeline"] = "partial: 已编辑,待重新生成"
 
 
-def invalidate_from(project: Project, from_step: str) -> None:
-    """`_invalidate_downstream` 的公开入口。本模块里的编辑函数各自在末尾调私有版,
-    但「换配音音色」这类改动发生在 api 层(它改的是 params 而不是分镜内容),需要一个
-    正经的对外名字,而不是从别的模块伸手去调下划线开头的私有函数。"""
-    _invalidate_downstream(project, from_step)
-
-
 def _cell_at(project: Project, index: int) -> StoryboardCell:
     for cell in project.storyboard:
         if cell.index == index:
@@ -241,6 +234,26 @@ def mark_revoice(project: Project, index: int) -> None:
     cell.duration_ms = 0
     cell.silent = False
     _invalidate_downstream(project, "s5")   # 只清了音轨,s4 图像仍有效,从 s5 起失效即可
+
+
+def mark_all_revoice(project: Project) -> None:
+    """标记**整部作品**需重配音:逐格清主语言与各语种的音轨字段(译文/画面全部保留)。
+
+    换音色走这里而不是只复位下游 status:s5 的续跑复用分支
+    (`track.audio and not track.silent and out.exists()` → 直接 return)只看这三个字段,
+    旧 mp3 还在盘上就整页跳过、新音色永远轮不到合成——用户看到的就是"换了女声还是男声"。
+    只清字段不删文件:s5 会覆盖同名输出,短路条件靠 audio 置空就已经打破了。"""
+    langs: set[str] = set()
+    for cell in project.storyboard:
+        for track in (cell, *cell.tracks.values()):
+            track.audio = ""
+            track.duration_ms = 0
+            track.silent = False
+        langs |= cell.tracks.keys()
+    for lang in langs:
+        project.status.pop(f"s5_{lang}", None)
+        _invalidate_track_output(project, lang)
+    _invalidate_downstream(project, "s5")   # 只清音轨,s4 图像仍有效,从 s5 起失效即可
 
 
 def insert_cell(project: Project, workdir: Path, after_index: int, *, caption: str,

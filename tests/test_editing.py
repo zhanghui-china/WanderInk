@@ -3,7 +3,8 @@ from pathlib import Path
 import pytest
 
 from shanhai import editing
-from shanhai.schema import CharacterCard, Panel, Project, Script, StoryboardCell
+from shanhai.schema import (CharacterCard, LocalizedTrack, Panel, Project, Script,
+                            StoryboardCell)
 
 
 def _add_panels(p: Project, tmp_path: Path, index: int, n_panels: int) -> None:
@@ -425,3 +426,41 @@ def test_update_visual_desc_still_voids_panels_on_purpose(tmp_path: Path):
     _add_panels(p, tmp_path, 2, 3)
     editing.update_cell(p, 2, visual_desc="换了整页构图")
     assert p.storyboard[1].panels == []
+
+
+def test_mark_all_revoice_clears_every_page_and_track(tmp_path: Path):
+    """换音色的判据:s5 的续跑复用分支只看 audio/silent + 文件在不在,只复位 status
+    等于让旧嗓子的 mp3 被原样复用(用户实测"换了女声还是男声")。主语言与各语种轨都要清。"""
+    p = _project(tmp_path, n=3)
+    p.storyboard[0].silent = True                      # 静音兜底页也要复位
+    for cell in p.storyboard:
+        cell.tracks["en"] = LocalizedTrack(caption=f"en{cell.index}",
+                                           audio=f"audio/page_{cell.index:02d}.en.mp3",
+                                           duration_ms=2000)
+    p.status = {"s4": "done", "s5": "done", "s5_en": "done", "s6": "done",
+                "track_en_finished_at": "2020-01-01T00:01:00+00:00", "s6_en": "done"}
+    p.output["mp4_en"] = "output/final_en.mp4"
+
+    editing.mark_all_revoice(p)
+
+    for cell in p.storyboard:
+        assert cell.audio == "" and cell.duration_ms == 0 and cell.silent is False
+        assert cell.caption.startswith("cap")                  # 文案不动
+        assert cell.image == f"pages/page_{cell.index:02d}.png"  # 画面不动
+        track = cell.tracks["en"]
+        assert track.audio == "" and track.duration_ms == 0 and track.silent is False
+        assert track.caption == f"en{cell.index}"              # 译文不动
+    assert "s5" not in p.status and "s5_en" not in p.status
+    assert "s6" not in p.status and "s6_en" not in p.status
+    assert "track_en_finished_at" not in p.status
+    assert p.status["s4"] == "done"                            # 图像仍有效
+    assert p.output == {}                                      # 成片(含 mp4_en)全过期
+    assert p.status["pipeline"].startswith("partial")
+
+
+def test_mark_all_revoice_keeps_audio_files_on_disk(tmp_path: Path):
+    """只清字段、不删文件:s5 会覆盖同名输出,短路条件靠 audio 置空就已经打破,
+    删文件是多余风险(删一半后崩溃就留下一堆既无字段又无文件的页)。"""
+    p = _project(tmp_path, n=2)
+    editing.mark_all_revoice(p)
+    assert (tmp_path / "audio" / "page_01.mp3").exists()
