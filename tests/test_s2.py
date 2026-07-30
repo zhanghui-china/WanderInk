@@ -342,6 +342,14 @@ def test_s2_multi_panel_system_prompt_drops_the_one_panel_per_page_line():
     assert "不允许只给 1 格" in system     # 许可式措辞换成禁止式
 
 
+def test_s2_backfill_prompt_carries_the_no_character_name_rule():
+    """补齐 prompt 漏掉这条规则时,DGX 实测 LLM 立刻在格子的 visual_desc 里写出
+    「巴特尔身穿深色蒙古袍」——而这段文字直接进绘图 prompt,名字会被画成字面意思。
+    两处 prompt 必须共用同一份规则。"""
+    assert s2_storyboard.NAME_RULES in s2_storyboard.SYSTEM
+    assert s2_storyboard.NAME_RULES in s2_storyboard.BACKFILL_SYSTEM
+
+
 def test_s2_no_backfill_when_multi_panel_off():
     """单图模式一次额外请求都不该发(也是 use_skill 那两个断言 call_args 的测试的前提)。"""
     from unittest.mock import MagicMock
