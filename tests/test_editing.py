@@ -383,3 +383,45 @@ def test_invalidate_pages_of_characters_noop_when_nothing_gained():
     assert editing.invalidate_pages_of_characters(p, set()) == []
     assert all(c.status == "confirmed" for c in p.storyboard)
     assert p.output["mp4"] == "output/final.mp4"
+
+
+# ---------- 重绘必须保住分格版式 ----------
+
+def test_mark_redraw_keeps_panel_layout(tmp_path: Path):
+    """用户点「重绘」什么内容都没改,清掉 panels 毫无理由,而后果很重:panels **只有 S2 会
+    生成、S4 不会**,一旦清掉这一页就永远变成单图整页,除非重跑 S2(会冲掉该作品所有人工编辑)。
+    线上「少林寺」29f1f688 就是现场:盘上留着 page_01_panel1/2/3.png 三个格子的图,
+    而第 1 页的 cell.panels 已经空了,9 页里 7 页如此。"""
+    p = _project(tmp_path)
+    _add_panels(p, tmp_path, 2, 3)
+    before = [pa.visual_desc for pa in p.storyboard[1].panels]
+
+    editing.mark_redraw(p, 2)
+
+    cell = p.storyboard[1]
+    assert [pa.visual_desc for pa in cell.panels] == before   # 版式与各格构图原样保留
+    assert cell.status == "draft" and cell.image == ""        # 图仍然作废
+    # 各格的图正在被作废,路径不能留着——那就是"描述一张已删的图",
+    # 正是 _invalidate_page_image 的注释在批判的那类疏漏
+    assert all(pa.image == "" for pa in cell.panels)
+
+
+def test_invalidate_pages_of_characters_keeps_panel_layout(tmp_path: Path):
+    """角色三视图更新后作废其出场页:要重画,但版式不该跟着变,与重绘同一条道理。"""
+    p = _project(tmp_path)
+    p.storyboard[1].characters = ["法海"]
+    _add_panels(p, tmp_path, 2, 2)
+    editing.invalidate_pages_of_characters(p, {"法海"})
+    cell = p.storyboard[1]
+    assert len(cell.panels) == 2 and cell.status == "draft"
+    assert all(pa.image == "" for pa in cell.panels)
+
+
+def test_update_visual_desc_still_voids_panels_on_purpose(tmp_path: Path):
+    """改整页画面描述**必须**清 panels,不能顺手一起"保住版式":
+    _render_panel_cell 用的是 panel.visual_desc、根本不读 cell.visual_desc,
+    保留 panels 会让用户改的那句话完全不生效。清掉退回单图,那条编辑才有意义。"""
+    p = _project(tmp_path)
+    _add_panels(p, tmp_path, 2, 3)
+    editing.update_cell(p, 2, visual_desc="换了整页构图")
+    assert p.storyboard[1].panels == []
