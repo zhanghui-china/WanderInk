@@ -60,8 +60,14 @@ def _edge_has_line(depth: int, span: int, at) -> bool:
     return votes >= FRAME_MIN_VOTES
 
 
-def _reject_if_framed(data: bytes) -> bytes:
-    """拦截"模型自己画了分格边框"的图。判据与阈值见文件头常量的标定说明。"""
+def reject_if_framed(data: bytes) -> bytes:
+    """拦截"模型自己画了分格边框"的图。判据与阈值见文件头常量的标定说明。
+
+    ⚠️ 公开但**不在** generate() 里调用,由 s4_pages 在自己的调用点调:这是"S4 页面合格性"
+    判据(阈值取自 646 个成图**页**样本),不是通用的图像合格性判据。挂在共享 generate() 上时
+    S3 的三视图也要过一遍,而三视图是"纯白背景 + 三个全身像并排",左右留白极易被判成竖框线。
+    线上误杀过两次,其中一次让用户上传的参考图被静默丢弃、角色退化成纯文字特征
+    (2026-07-29「可可托海」)。判据没错,位置错了。"""
     try:
         im = Image.open(io.BytesIO(data)).convert("L")
     except Exception:  # noqa: BLE001 解码失败交给 _reject_if_blank 统一报,这里不重复
@@ -101,10 +107,11 @@ class ImageClient:
         # 网络调用统一走 request_with_retry(idempotent=False:生成非幂等,连接层断连可能已被
         # 上游受理并计费,不盲重试,仅瞬时状态码 429/5xx 重试);非瞬时 HTTPStatusError(如内容
         # 审核 400)在各 _via_* 里 raise_for_status() 后直接抛出。
-        # 两道内容合理性检查:近似纯色(解码异常)与自作主张画的分格边框。
-        # 都抛 ImageGenError,交给调用方(S3/S4 现有的 except Exception 重试/降级逻辑)接管,
-        # 不在此重试——重试策略连同时间预算都归 s4_pages 管,这里只负责判定"这张不合格"。
-        return _reject_if_framed(_reject_if_blank(self._dispatch(prompt, size, references, retries)))
+        # 只做一道普适检查:近似纯色 / 无法解码——那是任何环节都不能接受的生成失败。
+        # 抛 ImageGenError,交给调用方(S3/S4 现有的 except 重试/降级逻辑)接管,不在此重试:
+        # 重试策略连同时间预算都归 s4_pages 管,这里只负责判定"这张不合格"。
+        # 分格边框那道检查**刻意不在这里**:它是 S4 页面专属判据,见 reject_if_framed 的说明。
+        return _reject_if_blank(self._dispatch(prompt, size, references, retries))
 
     def route_for(self, references: list[Path] | None) -> str:
         """本次请求会走哪条路:"chat" / "edit" / "text2img"。

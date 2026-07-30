@@ -223,36 +223,41 @@ def _scene_png(w=1920, h=1080) -> bytes:
     return buf.getvalue()
 
 
-@respx.mock
-def test_generate_rejects_self_drawn_panel_frame():
+def test_reject_if_framed_catches_self_drawn_panel_frame():
     # 模型常自作主张把画面画成漫画分格页(旧提示词"连环画单页/漫画格"是诱因,
-    # 实测 26% 的线上成图中招)。提示词已改,这里是第二道拦截。
+    # 实测 26% 的线上成图中招)。提示词已改,这是第二道拦截。
+    from shanhai.providers.image import reject_if_framed
+    with pytest.raises(ImageGenError, match="分格"):
+        reject_if_framed(_framed_png())
+
+
+def test_reject_if_framed_accepts_normal_full_bleed_image():
+    # 比"能拦住"更要紧的一条:正常满幅图**不能**被误拦——误报会白烧一次重生成。
+    from shanhai.providers.image import reject_if_framed
+    assert reject_if_framed(_scene_png())
+
+
+@respx.mock
+def test_generate_does_not_apply_frame_check():
+    """边框判据是**S4 页面**的合格性标准(阈值取自 646 个成图页样本),不该挂在共享的
+    generate() 上:S3 的三视图是"纯白背景 + 三个全身像并排",左右留白极易被判成竖框线。
+    线上真的因此误杀过——用户传的参考图被静默丢弃、角色退化成纯文字特征。
+    判据本身没问题,位置错了,故移到 s4_pages 的调用点。"""
     b64 = base64.b64encode(_framed_png()).decode()
     respx.post(f"{BASE}/images/generations").mock(
         return_value=httpx.Response(200, json={"data": [{"b64_json": b64}]}))
     c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
-    with pytest.raises(ImageGenError, match="分格"):
-        c.generate("a cat")
-
-
-@respx.mock
-def test_generate_accepts_normal_full_bleed_image():
-    # 比"能拦住"更要紧的一条:正常满幅图**不能**被误拦——误报会白烧一次重生成。
-    b64 = base64.b64encode(_scene_png()).decode()
-    respx.post(f"{BASE}/images/generations").mock(
-        return_value=httpx.Response(200, json={"data": [{"b64_json": b64}]}))
-    c = ImageClient(BASE, "sk", "gpt-image-1", mode="images_api")
-    assert c.generate("a cat")           # 不抛异常即通过
+    assert c.generate("a cat")           # 带框的图在 provider 层照常放行
 
 
 def test_frame_check_needs_both_sides():
     # 只有一侧有暗带(如画面本身左边是深色物体)不该判为边框,否则误报率会很高
-    from shanhai.providers.image import _reject_if_framed
+    from shanhai.providers.image import reject_if_framed
     im = Image.open(io.BytesIO(_framed_png())).convert("RGB")
     d = ImageDraw.Draw(im)
     d.rectangle((im.width - 60, 0, im.width, im.height), fill=(250, 249, 246))  # 抹掉右框线
     buf = io.BytesIO(); im.save(buf, format="PNG")
-    assert _reject_if_framed(buf.getvalue())   # 单侧不拦
+    assert reject_if_framed(buf.getvalue())   # 单侧不拦
 
 
 @respx.mock

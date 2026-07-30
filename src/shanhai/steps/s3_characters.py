@@ -140,7 +140,10 @@ def _process_character(c: CharacterCard, llm: LLMClient, image: ImageClient,
             # 该角色退化为仅文字特征约束,与 MAX_TURNAROUND 之外的次要角色同等对待
             c.turnaround_image = ""
             c.locked = False
-            print(f"角色「{c.name}」三视图生成失败(参考图与文生图两条路径均失败),退化为纯文字特征:{e}")
+            # 措辞按是否真有参考图分开:此前无论有没有传图都印"两条路径均失败",
+            # 排查时会误以为用户上传过参考图。
+            paths = "参考图编辑与文生图两条路径均失败" if ref is not None else "文生图失败"
+            print(f"角色「{c.name}」三视图生成失败({paths}),退化为纯文字特征:{e}")
 
 
 def run(project: Project, llm: LLMClient, image: ImageClient,

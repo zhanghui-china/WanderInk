@@ -744,3 +744,14 @@ def test_page_prompts_forbid_duplicate_instances():
         assert "只出现一次" in tmpl
         assert "仅用于识别角色的外观身份" in tmpl
         assert "单一瞬间" in tmpl
+
+
+def test_s4_still_rejects_framed_pages_at_its_own_call_site(tmp_path: Path):
+    """边框判据从共享 provider 移到 S4 调用点后,S4 侧的拦截必须一字不差地保留——
+    26% 的线上成图曾被画上分格边框,这道拦截是真在干活的。"""
+    from tests.test_s3 import _framed_png_bytes
+    image = _mock_image()
+    image.generate.return_value = _framed_png_bytes()
+    p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
+    assert image.generate.call_count == MAX_ATTEMPTS      # 每次都被判不合格,重试到上限
+    assert p.storyboard[0].status == "failed"
