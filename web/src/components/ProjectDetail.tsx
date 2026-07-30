@@ -197,14 +197,52 @@ export function ProjectDetailView({
       .catch((e) => alert(e instanceof Error ? e.message : String(e)))
   }
 
-  async function copyLink() {
+  /** 用 textarea + execCommand 复制。**已废弃但不能删**:navigator.clipboard 只在
+   *  安全上下文(HTTPS 或 localhost/127.0.0.1)下存在,而本项目的实际访问方式是
+   *  `http://<DGX 局域网 IP>:5000` 和 cpolar 隧道(见 docs/ops-dgx.md 的"访问地址"),
+   *  普通 HTTP 下浏览器根本不定义 navigator.clipboard——execCommand 是那里唯一还能用的
+   *  复制手段。看到 deprecated 就顺手删掉的话,这个 bug 立刻复活。 */
+  function copyViaTextarea(text: string): boolean {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    // 不能用 display:none / visibility:hidden —— 那样 select() 选不中,复制会静默失败。
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0'
+    document.body.appendChild(ta)
+    ta.select()
     try {
-      await navigator.clipboard.writeText(window.location.href)
+      return document.execCommand('copy')
+    } catch {
+      return false
+    } finally {
+      ta.remove()
+    }
+  }
+
+  async function copyLink() {
+    const url = window.location.href
+    const done = () => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    } catch (e) {
-      alert(e instanceof Error ? e.message : String(e))
     }
+    // 逐级降级。第一层是现代 API(HTTPS/localhost 走这条,行为与改动前一致);
+    // 判存在性而不是靠 try/catch 兜——此前直接点 .writeText,undefined 上取属性抛的
+    // TypeError 被 alert 出来,用户看到的就是那句 "Cannot read properties of undefined"。
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(url)
+        done()
+        return
+      } catch (e) {
+        console.error('clipboard.writeText 失败,回退 execCommand', e)
+      }
+    }
+    if (copyViaTextarea(url)) {
+      done()
+      return
+    }
+    // 两条都不通:prompt 的输入框内容是预选中的,Ctrl+C 就能拿走——
+    // 这是没有剪贴板权限时唯一还能把文本交到用户手里的原生手段(alert 里的字没法方便地选)。
+    window.prompt('浏览器不允许自动复制,请手动复制这个链接:', url)
   }
 
   async function handleTrack(lang: string) {
