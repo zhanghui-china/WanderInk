@@ -259,6 +259,7 @@ export default function App() {
                 key={detail.project_id}
                 project={detail}
                 meta={meta}
+                user={user}
                 onChanged={onDetailChanged}
               />
             ) : (
