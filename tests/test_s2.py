@@ -252,6 +252,109 @@ def test_s2_system_scopes_the_no_name_rule_to_visual_desc():
     assert "原样" in system or "角色表" in system
 
 
+# ---------- 分格补齐(用户勾了分格排版就该每页都分格) ----------
+
+def _panel_cells(panel_counts: list[int]) -> dict:
+    """按 panel_counts 造页:0 表示该页 LLM 没给分格(旧行为下就静默变整页单图)。"""
+    return {"cells": [
+        {"index": i, "scene_ref": "1-1", "visual_desc": f"画面{i}", "characters": ["白素贞"],
+         "caption": f"第{i}页的解说词。", "emotion": "宁静",
+         "panels": [{"visual_desc": f"{i}-格{j}", "shot_type": "medium", "characters": []}
+                    for j in range(1, n + 1)]}
+        for i, n in enumerate(panel_counts, 1)]}
+
+
+def _resp(payload: dict) -> httpx.Response:
+    return httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]})
+
+
+def _panel_project() -> Project:
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.duration_min = 1
+    p.params.multi_panel = True
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    return p
+
+
+@respx.mock
+def test_s2_backfills_pages_the_model_left_unpaneled():
+    """线上 f50b97f4「10 页只有 4 页分格」的回归:勾了分格就是每页都要分格,
+    首轮漏掉的页必须再要一次,不能只截断不补足。"""
+    backfill = {"items": [{"index": i, "panels": [
+        {"visual_desc": f"补{i}-格{j}", "shot_type": "wide", "characters": []}
+        for j in (1, 2, 3)]} for i in (1, 3, 4)]}
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        side_effect=[_resp(_panel_cells([0, 2, 0, 1])), _resp(backfill)])
+    p = s2_storyboard.run(_panel_project(), LLMClient(BASE, "sk", "m"))
+    assert len(route.calls) == 2                        # 首轮 + 补齐
+    assert [len(c.panels) for c in p.storyboard] == [3, 2, 3, 3]
+    assert p.storyboard[1].panels[0].visual_desc == "2-格1"   # 已达标的页不被覆盖
+    assert p.status["panels"] == "4/4"
+    assert p.status["s2"] == "done"
+    # 只补 panels 不改原文
+    assert [c.caption for c in p.storyboard] == [f"第{i}页的解说词。" for i in range(1, 5)]
+
+
+@respx.mock
+def test_s2_skips_backfill_when_every_page_already_paneled():
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        side_effect=[_resp(_panel_cells([2, 3, 4]))])
+    p = s2_storyboard.run(_panel_project(), LLMClient(BASE, "sk", "m"))
+    assert len(route.calls) == 1        # 不做无用请求
+    assert p.status["panels"] == "3/3"
+
+
+@respx.mock
+def test_s2_backfill_treats_single_panel_as_unpaneled():
+    """1 格会被 paneling.LAYOUTS[1] 排成铺满整页,和单图页长得一样,必须算作没分格。"""
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        side_effect=[_resp(_panel_cells([1])), _resp({"items": []})])
+    p = s2_storyboard.run(_panel_project(), LLMClient(BASE, "sk", "m"))
+    assert len(route.calls) == 2
+    assert p.status["panels"] == "0/1"   # 补齐没成功,如实记 0
+
+
+@respx.mock
+def test_s2_backfill_failure_does_not_discard_the_storyboard():
+    """补齐这一步抛异常会被 api._save_error 回滚成盘上旧快照——整份分镜连同这一轮
+    跑好的一切全部白跑。补齐失败只能退化成"这几页还是单图",不能毁掉 S2。"""
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        side_effect=[_resp(_panel_cells([0, 2])),
+                     _resp({"cells": []}), _resp({"cells": []}), _resp({"cells": []})])
+    p = s2_storyboard.run(_panel_project(), LLMClient(BASE, "sk", "m"))
+    assert len(p.storyboard) == 2                 # 分镜完好
+    assert p.status["s2"] == "done"
+    assert p.status["panels"] == "1/2"            # 缺口如实可见
+    assert len(route.calls) >= 2
+
+
+@respx.mock
+def test_s2_multi_panel_system_prompt_drops_the_one_panel_per_page_line():
+    """「一页一格」与「每页必须 2~4 格」不能同时出现在一份 system prompt 里——
+    这个自相矛盾正是模型大多数页给 0 格的直接原因。"""
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        side_effect=[_resp(_panel_cells([2]))])
+    s2_storyboard.run(_panel_project(), LLMClient(BASE, "sk", "m"))
+    system = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "一页一格" not in system
+    assert "可以只给 1 格" not in system and "不必每页都用满格数" not in system
+    assert "不允许只给 1 格" in system     # 许可式措辞换成禁止式
+
+
+def test_s2_no_backfill_when_multi_panel_off():
+    """单图模式一次额外请求都不该发(也是 use_skill 那两个断言 call_args 的测试的前提)。"""
+    from unittest.mock import MagicMock
+    llm = MagicMock()
+    llm.structured.return_value = s2_storyboard._Cells.model_validate(CELLS)
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.duration_min = 1
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    s2_storyboard.run(p, llm)
+    assert llm.structured.call_count == 1
+    assert "panels" not in p.status
+
+
 # ---------- 相邻页解说词去重 ----------
 
 def _sb(captions: list[str]) -> dict:
