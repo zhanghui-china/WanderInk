@@ -2023,3 +2023,55 @@ def test_list_projects_omits_story(tmp_path, monkeypatch):
     p.story = "很久以前" * 100
     store.save(p, root=tmp_path)
     assert "story" not in client.get("/api/projects").json()[0]
+
+
+# ---------- 回听自定义音色 ----------
+
+def test_serialize_reports_voice_sample_only_when_index_has_it(tmp_path, monkeypatch):
+    """详情只给布尔位,音频本体走独立端点按需取——与 has_story 同一套取舍:
+    详情端点在管线跑动时被前端每 2 秒轮一次,不该让它顺带背额外东西。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = Project(project_id="vs01", scenic_spot="雷峰塔")
+    p.params.voice = "clone:shanhai_voice_abc.wav"
+    with patch("shanhai.api.store.project_dir", return_value=tmp_path / "vs01"):
+        assert api._serialize(p)["has_voice_sample"] is False   # 索引里还没有
+        store.remember_voice_sample("clone:shanhai_voice_abc.wav", "vs_A.wav", root=tmp_path)
+        assert api._serialize(p)["has_voice_sample"] is False   # 索引有了但文件不在
+        (store.voice_sample_dir(tmp_path) / "vs_A.wav").write_bytes(b"RIFFfake")
+        assert api._serialize(p)["has_voice_sample"] is True
+
+
+def test_serialize_no_voice_sample_for_preset_voice(tmp_path, monkeypatch):
+    """判据是"索引里查得到"而不是"voice 以 clone: 开头":那个前缀是上游 TTS 返回的约定,
+    我们代码里从未强制过,拿它当判据是猜。预置音色自然查不到。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = Project(project_id="vs02", scenic_spot="雷峰塔")
+    p.params.voice = "alloy"
+    with patch("shanhai.api.store.project_dir", return_value=tmp_path / "vs02"):
+        assert api._serialize(p)["has_voice_sample"] is False
+
+
+def test_voice_sample_endpoint_streams_the_wav(tmp_path, monkeypatch):
+    """录音是**真人声音**,而 /files 挂载没有任何身份校验(靠随机盐保密)。
+    回听走带 Depends(current_user) 的端点,至少和作品本身同一个可见性级别。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.params.voice = "clone:v1.wav"
+    store.save(p, root=tmp_path)
+    store.remember_voice_sample("clone:v1.wav", "vs_B.wav", root=tmp_path)
+    (store.voice_sample_dir(tmp_path) / "vs_B.wav").write_bytes(b"RIFFhello")
+    r = client.get(f"/api/projects/{p.project_id}/voice-sample")
+    assert r.status_code == 200
+    assert r.content == b"RIFFhello"
+
+
+def test_voice_sample_endpoint_404_when_no_custom_voice(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    store.save(p, root=tmp_path)
+    assert client.get(f"/api/projects/{p.project_id}/voice-sample").status_code == 404
+
+
+def test_voice_sample_endpoint_404_for_missing_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    assert client.get("/api/projects/nosuch/voice-sample").status_code == 404

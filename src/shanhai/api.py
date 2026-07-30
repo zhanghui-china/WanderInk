@@ -21,7 +21,7 @@ from typing import NamedTuple
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -447,6 +447,18 @@ def _mp4_url(mp4: str) -> str | None:
     return "/files/" + mp4.split("projects/", 1)[-1] + _version_suffix(Path(mp4))
 
 
+def _voice_sample_path(p: Project) -> Path | None:
+    """该作品自定义音色对应的本地录音文件;不是自定义音色、索引查不到、或文件已不在都返回 None。
+    store.voice_sample_for 已把索引里的值收窄成 basename,这里再确认文件真的存在。"""
+    if not p.params.voice:
+        return None
+    name = store.voice_sample_for(p.params.voice)
+    if not name:
+        return None
+    path = store.voice_sample_dir() / name
+    return path if path.is_file() else None
+
+
 def _serialize(p: Project) -> dict:
     workdir = store.project_dir(p.project_id)
     # ⚠️ 这个字典是**逐字段挑选**的,不是 model_dump——给 StoryboardCell 加了字段并不会
@@ -490,6 +502,10 @@ def _serialize(p: Project) -> dict:
         # 而详情端点在管线跑动时被前端每 2 秒轮询一次(App.tsx 的 tick),
         # 把它放进这里等于每 2 秒重传一遍 ~60KB,而绝大多数轮询根本没人在看原文。
         "has_story": bool(p.story),
+        # 同上,只给布尔位:录音本体走 /api/projects/{id}/voice-sample。
+        # 判据是"索引里查得到且文件在",不是"voice 以 clone: 开头"——那个前缀是上游 TTS
+        # 返回的约定,我们代码里从未强制过,拿它当判据是猜。
+        "has_voice_sample": _voice_sample_path(p) is not None,
         "script_title": p.script.title if p.script else None,
         "characters": characters,
         "pages": pages,
@@ -988,8 +1004,28 @@ async def upload_voice_sample(file: UploadFile = File(...),
     rel = uploads.voice_sample_rel_path()
     out = store.voice_sample_dir() / rel
     uploads.atomic_write(out, wav)
+    # 记下"这个句柄对应这份录音"。句柄由上游生成、文件名是本地随机盐,不存这一步就再也
+    # 对不上号——用户想回听自己给某部作品选的音色都做不到(GET /voice-sample 靠它查)。
+    store.remember_voice_sample(voice, rel)
     return {"voice": voice, "sample_url": f"/files/{store.VOICE_SAMPLE_DIRNAME}/{rel}",
             "duration_ms": ffmpeg.probe_duration_ms(out)}
+
+
+@app.get("/api/projects/{project_id}/voice-sample")
+def get_project_voice_sample(project_id: str, user: str = Depends(current_user)) -> FileResponse:
+    """回听该作品正在用的自定义音色(用户自己录的那段)。
+
+    刻意**不**把 /files 下的样本 URL 放进详情响应:那个挂载没有任何身份校验、靠随机盐保密
+    (uploads.voice_sample_rel_path 的说明),而这是**真人声音**。走这个端点至少能让它和作品
+    本身同一个可见性级别(Depends(current_user)),不至于泄漏一个永久有效的公开链接。"""
+    try:
+        p = store.load(project_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(404, f"项目不存在: {project_id}") from e
+    path = _voice_sample_path(p)
+    if path is None:
+        raise HTTPException(404, "该作品没有可回听的自定义音色")
+    return FileResponse(path, media_type="audio/wav")
 
 
 class VoiceParams(BaseModel):

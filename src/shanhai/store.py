@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import threading
@@ -25,6 +26,47 @@ VOICE_SAMPLE_DIRNAME = "_voice_samples"
 # 在 DGX 上跑一次 pytest 就往线上作品目录塞了一个假作品 s2fail。
 def voice_sample_dir(root: Path | None = None) -> Path:
     return (root or DEFAULT_ROOT) / VOICE_SAMPLE_DIRNAME
+
+
+# 音色句柄 → 本地样本文件名 的映射。**必须显式存**:句柄由上游 TTS 生成
+# (clone:shanhai_voice_<hex>.wav),本地文件名是我们自己的随机盐(vs_<token>.wav),
+# 两者之间没有任何可推导的关系。此前这份对应只出现在上传那一次 HTTP 响应里、随即被前端丢掉,
+# 于是"这个作品用的音色对应盘上哪个 wav"永远回答不了——用户想回听自己录的音色都做不到。
+# 存在服务端而不是存进各个 project:线上两部「可可托海」共用同一个句柄,存进项目会重复;
+# 而且让客户端回传文件名等于让它指定服务端读哪个文件,又得多一层路径校验。
+_VOICE_INDEX_NAME = "index.json"
+_VOICE_INDEX_LOCK = threading.Lock()
+
+
+def _voice_index_path(root: Path | None = None) -> Path:
+    return voice_sample_dir(root) / _VOICE_INDEX_NAME
+
+
+def _read_voice_index(root: Path | None = None) -> dict:
+    try:
+        data = json.loads(_voice_index_path(root).read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return {}      # 升级前的老部署没有这个文件;写坏了也只当"查不到"
+    return data if isinstance(data, dict) else {}
+
+
+def remember_voice_sample(voice: str, filename: str, root: Path | None = None) -> None:
+    """记下某个音色句柄对应哪份本地录音。读-改-写全程持锁,免得并发上传丢条目。"""
+    with _VOICE_INDEX_LOCK:
+        index = _read_voice_index(root)
+        index[voice] = filename
+        atomic_write_text(_voice_index_path(root), json.dumps(index, ensure_ascii=False, indent=1))
+
+
+def voice_sample_for(voice: str, root: Path | None = None) -> str | None:
+    """该音色句柄对应的本地样本文件名;查不到或不可信则 None。
+
+    只认 basename:索引万一被写进 `../../x` 这种值,也不能让播放端点顺着它读出音色目录之外
+    的东西(这份文件将来可能由一次性补数脚本写入,不能假定内容一定干净)。"""
+    name = _read_voice_index(root).get(voice)
+    if not isinstance(name, str) or not name or name != Path(name).name:
+        return None
+    return name
 
 # project_id 形状校验:仅允许字母数字下划线短横线,堵住路径遍历(../、/、空白等)。
 # 首字符另外排除下划线:那是共享目录的保留命名空间(VOICE_SAMPLE_DIRNAME = "_voice_samples"),

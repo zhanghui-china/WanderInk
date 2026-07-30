@@ -153,6 +153,7 @@ export function ProjectDetailView({
   // 原文不随详情下发(详情每 2 秒轮询一次),点开时才拉一次;null = 还没拿到
   const [storyText, setStoryText] = useState<string | null>(null)
   const [voiceOpen, setVoiceOpen] = useState(false)
+  const [voiceSampleOpen, setVoiceSampleOpen] = useState(false)
   const [voicePicked, setVoicePicked] = useState<{ blob: Blob; filename: string } | null>(null)
   const [voiceBusy, setVoiceBusy] = useState(false)
   const voiceUpload = useUpload<VoiceSample>()
@@ -322,6 +323,19 @@ export function ProjectDetailView({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {/* 放在「换音色」左边(用户要求)。刻意**不**受 !meta?.readonly 限制:换音色要改数据
+              才需要,回听是只读动作,只读演示模式下也该能听自己录的那段。
+              判据用 has_voice_sample 而不是 voice.startsWith('clone:')——那个前缀是上游 TTS
+              返回的约定,后端从未强制过;索引命中才是权威。 */}
+          {project.has_voice_sample && (
+            <button
+              type="button"
+              onClick={() => setVoiceSampleOpen((v) => !v)}
+              className={ghostBtn}
+            >
+              {voiceSampleOpen ? '收起音色' : '当前自定义音色'}
+            </button>
+          )}
           {!meta?.readonly && (
             <button type="button" onClick={() => setVoiceOpen(true)} className={ghostBtn}>
               换音色
@@ -332,6 +346,22 @@ export function ProjectDetailView({
           </button>
         </div>
       </div>
+
+      {/* 播放器另起一行,不塞进上面那个 shrink-0 的按钮行(会把标题挤变形)。
+          走带鉴权的端点而不是 /files 下的样本 URL:那个挂载没有身份校验、靠随机盐保密,
+          而这是真人声音(见后端 get_project_voice_sample 的说明)。同源请求自动带 cookie。 */}
+      {voiceSampleOpen && project.has_voice_sample && (
+        <div className={card}>
+          <div className="mb-2 text-xs font-medium tracking-wide text-muted">
+            当前自定义音色(你上传的那段录音)
+          </div>
+          <audio
+            src={`/api/projects/${project.project_id}/voice-sample`}
+            controls
+            className="h-9 w-full"
+          />
+        </div>
+      )}
 
       <ProgressSteps project={project} />
 
