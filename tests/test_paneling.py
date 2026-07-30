@@ -69,8 +69,8 @@ def test_compose_manga_page_insert_overlays_host():
               Panel(visual_desc="closeup", shot_type="insert")]
     out = Image.open(io.BytesIO(compose_manga_page([host, second, insert], panels)))
     assert out.getpixel((40, 40)) == (10, 10, 10)          # 宿主格左上角未被叠加覆盖
-    # 宿主格是版式模板第一格(LAYOUTS[2] 的上半),叠加落在它的右下角
-    hx1, hy1 = FRAME[0], FRAME[1] // 2
+    # 宿主格是版式模板第一格(LAYOUTS[2] 的左栏),叠加落在它的右下角
+    hx1, hy1 = FRAME[0] // 2, FRAME[1]
     near = out.getpixel((hx1 - 150, hy1 - 150))
     assert near[0] > 200 and near[1] > 200 and near[2] > 200  # 能采到叠加的白色特写
 
@@ -94,8 +94,8 @@ def test_two_panels_with_insert_render_as_two_real_slots():
     out = Image.open(io.BytesIO(compose_manga_page([_solid((200, 0, 0)), _solid((0, 0, 200))],
                                                    panels)))
     w, h = FRAME
-    assert out.getpixel((w // 2, h // 4))[0] > 150      # 上半格是红
-    assert out.getpixel((w // 2, 3 * h // 4))[2] > 150  # 下半格是蓝
+    assert out.getpixel((w // 4, h // 2))[0] > 150      # 左栏是红
+    assert out.getpixel((3 * w // 4, h // 2))[2] > 150  # 右栏是蓝
 
 
 def test_regular_slots_counts_layout_slots_not_panel_count():
@@ -147,7 +147,9 @@ def test_anchor_keeps_more_top_than_center_crop():
     grad = Image.new("L", (1536, h))
     grad.putdata([round(255 * (y / (h - 1))) for y in range(h) for _ in range(1536)])
     src = grad.convert("RGB")
-    slot = slot_sizes([Panel(visual_desc="v", shot_type="medium")] * 2)[0]
+    # 用 3 格版式的上条:它比例 3.28,比源图宽得多,裁的是**高度**,anchor_y 才有意义。
+    # (2 格版式已改成左右分栏,比例 0.89,裁的是宽度,拿它测纵向锚点测不出东西。)
+    slot = slot_sizes([Panel(visual_desc="v", shot_type="medium")] * 3)[0]
 
     def _mean(anchor: float) -> float:
         px = list(cover(src, slot, anchor_y=anchor).convert("L").getdata())
