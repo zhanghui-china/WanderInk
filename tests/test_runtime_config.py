@@ -260,3 +260,43 @@ def test_use_master_skill_on_non_hermes_degrades_and_records_reason():
     rec = p.status["s2_engine"]
     assert rec.startswith("step-3.7-flash · 普通")
     assert "已忽略大师开关" in rec and "hermes-agent" in rec
+
+
+# ---------- 附加语种轨的默认音色 ----------
+
+def _voice_settings(**kw) -> Settings:
+    return Settings(_env_file=None, base_url="https://p.example.com/v1", api_key="sk-1",
+                    tts_voice="cn-default", tts_voices="cn-default, cn-female",
+                    tts_voice_en="en-default", **kw)
+
+
+def test_track_voice_inherits_custom_clone_voice():
+    """自定义音色是用户自己的声音,同一个作品的英文视频也该是他 —— 用户原话
+    "音色在每个项目中都是影响到这个项目的所有配音的"。
+
+    判据是"不在配置层的预置音色列表里",而不是 voice 以 clone: 开头:那个前缀是上游 TTS
+    返回的约定,后端从未强制过;预置列表是配置的一部分,对新老作品一律有效
+    (今天新建的音色样本索引只覆盖此后上传的,线上 6 部老作品的句柄不在里面)。"""
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.voice = "clone:shanhai_voice_abc.wav"
+    assert runtime_config.default_track_voice(p, _voice_settings()) == "clone:shanhai_voice_abc.wav"
+
+
+def test_track_voice_does_not_inherit_preset_chinese_voice():
+    """预置中文音色**不能**继承到英文轨:配置里专门有 tts_voice_en 就是因为中文 speaker
+    念英文效果差。只有克隆音色才有"这是本人的声音、跨语种也该是他"这个诉求。"""
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.params.voice = "cn-female"          # 在预置列表里
+    assert runtime_config.default_track_voice(p, _voice_settings()) == "en-default"
+
+
+def test_track_voice_falls_back_when_project_has_no_voice():
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    assert runtime_config.default_track_voice(p, _voice_settings()) == "en-default"
+
+
+def test_track_voice_falls_back_to_main_voice_when_no_english_preset():
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    s = Settings(_env_file=None, base_url="https://p.example.com/v1", api_key="sk-1",
+                 tts_voice="cn-default", tts_voices="cn-default")
+    assert runtime_config.default_track_voice(p, s) == "cn-default"   # tts_voice_en 为空

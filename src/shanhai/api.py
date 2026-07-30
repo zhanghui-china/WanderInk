@@ -1265,7 +1265,9 @@ def _run_track(project_id: str, lang: str, cfg: AppConfig) -> None:
 
         s_tts = resolve_settings("s5", cfg)
         _l, _i, tts, _m = _clients(s_tts)
-        voice = s_tts.tts_voice_en or s_tts.tts_voice
+        # 自定义音色跨语种继承:同一部作品的中文与英文视频该是同一个人的声音
+        # (判据与逃生口见 runtime_config.default_track_voice)
+        voice = runtime_config.default_track_voice(p, s_tts)
         p = s5_audio.run(p, tts, voice, workdir,
                          cancel_check=lambda: _is_cancelled(project_id), lang=lang)
         _locked_save(p)
