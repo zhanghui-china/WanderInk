@@ -250,3 +250,77 @@ def test_s2_system_scopes_the_no_name_rule_to_visual_desc():
     system = s2_storyboard.SYSTEM
     assert "characters" in system
     assert "原样" in system or "角色表" in system
+
+
+# ---------- 相邻页解说词去重 ----------
+
+def _sb(captions: list[str]) -> dict:
+    return {"cells": [
+        {"index": i, "scene_ref": "1-1", "visual_desc": f"画面{i}", "characters": [],
+         "caption": cap, "emotion": "宁静"} for i, cap in enumerate(captions, 1)]}
+
+
+@respx.mock
+def _run_captions(captions: list[str]) -> list[str]:
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(_sb(captions), ensure_ascii=False)}}]}))
+    p = Project(project_id="x", scenic_spot="北京城")
+    p.params.duration_min = 1
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    p = s2_storyboard.run(p, LLMClient(BASE, "sk", "m"))
+    return [c.caption for c in p.storyboard]
+
+
+def test_s2_drops_recap_clause_that_opens_the_next_page():
+    """线上真实案例(「碧血海外录」d48ce1e4 页 6→7):S2 把一段剧本 narration 切成多页时,
+    习惯把上一页的尾句照抄到下一页当承接。剧本里「他遍历北方」只有一次，是切分时抄出来的。
+    旁白是连着播的，听众会听到同一句连说两遍。"""
+    out = _run_captions([
+        "因其父之名与一身绝学，袁承志被江湖群豪推为七省盟主。他遍历北方，洞察天下大势。",
+        "他遍历北方，见流民四起，田地荒芜，深知唯有扫除腥膻，方能再造乾坤。",
+    ])
+    assert out[0].endswith("他遍历北方，洞察天下大势。")          # 上一页原样不动
+    assert out[1] == "见流民四起，田地荒芜，深知唯有扫除腥膻，方能再造乾坤。"
+
+
+def test_s2_keeps_mid_caption_echo_as_deliberate_callback():
+    """句中重复多数是收尾页复现前文金句，是有意的回环呼应，不是啰嗦。
+    机器分不清"呼应"和"重复"，只记日志、一字不改。"""
+    out = _run_captions([
+        "她终于明白，琴声归处不在皇宫。你只管做你自己。",
+        "千年流转，往事散尽。你只管做你自己——此后千年，琴声仍在。",
+    ])
+    assert out[1] == "千年流转，往事散尽。你只管做你自己——此后千年，琴声仍在。"
+
+
+def test_s2_does_not_trim_when_remainder_would_be_too_short():
+    """删完只剩几个字的话，这一页的旁白短得不成句、配音节奏也会怪，宁可留着重复。"""
+    out = _run_captions([
+        "少年抚剑长吟，想起父亲遗书，决定连夜下山去。",
+        "决定连夜下山去，走了。",
+    ])
+    assert out[1] == "决定连夜下山去，走了。"      # 剩余不足，保持原样
+
+
+def test_s2_ignores_short_shared_clause():
+    """三字以内的共同小句多是虚词/主语(「他望着」「于是」)，删了会把句子弄断。"""
+    out = _run_captions([
+        "他望着远处的山影，久久不语，心里翻涌着旧事。",
+        "他望着，忽然想起父亲临别时说过的那句话，眼里有了光。",
+    ])
+    assert out[1].startswith("他望着，")
+
+
+def test_s2_only_dedupes_adjacent_pages():
+    """只管相邻页:隔页撞句听不出来，而且常是有意的结构呼应。"""
+    out = _run_captions([
+        "他遍历北方，洞察天下大势，心中已有主张。",
+        "闯军大营，篝火熊熊，李岩引他入帐相见。",
+        "他遍历北方，见流民四起，田地荒芜，深知唯有扫除腥膻。",
+    ])
+    assert out[2].startswith("他遍历北方，")
+
+
+def test_s2_system_bans_recap_as_transition():
+    system = s2_storyboard.SYSTEM
+    assert "复述" in system or "重复" in system
