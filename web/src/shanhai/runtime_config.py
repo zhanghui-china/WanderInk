@@ -212,6 +212,32 @@ MASTER_SKILLS = {"s1": "编剧大师", "s2": "导演大师"}
 MASTER_SKILL_BACKEND = "hermes-agent"
 
 
+def default_track_voice(p: Project, stage_settings: Settings) -> str:
+    """附加语种轨(英文)配音的**默认**音色。
+
+    自定义音色是用户自己的声音,同一个作品的英文视频也该是同一个人——用户原话"音色在每个
+    项目中都是影响到这个项目的所有配音的"。此前英文轨恒用配置层的预置音色:s5_audio 的解析
+    链是 `params.voice_en or 传入默认值`,而 params.voice_en **没有任何入口能设置**
+    (换音色端点只收 voice、新建表单也只提交 voice),永远是空串,于是同一部作品中文是本人的
+    声音、英文是另一个人。
+
+    判据是"不在配置层预置音色列表里"。两个不选的方案:
+    - `voice.startswith("clone:")`:那个前缀是上游 TTS 返回的约定,后端从未强制过,拿它当
+      判据是猜(今天已经因为同一个理由否掉过一次)。
+    - 音色样本索引命中:那份索引只覆盖此后上传的样本,线上 6 部老作品的句柄不在里面。
+    预置列表是配置的一部分,对新老作品一律有效。
+
+    **预置中文音色不继承**:配置里专门有 tts_voice_en,就是因为中文 speaker 念英文效果差;
+    只有克隆音色才有"这是本人的声音、跨语种也该是他"这个诉求。
+
+    返回值只是**默认值**:s5_audio 里 `params.voice_en or voice` 的回落链不动,voice_en
+    一旦被显式设过就压过这里——那是"克隆音色念英文效果不好"时的逃生口。"""
+    voice = p.params.voice
+    if voice and voice not in stage_settings.tts_voices_list:
+        return voice
+    return stage_settings.tts_voice_en or stage_settings.tts_voice
+
+
 def use_master_skill(p: Project, stage_settings: Settings, stage: str) -> bool:
     """该环节是否调"大师"skill,并把**本次实际用的引擎**记进 p.status[f"{stage}_engine"]。
 

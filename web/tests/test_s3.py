@@ -412,3 +412,37 @@ def test_turnaround_progress_without_script():
     """S1 之前 script 为 None,不能炸——前端在任何阶段都会读这个字段。"""
     p = Project(project_id="x", scenic_spot="雷峰塔")
     assert s3_characters.turnaround_progress(p, Path("/nonexistent")) == (0, 0)
+
+
+def _framed_png_bytes() -> bytes:
+    """模拟三视图那种"纯白背景 + 左右留白 + 内侧暗线"的图——正是边框判据的误判形态。
+    与 tests/test_image_provider.py 的 _framed_png 同构,这里只需要能触发判据即可。"""
+    from PIL import Image, ImageDraw
+    import io
+    im = Image.new("RGB", (1920, 1080), (250, 249, 246))
+    d = ImageDraw.Draw(im)
+    d.rectangle((52, 0, 58, im.height), fill=(20, 20, 20))                    # 左侧暗线
+    d.rectangle((im.width - 58, 0, im.width - 52, im.height), fill=(20, 20, 20))  # 右侧暗线
+    d.ellipse((400, 300, 1500, 800), fill=(120, 140, 160))                    # 框内有内容
+    buf = io.BytesIO(); im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_s3_is_not_killed_by_the_page_frame_check(tmp_path: Path):
+    """边框判据是 S4 页面的合格性标准,不该套在 S3 的三视图上。
+
+    三视图是"纯白背景 + 三个全身像并排",左右留白极易被判成竖框线。线上真的因此误杀过
+    两次,其中一次是用户**传了参考图**、参考图编辑路径被判失败、回退到完全不用参考图的
+    文生图——用户看到"三视图已生成"却发现不像自己传的图。
+    这条用例守的就是:provider 层放行带框的图,S3 照常定稿。"""
+    p = Project(project_id="x", scenic_spot="可可托海")
+    p.script = Script(title="t", theme="th", acts=[],
+                      characters=[CharacterCard(name="牧羊少年", role="r",
+                                                personality="p", appearance="粗布羊毛衣")])
+    llm = MagicMock(); llm.chat.return_value = "十岁少年,粗布羊毛衣"
+    image = MagicMock(); image.generate.return_value = _framed_png_bytes()
+    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    c = p.script.characters[0]
+    assert c.turnaround_image == "characters/牧羊少年.png"
+    assert c.locked is True
+    assert (tmp_path / "characters" / "牧羊少年.png").exists()

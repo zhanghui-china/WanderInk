@@ -85,3 +85,42 @@ def test_default_root_is_late_bound(tmp_path, monkeypatch):
     p.scenic_spot = "改过"
     store.save(p)
     assert store.load(p.project_id).scenic_spot == "改过"
+
+
+# ---------- 音色句柄 → 本地样本文件的映射 ----------
+
+def test_voice_sample_index_roundtrip(tmp_path):
+    """句柄与本地文件名是**各自独立生成**的:句柄来自上游 TTS(clone:shanhai_voice_xxx.wav),
+    文件名是本地随机盐(vs_yyy.wav),两者之间没有任何可推导的关系。不显式存下这份映射,
+    就永远回答不了"这个作品用的音色对应盘上哪个 wav" —— 用户想回听自己录的音色都做不到。"""
+    store.remember_voice_sample("clone:shanhai_voice_abc.wav", "vs_XYZ.wav", root=tmp_path)
+    assert store.voice_sample_for("clone:shanhai_voice_abc.wav", root=tmp_path) == "vs_XYZ.wav"
+    assert store.voice_sample_for("clone:不存在.wav", root=tmp_path) is None
+
+
+def test_voice_sample_index_keeps_existing_entries(tmp_path):
+    """多个句柄共存:线上两部「可可托海」共用同一句柄,而不同作品各有自己的句柄,
+    后写的不能把先写的冲掉。"""
+    store.remember_voice_sample("clone:a.wav", "vs_a.wav", root=tmp_path)
+    store.remember_voice_sample("clone:b.wav", "vs_b.wav", root=tmp_path)
+    assert store.voice_sample_for("clone:a.wav", root=tmp_path) == "vs_a.wav"
+    assert store.voice_sample_for("clone:b.wav", root=tmp_path) == "vs_b.wav"
+
+
+def test_voice_sample_for_tolerates_missing_or_broken_index(tmp_path):
+    """索引不存在(升级前的老部署)或被写坏,都只能当"查不到",不能抛——
+    回听是个附加功能,不该让它拖垮详情页序列化。"""
+    assert store.voice_sample_for("clone:a.wav", root=tmp_path) is None
+    idx = store.voice_sample_dir(tmp_path) / "index.json"
+    idx.parent.mkdir(parents=True, exist_ok=True)
+    idx.write_text("{ 这不是 json", encoding="utf-8")
+    assert store.voice_sample_for("clone:a.wav", root=tmp_path) is None
+
+
+def test_voice_sample_for_rejects_path_traversal_in_index(tmp_path):
+    """索引里的文件名只当**basename**用:万一有人写进 ../../etc/passwd,
+    也不能让播放端点顺着它读出音色目录之外的东西。"""
+    idx = store.voice_sample_dir(tmp_path) / "index.json"
+    idx.parent.mkdir(parents=True, exist_ok=True)
+    idx.write_text('{"clone:evil.wav": "../../secrets.json"}', encoding="utf-8")
+    assert store.voice_sample_for("clone:evil.wav", root=tmp_path) is None

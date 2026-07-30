@@ -1,3 +1,5 @@
+import re
+
 from pydantic import BaseModel
 
 from shanhai.providers.llm import LLMClient
@@ -24,10 +26,15 @@ SYSTEM = """你是连环画分镜师。把剧本切分为一页一格的连环�
 规则:
 - caption 是该页的解说文案(旁白或对白),不超过 80 字
 - 所有 caption 连起来必须能独立讲通整个故事——听众不看画面也能听懂,这是硬性要求
+- 但"独立讲通"指的是信息不缺,**不是**把上一页的句子再说一遍:严禁复述上一页已经讲过的
+  内容来给本页开头(如上页结尾"他遍历北方",本页开头又写"他遍历北方,…")。
+  旁白是连着播的,重复的话听众会听见说了两遍。承接靠剧情往前推,不靠重复
 - visual_desc 描述构图、景别、光线、氛围,供绘图使用,不写文字内容
 - visual_desc 只描述**一个瞬间**的静止画面,不要写"先…然后…""从…走到…"这类过程,
   也不要让同一个角色在同一页画面里出现多次(下游是一张图,写成过程会被画成分身)
 - visual_desc 里用外貌或身份指代人物(如"灰衣少年"),不要写角色名(名字会进绘图 prompt 被画成字面意思)
+- 上一条**只管 visual_desc**:characters 字段必须原样填角色表里的名字(如"牧羊少年"),
+  不能改成外貌描述——那是下游按名字取角色设定图的唯一依据,改了就取不到
 - characters 只列该页画面中真正出现的可视人物,不含旁白/叙事者(旁白是解说声音不是画面角色)
 - emotion 只能从这些标签里选:宁静/欢快/紧张/悲伤/神秘/恢弘/温馨
 - index 从 1 开始连续编号
@@ -45,6 +52,90 @@ class _Cells(BaseModel):
 # 传 use_skill=True;单次约 3.5 万 token/300s,故 retries 降到 1 封顶最坏两次尝试。
 DIRECTOR_PREFIX = "/director-master\n\n"
 DIRECTOR_SUFFIX = "\n\n【一次性给全信息,请勿反问,直接产出成品;严格只输出 JSON,不要输出 xlsx/表格/其它格式】"
+
+
+# 小句分隔符。**刻意写成 Unicode 转义而不是字面量**:全角逗号「，」(U+FF0C)与 ASCII 逗号
+# 长得几乎一样,手写字面量时我把两个 ASCII 逗号当成了"半角+全角"一对,于是这个字符类里根本
+# 没有全角逗号——线上 caption 全是全角标点,切句只在「。」处生效,去重一条都没命中,
+# 而单测里我用的又恰好是 ASCII 逗号,测试照样全绿。转义写法让"到底包含哪些字符"可核对。
+_CLAUSE_CHARS = "，。；！？、：,;!?: "   # 全角七个 + 半角同款 + 空格
+MIN_DUP_CLAUSE = 4     # 共同小句短于这个长度不动:三字以内多是虚词/主语(「他望着」「于是」),删了句子就断
+# 裁完至少要剩这么多字才算还成句,不够则宁可留着重复。定在 6 是拿真实数据校准的:
+# 「碧血海外录」页 4 裁完剩「纵身跃下苍龙岭。」8 字,是完全成立的一句旁白,阈值定 12 会把它挡掉;
+# 而「走了。」这种 3 字残句必须挡住。配音那头有 MIN_MS 兜底,短句不会一闪而过。
+MIN_KEPT_CHARS = 6
+
+
+_CLAUSE_SEP = re.compile(f"[{re.escape(_CLAUSE_CHARS)}]")
+
+
+def _clauses(text: str) -> list[str]:
+    return [c for c in (x.strip() for x in _CLAUSE_SEP.split(text)) if c]
+
+
+def _dedupe_adjacent_captions(project: Project) -> None:
+    """删掉"下一页开头照抄上一页某个小句"那种承接式重复。
+
+    S2 把一段较长的剧本 narration 切成多页时,惯用手法是把上一页的尾句再写一遍当引子——
+    线上「碧血海外录」d48ce1e4 页 6 结尾"他遍历北方,洞察天下大势",页 7 开头又是
+    "他遍历北方,见流民四起…"。剧本里这句只有一次,是切分时抄出来的。旁白连着播,
+    听众就听见同一句说了两遍(用户原话:"前面如果跟后面重复,就不好听了")。
+    根因是上面那条"连起来必须能独立讲通"的副作用:最省力的自成一体就是抄上页尾句。
+    提示词已加了明禁,这里是代码兜底——提示词永远只是和模型拔河。
+
+    **只裁下一页的首句,且只在逐字相同时裁。** 句中重复不动:实测那类多数出现在收尾页
+    复现前文金句(「你只管做你自己」「画上了穹顶」),是有意的回环呼应、是好文笔,
+    机器分不清"呼应"和"啰嗦",改了反而把写作手法拆了——只打日志,人工想改再改。
+    也只看**相邻**页:隔页撞句听不出来,且常是有意的结构呼应。"""
+    cells = project.storyboard
+    for prev, cur in zip(cells, cells[1:]):
+        prev_clauses = _clauses(prev.caption)
+        cur_clauses = _clauses(cur.caption)
+        if not prev_clauses or not cur_clauses:
+            continue
+        head = cur_clauses[0]
+        if head in prev_clauses and len(head) >= MIN_DUP_CLAUSE:
+            # 连同它后面那个分隔符一起去掉,剩下的就是本页真正往前推的内容。
+            # lstrip 的字符集与切句的分隔符共用 _CLAUSE_CHARS 一个真源:分两处写的话,
+            # 我第一版就是在这里漏了全角逗号,裁完剩下「,见流民四起…」带个头逗号。
+            rest = cur.caption.partition(head)[2].lstrip(_CLAUSE_CHARS)
+            if len(rest) >= MIN_KEPT_CHARS:
+                print(f"第 {cur.index} 页开头复述了上一页的「{head}」,已删除")
+                cur.caption = rest
+                continue
+            print(f"⚠️ 第 {cur.index} 页开头复述了上一页的「{head}」,但删掉后不足 "
+                  f"{MIN_KEPT_CHARS} 字,保留原文")
+        dup = [c for c in cur_clauses[1:] if c in prev_clauses and len(c) >= MIN_DUP_CLAUSE]
+        if dup:
+            print(f"⚠️ 第 {cur.index} 页与上一页有相同的句子 {dup}(在句中,可能是有意的呼应,未改动)")
+
+
+def _check_cast_names(project: Project) -> None:
+    """出场名单必须真的用角色表里的名字,否则整部作品静默失去角色一致性。
+
+    S4 是按名字查表拿角色设定图的(s4_pages: `cards[n] for n in cell.characters if n in cards`)。
+    模型若把 characters 写成外貌描述(「粗布羊毛衣的少年」而不是「牧羊少年」),匹配数为零 →
+    每页都走 text2img、一张参考图都不传;而 missing_refs 算的是"出场角色里谁缺三视图",
+    出场为空自然"没人缺" —— **锚点和告警一起失效**,界面上一切正常。线上「可可托海」
+    2ee76074 就是这样 9 页全无锚点,用户毫无察觉;44 部作品里仅此一例。
+
+    全零命中判失败(与上面"分镜为空不算成功"同一条诚实原则:宁可让管线记 error 重跑 S2,
+    也不产出一部注定没有一致性的作品);部分失配只告警——S2 额外列群众演员(百姓/村民/
+    弓箭手)是历史上一直有的形态,主角名字对得上,锚点照常工作,拦了才是误伤。"""
+    if project.script is None:
+        return
+    cast = {c.name for c in project.script.characters}
+    used = {n for cell in project.storyboard for n in cell.characters}
+    if not cast or not used:      # 没有角色表、或全是纯景物页:无从校验,也无锚点可谈
+        return
+    if not (used & cast):
+        raise ValueError(
+            f"分镜的出场角色没有一个用了角色表里的名字(角色表:{sorted(cast)};"
+            f"分镜里写的:{sorted(used)})——下游取不到角色设定图,整部作品会失去角色一致性")
+    unknown = used - cast
+    if unknown:
+        print(f"⚠️ 分镜里有 {sorted(unknown)} 不在角色表中(通常是群众演员),"
+              f"这些人物无设定图锚点")
 
 
 def run(project: Project, llm: LLMClient, use_skill: bool = False) -> Project:
@@ -67,6 +158,8 @@ def run(project: Project, llm: LLMClient, use_skill: bool = False) -> Project:
         cell.index = i
     for cell in project.storyboard:   # 防御:剔除误入出场角色的旁白/叙事者
         cell.characters = [n for n in cell.characters if not is_narrator(n)]
+    _dedupe_adjacent_captions(project)
+    _check_cast_names(project)
     for cell in project.storyboard:
         if not project.params.multi_panel:
             # 用户没开分格就一律清空。上面的 PANEL_RULES 开关只控制"怎么用分格"这段自然语言

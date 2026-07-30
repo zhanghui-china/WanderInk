@@ -37,13 +37,6 @@ def _invalidate_downstream(project: Project, from_step: str) -> None:
     project.status["pipeline"] = "partial: 已编辑,待重新生成"
 
 
-def invalidate_from(project: Project, from_step: str) -> None:
-    """`_invalidate_downstream` 的公开入口。本模块里的编辑函数各自在末尾调私有版,
-    但「换配音音色」这类改动发生在 api 层(它改的是 params 而不是分镜内容),需要一个
-    正经的对外名字,而不是从别的模块伸手去调下划线开头的私有函数。"""
-    _invalidate_downstream(project, from_step)
-
-
 def _cell_at(project: Project, index: int) -> StoryboardCell:
     for cell in project.storyboard:
         if cell.index == index:
@@ -114,7 +107,8 @@ def update_cell(project: Project, index: int, *, caption: str | None = None,
                 characters: list[str] | None = None) -> None:
     """按字段子集改格并精确级联失效:
     - caption:清 audio + duration_ms=0(image/status 不动)
-    - visual_desc / characters:status="draft" + 清 image + 清 panels(分格页回退单图整页)(audio 不动)
+    - visual_desc / characters:status="draft" + 清 image + 清 panels(分格页回退单图整页,
+      理由见 _invalidate_page_image 的 drop_panels 说明;audio 不动)
     - emotion:不级联(仅影响 s5 的 BGM 情绪匹配)"""
     cell = _cell_at(project, index)
     if caption is not None:
@@ -124,34 +118,52 @@ def update_cell(project: Project, index: int, *, caption: str | None = None,
         cell.silent = False
     if visual_desc is not None:
         cell.visual_desc = visual_desc
-        _invalidate_page_image(cell)
+        _invalidate_page_image(cell, drop_panels=True)
     if characters is not None:
         cell.characters = characters
-        _invalidate_page_image(cell)   # 出场角色变了,分格构图与旧图都已过期
+        # 出场角色变了,旧图与格级构图都已过期(格级 characters 是页级的子集)
+        _invalidate_page_image(cell, drop_panels=True)
     if emotion is not None:
         cell.emotion = emotion
     _invalidate_downstream(project, "s4")
 
 
-def _invalidate_page_image(cell: StoryboardCell) -> None:
+def _invalidate_page_image(cell: StoryboardCell, *, drop_panels: bool) -> None:
     """作废该页的图与**所有描述那张图的元数据**,置回 draft。
 
-    单一真源:清 cell.image 的地方有三处(update_cell 的两个分支 + mark_redraw),
-    此前各写各的,新增 image_route/image_lora 时只补了 mark_redraw 一处,于是改画面描述
-    会留下一张已被删掉的图的路径标记,界面照着它渲染"LoRA 未生效"——描述一张不存在的图。
-    这类"同一个不变量散在多处"的疏漏在本仓库反复发生,故收敛到这里,以后加字段只改一处。
-    分格作废是其中一环:改了整页构图或出场角色,旧的分格版式必然过期,回退单图整页重生成。"""
+    单一真源:清 cell.image 的地方有四处(update_cell 的两个分支 + mark_redraw +
+    invalidate_pages_of_characters),此前各写各的,新增 image_route/image_lora 时只补了
+    mark_redraw 一处,于是改画面描述会留下一张已被删掉的图的路径标记,界面照着它渲染
+    "LoRA 未生效"——描述一张不存在的图。这类"同一个不变量散在多处"的疏漏在本仓库反复
+    发生,故收敛到这里,以后加字段只改一处。
+
+    `drop_panels` 必须由调用方显式给,因为四个调用点的答案**不一样**:
+    - True(改整页 visual_desc / characters):**必须**清。_render_panel_cell 用的是
+      panel.visual_desc、根本不读 cell.visual_desc,保留 panels 会让用户改的那句话完全
+      不生效;改 characters 同理,格级 panel.characters 是页级的子集,页级改了格级可能
+      引用已删除的角色。清掉退回单图整页,那条编辑才有意义。
+    - False(重绘 / 角色三视图更新后作废出场页):内容一个字没改,版式不该跟着变。
+      而且 panels **只有 S2 会生成、S4 不会**——清掉这一页就永远是单图,除非重跑 S2
+      (会冲掉该作品所有人工编辑)。线上「少林寺」29f1f688 就是被这样清掉的:盘上留着
+      page_01_panel1/2/3.png 三个格子的图,而 cell.panels 已经空了,9 页里 7 页如此。
+    保留 panels 时仍要清掉各格的 image:那些图正在被作废,留着路径就是"描述一张已删的图",
+    正是上面那段说的同一类疏漏(S4 会覆写同名文件,但某格重绘失败时状态就不一致了)。"""
     cell.status = "draft"
     cell.image = ""
     cell.image_gen_ms = 0
     cell.image_route = ""
     cell.image_lora = ""
-    cell.panels = []
+    if drop_panels:
+        cell.panels = []
+    else:
+        for panel in cell.panels:
+            panel.image = ""
 
 
 def mark_redraw(project: Project, index: int) -> None:
     """标记该页需重绘:置 draft + 清 image 及其元数据(s4 据此重画,文件由 s4 覆盖)。"""
-    _invalidate_page_image(_cell_at(project, index))
+    # 重绘不动版式:用户什么内容都没改,分格页重绘后仍该是分格页(见 _invalidate_page_image)
+    _invalidate_page_image(_cell_at(project, index), drop_panels=False)
     _invalidate_downstream(project, "s4")
 
 
@@ -222,6 +234,26 @@ def mark_revoice(project: Project, index: int) -> None:
     cell.duration_ms = 0
     cell.silent = False
     _invalidate_downstream(project, "s5")   # 只清了音轨,s4 图像仍有效,从 s5 起失效即可
+
+
+def mark_all_revoice(project: Project) -> None:
+    """标记**整部作品**需重配音:逐格清主语言与各语种的音轨字段(译文/画面全部保留)。
+
+    换音色走这里而不是只复位下游 status:s5 的续跑复用分支
+    (`track.audio and not track.silent and out.exists()` → 直接 return)只看这三个字段,
+    旧 mp3 还在盘上就整页跳过、新音色永远轮不到合成——用户看到的就是"换了女声还是男声"。
+    只清字段不删文件:s5 会覆盖同名输出,短路条件靠 audio 置空就已经打破了。"""
+    langs: set[str] = set()
+    for cell in project.storyboard:
+        for track in (cell, *cell.tracks.values()):
+            track.audio = ""
+            track.duration_ms = 0
+            track.silent = False
+        langs |= cell.tracks.keys()
+    for lang in langs:
+        project.status.pop(f"s5_{lang}", None)
+        _invalidate_track_output(project, lang)
+    _invalidate_downstream(project, "s5")   # 只清音轨,s4 图像仍有效,从 s5 起失效即可
 
 
 def insert_cell(project: Project, workdir: Path, after_index: int, *, caption: str,
@@ -314,7 +346,7 @@ def invalidate_pages_of_characters(project: Project, names: set[str]) -> list[in
     hit = [c.index for c in project.storyboard if names & set(c.characters)]
     for cell in project.storyboard:
         if names & set(cell.characters):
-            _invalidate_page_image(cell)
+            _invalidate_page_image(cell, drop_panels=False)   # 换的是角色锚点,不是版式
     if hit:
         _invalidate_downstream(project, "s4")
     return hit

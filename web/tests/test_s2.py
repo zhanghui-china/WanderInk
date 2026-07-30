@@ -1,7 +1,7 @@
 import json
 import httpx, pytest, respx
 from shanhai.providers.llm import LLMClient
-from shanhai.schema import Project, Script
+from shanhai.schema import CharacterCard, Project, Script
 from shanhai.steps import s2_storyboard
 
 BASE = "https://p.example.com/v1"
@@ -187,3 +187,140 @@ def test_s2_drops_panels_when_multi_panel_off():
     p.script = Script(title="t", theme="th", acts=[], characters=[])
     p = s2_storyboard.run(p, LLMClient(BASE, "sk", "m"))
     assert p.storyboard[0].panels == []
+
+
+# ---------- 出场名单必须用角色表里的名字 ----------
+
+def _cast_cells(names_per_page: list[list[str]]) -> dict:
+    return {"cells": [
+        {"index": i, "scene_ref": "1-1", "visual_desc": f"画面{i}", "characters": names,
+         "caption": f"第{i}页的解说词。", "emotion": "宁静"}
+        for i, names in enumerate(names_per_page, 1)]}
+
+
+def _card(name: str) -> CharacterCard:
+    return CharacterCard(name=name, role="r", personality="p", appearance="a")
+
+
+def _run_with(cells: dict, cast: list[str]) -> Project:
+    p = Project(project_id="x", scenic_spot="可可托海")
+    p.params.duration_min = 1
+    p.script = Script(title="t", theme="th", acts=[], characters=[_card(n) for n in cast])
+    return s2_storyboard.run(p, LLMClient(BASE, "sk", "m"))
+
+
+@respx.mock
+def test_s2_rejects_storyboard_that_names_nobody_from_the_cast():
+    """线上真实形态(可可托海 2ee76074):cast 是「牧羊少年/老牧民」,而 cells 填的是
+    「粗布羊毛衣的少年」「白发老者」。s4_pages 按名字查表一个都匹配不上 → 出场角色为空 →
+    整部作品所有页走 text2img、无任何参考图,而 missing_refs 算的是"出场角色里谁缺三视图",
+    出场为空自然"没人缺" —— 锚点和告警一起失效,用户毫无察觉。
+    44 部历史作品里 43 部都至少命中一个主角名,全零命中在正常情况下不会发生,故直接判失败。"""
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(
+            _cast_cells([["粗布羊毛衣的少年"], ["白发老者"]]), ensure_ascii=False)}}]}))
+    with pytest.raises(ValueError, match="出场角色"):
+        _run_with(_cast_cells([]), ["牧羊少年", "老牧民"])
+
+
+@respx.mock
+def test_s2_allows_extra_walk_on_names_when_cast_still_matches():
+    """S2 额外列群众演员(百姓/村民/弓箭手)是历史上一直有的,主角名字对得上就不影响锚点,
+    不能因此判失败——早期多部作品都是这个形态且成片正常。"""
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(
+            _cast_cells([["牧羊少年"], ["村民", "牧羊少年"]]), ensure_ascii=False)}}]}))
+    p = _run_with(_cast_cells([]), ["牧羊少年", "老牧民"])
+    assert p.status["s2"] == "done"
+    assert p.storyboard[1].characters == ["村民", "牧羊少年"]   # 群众演员原样保留
+
+
+@respx.mock
+def test_s2_allows_pages_with_no_characters_at_all():
+    """纯景物页(characters 为空)合法,不该被新校验误伤。"""
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(
+            _cast_cells([[], []]), ensure_ascii=False)}}]}))
+    assert _run_with(_cast_cells([]), ["牧羊少年"]).status["s2"] == "done"
+
+
+def test_s2_system_scopes_the_no_name_rule_to_visual_desc():
+    """那条"不要写角色名"必须写清只管 visual_desc:模型把它泛化到 characters 字段,
+    就是上面那个锚点全失效的成因。"""
+    system = s2_storyboard.SYSTEM
+    assert "characters" in system
+    assert "原样" in system or "角色表" in system
+
+
+# ---------- 相邻页解说词去重 ----------
+
+def _sb(captions: list[str]) -> dict:
+    return {"cells": [
+        {"index": i, "scene_ref": "1-1", "visual_desc": f"画面{i}", "characters": [],
+         "caption": cap, "emotion": "宁静"} for i, cap in enumerate(captions, 1)]}
+
+
+@respx.mock
+def _run_captions(captions: list[str]) -> list[str]:
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json={
+        "choices": [{"message": {"content": json.dumps(_sb(captions), ensure_ascii=False)}}]}))
+    p = Project(project_id="x", scenic_spot="北京城")
+    p.params.duration_min = 1
+    p.script = Script(title="t", theme="th", acts=[], characters=[])
+    p = s2_storyboard.run(p, LLMClient(BASE, "sk", "m"))
+    return [c.caption for c in p.storyboard]
+
+
+def test_s2_drops_recap_clause_that_opens_the_next_page():
+    """线上真实案例(「碧血海外录」d48ce1e4 页 6→7):S2 把一段剧本 narration 切成多页时,
+    习惯把上一页的尾句照抄到下一页当承接。剧本里「他遍历北方」只有一次，是切分时抄出来的。
+    旁白是连着播的，听众会听到同一句连说两遍。"""
+    out = _run_captions([
+        "因其父之名与一身绝学，袁承志被江湖群豪推为七省盟主。他遍历北方，洞察天下大势。",
+        "他遍历北方，见流民四起，田地荒芜，深知唯有扫除腥膻，方能再造乾坤。",
+    ])
+    assert out[0].endswith("他遍历北方，洞察天下大势。")          # 上一页原样不动
+    assert out[1] == "见流民四起，田地荒芜，深知唯有扫除腥膻，方能再造乾坤。"
+
+
+def test_s2_keeps_mid_caption_echo_as_deliberate_callback():
+    """句中重复多数是收尾页复现前文金句，是有意的回环呼应，不是啰嗦。
+    机器分不清"呼应"和"重复"，只记日志、一字不改。"""
+    out = _run_captions([
+        "她终于明白，琴声归处不在皇宫。你只管做你自己。",
+        "千年流转，往事散尽。你只管做你自己——此后千年，琴声仍在。",
+    ])
+    assert out[1] == "千年流转，往事散尽。你只管做你自己——此后千年，琴声仍在。"
+
+
+def test_s2_does_not_trim_when_remainder_would_be_too_short():
+    """删完只剩几个字的话，这一页的旁白短得不成句、配音节奏也会怪，宁可留着重复。"""
+    out = _run_captions([
+        "少年抚剑长吟，想起父亲遗书，决定连夜下山去。",
+        "决定连夜下山去，走了。",
+    ])
+    assert out[1] == "决定连夜下山去，走了。"      # 剩余不足，保持原样
+
+
+def test_s2_ignores_short_shared_clause():
+    """三字以内的共同小句多是虚词/主语(「他望着」「于是」)，删了会把句子弄断。"""
+    out = _run_captions([
+        "他望着远处的山影，久久不语，心里翻涌着旧事。",
+        "他望着，忽然想起父亲临别时说过的那句话，眼里有了光。",
+    ])
+    assert out[1].startswith("他望着，")
+
+
+def test_s2_only_dedupes_adjacent_pages():
+    """只管相邻页:隔页撞句听不出来，而且常是有意的结构呼应。"""
+    out = _run_captions([
+        "他遍历北方，洞察天下大势，心中已有主张。",
+        "闯军大营，篝火熊熊，李岩引他入帐相见。",
+        "他遍历北方，见流民四起，田地荒芜，深知唯有扫除腥膻。",
+    ])
+    assert out[2].startswith("他遍历北方，")
+
+
+def test_s2_system_bans_recap_as_transition():
+    system = s2_storyboard.SYSTEM
+    assert "复述" in system or "重复" in system

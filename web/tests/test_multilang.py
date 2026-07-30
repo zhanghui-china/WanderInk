@@ -471,3 +471,45 @@ def test_remux_main_regenerates_main_film_subtitle_files(tmp_path: Path):
     langs = [tag for _path, tag in
              s6_compose._write_subtitles(p, tmp_path, tmp_path / "output", "zh")]
     assert s6_compose.SUB_LANG_TAGS["en"] in langs   # 英文轨确实算得出来
+
+
+def test_english_track_speaks_with_the_projects_custom_voice(tmp_path: Path):
+    """端到端接上:runtime_config 算出的默认音色要真的落到英文轨的 TTS 调用上。
+
+    只测 default_track_voice 返回对不够——s5_audio 内部还有一层
+    `params.voice_en or 传入默认值`,两半接不上照样白改。用户报的正是这件事:
+    同一部作品中文是自己的声音、英文是配置里那个预置音色。"""
+    from shanhai import runtime_config
+    from shanhai.config import Settings
+
+    p = _project(1)
+    p.params.voice = "clone:shanhai_voice_abc.wav"          # 自定义音色
+    p.storyboard[0].tracks["en"] = LocalizedTrack(caption="At Broken Bridge.")
+    s = Settings(_env_file=None, base_url="https://p.example.com/v1", api_key="sk-1",
+                 tts_voice="cn-default", tts_voices="cn-default", tts_voice_en="en-default")
+    tts = MagicMock()
+
+    with patch("shanhai.steps.s5_audio._synthesize_full", return_value=4200) as syn:
+        s5_audio.run(p, tts, runtime_config.default_track_voice(p, s), tmp_path, lang="en")
+
+    assert syn.call_args.args[2] == "clone:shanhai_voice_abc.wav"   # 英文也用本人的声音
+
+
+def test_explicit_voice_en_still_wins_over_inheritance(tmp_path: Path):
+    """逃生口:克隆音色念英文若效果不好,显式设过的 params.voice_en 必须压过继承。
+    (该字段目前没有 UI 入口,但模型与解析链都在,加一个开关是小改动。)"""
+    from shanhai import runtime_config
+    from shanhai.config import Settings
+
+    p = _project(1)
+    p.params.voice = "clone:shanhai_voice_abc.wav"
+    p.params.voice_en = "en-Male"
+    p.storyboard[0].tracks["en"] = LocalizedTrack(caption="At Broken Bridge.")
+    s = Settings(_env_file=None, base_url="https://p.example.com/v1", api_key="sk-1",
+                 tts_voice="cn-default", tts_voices="cn-default", tts_voice_en="en-default")
+    tts = MagicMock()
+
+    with patch("shanhai.steps.s5_audio._synthesize_full", return_value=4200) as syn:
+        s5_audio.run(p, tts, runtime_config.default_track_voice(p, s), tmp_path, lang="en")
+
+    assert syn.call_args.args[2] == "en-Male"

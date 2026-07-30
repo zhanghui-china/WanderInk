@@ -10,7 +10,7 @@ from PIL import Image
 
 from shanhai import typeset
 from shanhai import paneling
-from shanhai.providers.image import ImageClient
+from shanhai.providers.image import ImageClient, reject_if_framed
 from shanhai.schema import CharacterCard, Panel, Project, StoryboardCell
 from shanhai.styles import STYLE_PRESETS
 
@@ -198,7 +198,8 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
                 refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
                         for c in present if c.turnaround_image]
                 gen_t0 = time.monotonic()
-                art = image.generate(prompt, size=panel_size, references=refs or None)
+                art = reject_if_framed(
+                    image.generate(prompt, size=panel_size, references=refs or None))
                 gen_ms_total += round((time.monotonic() - gen_t0) * 1000)
                 panel_route = image.route_for(refs or None)
                 out = pages_dir / f"page_{cell.index:02d}_panel{i}.png"
@@ -249,7 +250,8 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
             refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
                     for c in present if c.turnaround_image]
             gen_t0 = time.monotonic()
-            art = image.generate(prompt, size=image_size, references=refs or None)
+            art = reject_if_framed(
+                image.generate(prompt, size=image_size, references=refs or None))
             gen_ms = round((time.monotonic() - gen_t0) * 1000)
             typeset.compose_page(art, out)
             # 耗时与图同生共死:先存局部变量、等排版和 image 都落定了再写回 cell。

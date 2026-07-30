@@ -90,6 +90,8 @@ export interface ProjectDetail {
   // 用户新建项目时自备的故事原文(≤20000 字)。历史项目当时根本没落盘,永远是 null。
   // 只是"有没有原文"的标志位;原文本体走 api.story(id) 按需拉,不跟着详情轮询走
   has_story: boolean
+  // 是否有可回听的自定义音色录音;音频本体走 /api/projects/{id}/voice-sample
+  has_voice_sample: boolean
   script_title: string | null
   characters: Character[]
   pages: Page[]

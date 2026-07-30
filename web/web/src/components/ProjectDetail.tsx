@@ -153,6 +153,7 @@ export function ProjectDetailView({
   // 原文不随详情下发(详情每 2 秒轮询一次),点开时才拉一次;null = 还没拿到
   const [storyText, setStoryText] = useState<string | null>(null)
   const [voiceOpen, setVoiceOpen] = useState(false)
+  const [voiceSampleOpen, setVoiceSampleOpen] = useState(false)
   const [voicePicked, setVoicePicked] = useState<{ blob: Blob; filename: string } | null>(null)
   const [voiceBusy, setVoiceBusy] = useState(false)
   const voiceUpload = useUpload<VoiceSample>()
@@ -197,14 +198,52 @@ export function ProjectDetailView({
       .catch((e) => alert(e instanceof Error ? e.message : String(e)))
   }
 
-  async function copyLink() {
+  /** 用 textarea + execCommand 复制。**已废弃但不能删**:navigator.clipboard 只在
+   *  安全上下文(HTTPS 或 localhost/127.0.0.1)下存在,而本项目的实际访问方式是
+   *  `http://<DGX 局域网 IP>:5000` 和 cpolar 隧道(见 docs/ops-dgx.md 的"访问地址"),
+   *  普通 HTTP 下浏览器根本不定义 navigator.clipboard——execCommand 是那里唯一还能用的
+   *  复制手段。看到 deprecated 就顺手删掉的话,这个 bug 立刻复活。 */
+  function copyViaTextarea(text: string): boolean {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    // 不能用 display:none / visibility:hidden —— 那样 select() 选不中,复制会静默失败。
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0'
+    document.body.appendChild(ta)
+    ta.select()
     try {
-      await navigator.clipboard.writeText(window.location.href)
+      return document.execCommand('copy')
+    } catch {
+      return false
+    } finally {
+      ta.remove()
+    }
+  }
+
+  async function copyLink() {
+    const url = window.location.href
+    const done = () => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    } catch (e) {
-      alert(e instanceof Error ? e.message : String(e))
     }
+    // 逐级降级。第一层是现代 API(HTTPS/localhost 走这条,行为与改动前一致);
+    // 判存在性而不是靠 try/catch 兜——此前直接点 .writeText,undefined 上取属性抛的
+    // TypeError 被 alert 出来,用户看到的就是那句 "Cannot read properties of undefined"。
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(url)
+        done()
+        return
+      } catch (e) {
+        console.error('clipboard.writeText 失败,回退 execCommand', e)
+      }
+    }
+    if (copyViaTextarea(url)) {
+      done()
+      return
+    }
+    // 两条都不通:prompt 的输入框内容是预选中的,Ctrl+C 就能拿走——
+    // 这是没有剪贴板权限时唯一还能把文本交到用户手里的原生手段(alert 里的字没法方便地选)。
+    window.prompt('浏览器不允许自动复制,请手动复制这个链接:', url)
   }
 
   async function handleTrack(lang: string) {
@@ -284,6 +323,19 @@ export function ProjectDetailView({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {/* 放在「换音色」左边(用户要求)。刻意**不**受 !meta?.readonly 限制:换音色要改数据
+              才需要,回听是只读动作,只读演示模式下也该能听自己录的那段。
+              判据用 has_voice_sample 而不是 voice.startsWith('clone:')——那个前缀是上游 TTS
+              返回的约定,后端从未强制过;索引命中才是权威。 */}
+          {project.has_voice_sample && (
+            <button
+              type="button"
+              onClick={() => setVoiceSampleOpen((v) => !v)}
+              className={ghostBtn}
+            >
+              {voiceSampleOpen ? '收起音色' : '当前自定义音色'}
+            </button>
+          )}
           {!meta?.readonly && (
             <button type="button" onClick={() => setVoiceOpen(true)} className={ghostBtn}>
               换音色
@@ -294,6 +346,24 @@ export function ProjectDetailView({
           </button>
         </div>
       </div>
+
+      {/* 播放器另起一行,不塞进上面那个 shrink-0 的按钮行(会把标题挤变形)。
+          走带鉴权的端点而不是 /files 下的样本 URL:那个挂载没有身份校验、靠随机盐保密,
+          而这是真人声音(见后端 get_project_voice_sample 的说明)。同源请求自动带 cookie。 */}
+      {voiceSampleOpen && project.has_voice_sample && (
+        <div className={card}>
+          <div className="mb-2 text-xs font-medium tracking-wide text-muted">
+            当前自定义音色(你上传的那段录音)
+          </div>
+          {/* src 带上音色作版本:URL 恒定的话换音色后字符串不变,面板开着时 React 不会
+              重新加载,旧录音一直在播。 */}
+          <audio
+            src={`/api/projects/${project.project_id}/voice-sample?v=${encodeURIComponent(project.params.voice ?? '')}`}
+            controls
+            className="h-9 w-full"
+          />
+        </div>
+      )}
 
       <ProgressSteps project={project} />
 
