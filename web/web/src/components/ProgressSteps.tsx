@@ -223,6 +223,11 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
           //(不显示比瞎猜成"未配乐"好)。
           const bgm = s.key === 's5' ? BGM_NOTE[project.status['bgm'] ?? ''] : undefined
 
+          // 分格结果挂在「分镜」这一行:panels 只有 S2 会产出。同 bgm 的理由——改造前
+          // 「勾了分格却只有 4/10 页真分格」是完全静默的,界面上根本看不出来。
+          // 老作品没有这个键 → 什么都不渲染,不瞎猜。
+          const panels = s.key === 's2' ? (project.status['panels'] ?? '').match(/^(\d+)\/(\d+)$/) : null
+
           return (
             <li key={s.key} className="group relative flex items-center gap-3">
               <span
@@ -237,6 +242,16 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
                 <span className={`text-[9px] tracking-[2px] ${c.sub}`}>{s.sub}</span>
                 {pageProgress && (
                   <span className="text-xs tabular-nums text-cinnabar">{pageProgress}</span>
+                )}
+                {panels && (
+                  <span
+                    title={panels[1] === panels[2]
+                      ? '每页都已分格'
+                      : `${panels[2]} 页里有 ${Number(panels[2]) - Number(panels[1])} 页没能分格,仍是整页单图`}
+                    className={`text-xs tabular-nums ${panels[1] === panels[2] ? 'text-muted' : 'text-alarm'}`}
+                  >
+                    ▦ 分格 {panels[0]}
+                  </span>
                 )}
                 {bgm && (
                   <span

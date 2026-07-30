@@ -1,28 +1,49 @@
 import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from shanhai.providers.llm import LLMClient
-from shanhai.schema import Project, StoryboardCell
+from shanhai.providers.llm import LLMClient, LLMError
+from shanhai.schema import Panel, Project, StoryboardCell
 from shanhai.steps.s1_script import is_narrator
 
 PAGE_TARGETS = {1: (8, 10), 3: (20, 24), 5: (32, 40)}
 EMOTIONS = {"宁静", "欢快", "紧张", "悲伤", "神秘", "恢弘", "温馨"}
 
 MAX_PANELS_PER_PAGE = 4  # 每页分格上限,防成本失控
+# 每页分格下限。用户勾了「分格排版」就是要每页都分格,这是硬约束而不是建议:
+# 线上「f50b97f4」10 页里只有 4 页分格,根因就是旧 PANEL_RULES 写着「平静场景可以只给
+# 1 格、不必每页都用满格数」,而基础 SYSTEM 又说「一页一格」——模型按 prompt 办事,
+# 大多数页给 0 格,代码只截断不补足,于是静默退回单图。
+# 下限取 2 而不是 1:paneling.LAYOUTS[1] 是整页满铺,1 格与单图页产出完全同形,
+# 用户肉眼分不出来,等于没分格。
+MIN_PANELS_PER_PAGE = 2
 
-PANEL_RULES = """
-分格模式:每页可以拆成 1~4 个格子(panels 字段),按剧情节奏决定格数——
-平静场景可以只给 1 格(等价于铺满整页),高潮或转折场景给 3~4 格,不必每页都用满格数。
+PANEL_RULES = f"""
+分格模式:每页**必须**拆成 {MIN_PANELS_PER_PAGE}~{MAX_PANELS_PER_PAGE} 个格子(panels 字段),
+按剧情节奏决定格数——平缓场景 2 格,高潮或转折场景 3~4 格。
+不允许只给 1 格,也不允许留空:1 格会被排成铺满整页,和不分格的单图页长得一模一样,
+等于用户勾的分格排版没生效。
 每个格子填写:
 - visual_desc:该格自己的构图/景别/氛围(不是整页笼统描述)
 - shot_type:wide(远景)/medium(中景)/closeup(特写)/insert(嵌入式特写叠加格,
   漫画里常见的裁成异形叠在其它格子上面的手法)
 - characters:该格实际出现的角色,可以是页面角色的子集
 每页最多一个 insert 格,只在情绪转折或关键台词处使用,不是每页都要有。
-panels 数量最多 4 个,超出会被截断,请自行控制在这个范围内。"""
+panels 数量最多 {MAX_PANELS_PER_PAGE} 个,超出会被截断,请自行控制在这个范围内。"""
 
-SYSTEM = """你是连环画分镜师。把剧本切分为一页一格的连环画分镜。
+# 开头这句随分格开关切换:分格模式下**绝不能**出现「一页一格」——它与 PANEL_RULES
+# 的「每页必须 2~4 格」直接打架,而两句都在同一个 system prompt 里。
+HEAD_SINGLE = "你是连环画分镜师。把剧本切分为一页一格的连环画分镜。"
+HEAD_PANEL = "你是连环画分镜师。把剧本切分为一页一幅的连环画分镜,每页再分成若干格子。"
+
+# 角色名规则。**必须是单一真源**:S2 首轮与分格补齐两处 prompt 都要带上它。
+# 补齐那次曾经漏掉,实测 LLM 立刻在格子的 visual_desc 里写出"巴特尔身穿深色蒙古袍",
+# 而这段文字是直接进绘图 prompt 的——名字会被画成字面意思。
+NAME_RULES = """- visual_desc 里用外貌或身份指代人物(如"灰衣少年"),不要写角色名(名字会进绘图 prompt 被画成字面意思)
+- 上一条**只管 visual_desc**:characters 字段必须原样填角色表里的名字(如"牧羊少年"),
+  不能改成外貌描述——那是下游按名字取角色设定图的唯一依据,改了就取不到"""
+
+SYSTEM = f"""
 规则:
 - caption 是该页的解说文案(旁白或对白),不超过 80 字
 - 所有 caption 连起来必须能独立讲通整个故事——听众不看画面也能听懂,这是硬性要求
@@ -32,9 +53,7 @@ SYSTEM = """你是连环画分镜师。把剧本切分为一页一格的连环�
 - visual_desc 描述构图、景别、光线、氛围,供绘图使用,不写文字内容
 - visual_desc 只描述**一个瞬间**的静止画面,不要写"先…然后…""从…走到…"这类过程,
   也不要让同一个角色在同一页画面里出现多次(下游是一张图,写成过程会被画成分身)
-- visual_desc 里用外貌或身份指代人物(如"灰衣少年"),不要写角色名(名字会进绘图 prompt 被画成字面意思)
-- 上一条**只管 visual_desc**:characters 字段必须原样填角色表里的名字(如"牧羊少年"),
-  不能改成外貌描述——那是下游按名字取角色设定图的唯一依据,改了就取不到
+{NAME_RULES}
 - characters 只列该页画面中真正出现的可视人物,不含旁白/叙事者(旁白是解说声音不是画面角色)
 - emotion 只能从这些标签里选:宁静/欢快/紧张/悲伤/神秘/恢弘/温馨
 - index 从 1 开始连续编号
@@ -44,6 +63,24 @@ SYSTEM = """你是连环画分镜师。把剧本切分为一页一格的连环�
 
 class _Cells(BaseModel):
     cells: list[StoryboardCell]
+
+
+class _PanelsOf(BaseModel):
+    index: int
+    panels: list[Panel] = Field(default_factory=list)
+
+
+class _PanelBatch(BaseModel):
+    items: list[_PanelsOf] = Field(default_factory=list)
+
+
+BACKFILL_SYSTEM = f"""你是连环画分镜师。下面每一条是一页已经定稿的分镜,但缺少分格方案。
+为**每一页**补出 {MIN_PANELS_PER_PAGE}~{MAX_PANELS_PER_PAGE} 个格子。
+{PANEL_RULES}
+格级字段沿用同一套规则:
+{NAME_RULES}
+逐条对应输入的 index,不合并、不拆分、不遗漏、不改变 index;
+只补 panels,不要改动原有的 caption / visual_desc / characters。"""
 
 
 # hermes-agent 的"导演大师"skill(与编剧大师联动,从剧本出发拆分镜):system 前置
@@ -138,11 +175,43 @@ def _check_cast_names(project: Project) -> None:
               f"这些人物无设定图锚点")
 
 
+def _backfill_panels(project: Project, llm: LLMClient) -> None:
+    """给分格数不足 MIN_PANELS_PER_PAGE 的页再要一次分格方案。
+
+    prompt 改硬之后模型仍可能漏页(它对"平缓场景"的判断不受我们控制),而代码里只截断
+    不补足的老行为就是"10 页只分格 4 页"的直接原因。形状照抄 s5t_translate.run:
+    算出待补子集 → 一次结构化请求 → 按 index 查表合并,合并端对模型的多吐/空吐容错。
+
+    ⚠️ 异常必须吞在这里:S2 抛异常会让 api._save_error 回滚到盘上的旧快照,
+    整份分镜(以及这一轮已经跑好的一切)全部白跑。补齐失败的代价不该是这个,
+    退化成"这几页还是单图"即可,由调用方记进 status 让它可见。
+    """
+    pending = [c for c in project.storyboard if len(c.panels) < MIN_PANELS_PER_PAGE]
+    if not pending:
+        return
+    by_index = {c.index: c for c in project.storyboard}
+    payload = "\n".join(
+        f"{c.index}. 画面:{c.visual_desc} / 解说:{c.caption} / 角色:{','.join(c.characters)}"
+        for c in pending)
+    try:
+        batch = llm.structured(BACKFILL_SYSTEM, f"待补分格的页:\n\n{payload}", _PanelBatch)
+    except LLMError as e:
+        print(f"⚠️ 分格补齐失败,{len(pending)} 页仍为整页单图:{e}")
+        return
+    for item in batch.items:
+        cell = by_index.get(item.index)
+        panels = [p for p in item.panels if p.visual_desc.strip()]
+        if cell is None or len(panels) < MIN_PANELS_PER_PAGE:
+            continue   # 模型偶发多吐/空吐/仍旧只给 1 格,忽略而不是让整轮失败
+        cell.panels = panels[:MAX_PANELS_PER_PAGE]
+
+
 def run(project: Project, llm: LLMClient, use_skill: bool = False) -> Project:
     if project.script is None:
         raise ValueError("先完成 S1")
     lo, hi = PAGE_TARGETS[project.params.duration_min]
-    system = SYSTEM + (PANEL_RULES if project.params.multi_panel else "")
+    head = HEAD_PANEL if project.params.multi_panel else HEAD_SINGLE
+    system = head + SYSTEM + (PANEL_RULES if project.params.multi_panel else "")
     user = (f"页数要求:{lo}~{hi} 页。\n剧本 JSON:\n"
             + project.script.model_dump_json(indent=1))
     if use_skill:
@@ -168,5 +237,13 @@ def run(project: Project, llm: LLMClient, use_skill: bool = False) -> Project:
             cell.panels = []
         else:  # 防御:LLM 可能无视上限,强制裁到 MAX_PANELS_PER_PAGE
             cell.panels = cell.panels[:MAX_PANELS_PER_PAGE]
+    if project.params.multi_panel:
+        _backfill_panels(project, llm)
+        # 诚实链:补齐尽力而为,实际分格了几页要记下来。
+        # 细节**不能**塞进 status["s2"]:前端 ProgressSteps 对环节键是严格相等判断
+        # 'done'/'partial',写成 "done: 4/10" 会让界面把 S2 当成没跑完。
+        # 独立键是既有做法(s5_audio 的 status["bgm"])。
+        paneled = sum(1 for c in project.storyboard if len(c.panels) >= MIN_PANELS_PER_PAGE)
+        project.status["panels"] = f"{paneled}/{len(project.storyboard)}"
     project.status["s2"] = "done"
     return project
