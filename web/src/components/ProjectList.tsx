@@ -1,21 +1,8 @@
 import { useState } from 'react'
 import { api } from '../api'
 import { CardHead } from './decor'
+import { pipelineLabel } from '../pipeline'
 import type { ProjectSummary } from '../types'
-
-function badge(pipeline: string): { cls: string; text: string } {
-  // 降级成片状态形如 "done(降级:N/M 页真人解说,K 页静音兜底)"——仍属已完成,单独标注
-  if (pipeline.startsWith('done')) {
-    return pipeline.includes('降级')
-      ? { cls: 'bg-amber2/15 text-gold', text: '已完成·降级' }
-      : { cls: 'bg-jade/12 text-jade', text: '已完成' }
-  }
-  if (pipeline.startsWith('error')) return { cls: 'bg-alarm/10 text-alarm', text: '出错' }
-  if (pipeline === 'running' || pipeline === 'queued')
-    return { cls: 'bg-amber2/15 text-gold', text: '生成中' }
-  if (pipeline.startsWith('partial')) return { cls: 'bg-kraft text-muted', text: '待合成' }
-  return { cls: 'bg-kraft text-muted', text: pipeline }
-}
 
 export function ProjectList({
   items,
@@ -56,7 +43,7 @@ export function ProjectList({
 
       <ul className="space-y-1.5">
         {items.map((p) => {
-          const b = badge(p.pipeline)
+          const b = pipelineLabel(p.pipeline)
           const on = selectedId === p.project_id
           return (
             <li key={p.project_id} className="flex items-stretch gap-1.5">

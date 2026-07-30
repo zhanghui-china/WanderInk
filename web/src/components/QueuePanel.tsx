@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import { CardHead } from './decor'
 import { GeneratingBars } from './GeneratingBars'
+import { pipelineLabel } from '../pipeline'
 import type { QueueItem } from '../types'
 
 // 全局生成队列:展示 GET /api/queue(基于内存态 _JOBS 实时组装),自身轮询保持新鲜。
@@ -66,7 +67,10 @@ export function QueuePanel({
               <span className="min-w-0">
                 <span className="block truncate font-serif text-sm text-ink">{it.scenic_spot}</span>
                 <span className="block truncate text-[11px] text-muted">
-                  {it.project_id.slice(0, 8)} · {it.owner || '未知'} · {it.pipeline}
+                  {/* 状态走统一映射,不再渲染 running/queued 这种原值(见 ../pipeline.ts)。
+                      这一行是紧凑的三段式,只取中文短标签、不带 detail。 */}
+                  {it.project_id.slice(0, 8)} · {it.owner || '未知'} ·{' '}
+                  {pipelineLabel(it.pipeline).text}
                 </span>
               </span>
             </span>

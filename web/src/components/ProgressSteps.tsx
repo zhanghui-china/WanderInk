@@ -2,6 +2,7 @@ import { BGM_NOTE } from '../bgm'
 import { CardHeadInline } from './decor'
 import { GeneratingBars } from './GeneratingBars'
 import { STAGES } from '../stages'
+import { pipelineLabel } from '../pipeline'
 import type { ProjectDetail } from '../types'
 
 type Cell = { dot: string; label: string; sub: string; tag: string }
@@ -109,6 +110,7 @@ function totalElapsedSeconds(status: Record<string, string>, currentIdx: number)
 export function ProgressSteps({ project }: { project: ProjectDetail }) {
   const running = project.pipeline === 'running' || project.pipeline === 'queued'
   const failed = project.pipeline.startsWith('error')
+  const label = pipelineLabel(project.pipeline)
   // 第一个未完成步骤即“当前步”;partial 是合法降级完成态,视为已推进,
   // 否则当前步指针/失败标红会错位到上游 partial 环节而非真正出错的环节
   const currentIdx = STAGES.findIndex(
@@ -125,8 +127,18 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
       <div className="mb-4 flex items-center gap-2.5">
         <CardHeadInline glyph="程" title="生成进度" />
         {running && <GeneratingBars />}
+        {/* 此前除 running/done 之外一律渲染原值,于是 cancelled、pending 露英文,
+            error:/partial: 则是"英文前缀 + 中文正文"的混搭(本次反馈的正是这个)。
+            改走统一映射(../pipeline.ts);detail 必须留着——出错原因现在正是靠原值带出来的。 */}
         <span className="text-xs tracking-wide text-muted">
-          {running ? '正在生成…' : project.pipeline === 'done' ? '全部完成' : project.pipeline}
+          {running ? (
+            '正在生成…'
+          ) : (
+            <>
+              {label.text}
+              {label.detail && <span className="text-ink-soft">：{label.detail}</span>}
+            </>
+          )}
         </span>
         <span className="ml-auto flex items-center gap-3 text-xs tracking-wide text-muted">
           <span className="tabular-nums">
