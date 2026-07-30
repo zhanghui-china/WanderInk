@@ -305,6 +305,13 @@ export function ProjectDetailView({
               {project.scenic_spot} · {STYLE_LABEL[project.style_preset] ?? project.style_preset} ·{' '}
               {project.params.duration_min} 分钟 ·{' '}
               {project.params.audience} · {project.params.tone}
+              {/* 两态都显示,与旁边音色那段「有值才显示」的写法刻意不同:「没开分格」
+                  本身就是要登记的信息。multi_panel 有默认值 false,老作品零迁移,
+                  显示「整页单图」与它们当时的实际行为一致,不是替旧数据编造结论。
+                  进度卡上的「▦ 分格 4/10」是运行结果(跑之前/失败/老作品都是空),
+                  这里登记的是参数,两者不能互相替代。 */}
+              {' · '}
+              {project.params.multi_panel ? '分格排版' : '整页单图'}
               {project.params.voice && (
                 <> · 音色 {project.params.voice.startsWith('clone:') ? '自定义' : project.params.voice}</>
               )}

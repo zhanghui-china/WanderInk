@@ -439,13 +439,34 @@ def test_list_projects_fields_and_skips_corrupt(tmp_path, monkeypatch):
     items = r.json()
     assert len(items) == 1                    # 损坏项目被跳过
     item = items[0]
-    assert set(item) == {"project_id", "scenic_spot", "owner", "pipeline", "mp4"}
+    assert set(item) == {"project_id", "scenic_spot", "owner", "pipeline", "mp4", "multi_panel"}
     assert item["project_id"] == p.project_id
     assert item["scenic_spot"] == "雷峰塔"
     assert item["owner"] == "someone"
     assert item["pipeline"] == "done"
     # 文件不存在故无 ?v= 后缀,与 _mp4_url 对不存在文件的处理一致
     assert item["mp4"] == f"/files/{p.project_id}/output/final.mp4"
+
+
+def test_list_projects_reports_multi_panel(tmp_path, monkeypatch):
+    """列表要能看出这部作品建的时候勾没勾分格排版。老作品的 project.json 里根本没有
+    params.multi_panel 这个键(该字段是后加的),取默认 False——与它们当时的实际行为
+    一致,不是替旧数据编造结论;更不能因为缺键就让整表失败(与损坏项目同一条不变量)。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    panel = store.create_project("喀纳斯", root=tmp_path)
+    panel.params.multi_panel = True
+    store.save(panel, root=tmp_path)
+    plain = store.create_project("雷峰塔", root=tmp_path)
+    store.save(plain, root=tmp_path)
+    legacy = tmp_path / "legacypid"           # 历史作品:整个 params 都没有
+    legacy.mkdir()
+    (legacy / "project.json").write_text(
+        '{"project_id": "legacypid", "scenic_spot": "黄鹤楼"}', encoding="utf-8")
+
+    items = {it["project_id"]: it["multi_panel"] for it in client.get("/api/projects").json()}
+    assert items[panel.project_id] is True
+    assert items[plain.project_id] is False
+    assert items["legacypid"] is False        # 缺键 → False,且没把整表拖垮
 
 
 def test_list_projects_skips_non_object_json(tmp_path, monkeypatch):

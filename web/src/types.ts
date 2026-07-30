@@ -17,6 +17,8 @@ export interface ProjectSummary {
   owner: string
   pipeline: string
   mp4: string | null
+  // 老作品的 project.json 没有这个键,后端取默认 false —— 与它们当时的实际行为一致
+  multi_panel: boolean
 }
 
 export interface QueueItem {
@@ -83,7 +85,13 @@ export interface ProjectDetail {
   scenic_spot: string
   owner: string
   style_preset: string
-  params: { duration_min: number; audience: string; tone: string; voice?: string }
+  params: {
+    duration_min: number
+    audience: string
+    tone: string
+    voice?: string
+    multi_panel?: boolean
+  }
   status: Record<string, string>
   pipeline: string
   legend: { title: string; summary: string; source_type: string; sources: string[] } | null

@@ -62,7 +62,15 @@ export function ProjectList({
                       {p.owner || '未知'}
                     </span>
                   </span>
-                  <span className="block truncate text-[11px] text-muted">{p.project_id}</span>
+                  {/* 排版方式用紧凑标记而不是详情页那两个整词:侧栏每行只有两行的密集
+                      布局,给每个未分格作品都挂上「整页单图」会把列表淹掉。▦ 与进度卡的
+                      「▦ 分格 4/10」同符号,两处呼应。 */}
+                  <span className="block truncate text-[11px] text-muted">
+                    {p.project_id}
+                    <span className="ml-1.5" title={p.multi_panel ? '分格排版' : '整页单图'}>
+                      {p.multi_panel ? '▦ 分格' : '▤ 单图'}
+                    </span>
+                  </span>
                 </span>
                 <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${b.cls}`}>
                   {b.text}
