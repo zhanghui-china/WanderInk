@@ -199,6 +199,8 @@ cd web && npm run dev              # 前端 :5173,已代理 /api 与 /files 到 
 
 ## 6. 可选:接本地 ComfyUI(三个 shim)
 
+> 本节只讲「接法概览」。三个 shim 在**空白新机器**上从零部署的完整步骤(依赖、逐个启动、systemd、冒烟、排错)见 [deploy-shims.md](deploy-shims.md)。
+
 想用本地 GPU 出图 / 配音 / 配乐时才需要。**先把三件事说清楚:**
 
 1. **不是必需品。** 上面说过,代码只认 OpenAI 兼容协议,全接云端一样跑通。
