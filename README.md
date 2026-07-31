@@ -135,7 +135,20 @@ WantedBy=default.target
 #使用huntun用户登录
 source ~/.bashrc
 
+#安装uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+#将 $HOME/.local/bin 加入 ~/.bashrc中的PATH
+source ~/.bashrc
+uv --version
+
+#安装bun
+curl -fsSL https://bun.sh/install | bash
+#将 $HOME/.bun/bin 加入  ~/.bashrc中的PATH
+source ~/.bashrc
+bun --version
+
 #下载代码仓
+git lfs install
 git clone https://github.com/zhanghui-china/WanderInk 
 cd ~/WanderInk/web
 
@@ -149,6 +162,19 @@ uv run shanhai-web
 #安装web环境
 cd web/web
 bun install && bun run dev
+
+mkdir -p ~/.config/systemd/user
+cd ~
+ln -s ~/WanderInk/web shanhai
+
+#安装shim共用的shim环境
+python3 -m venv ~/shim-venv
+~/shim-venv/bin/pip install fastapi 'uvicorn[standard]' httpx websockets python-multipart
+
+#准备image-shim环境
+cd ~/WanderInk/web
+mkdir -p ~/image-shim
+cp scripts/dgx-shims/image-shim.main.py ~/image-shim/main.py
 ```
 
 编辑\~/.config/systemd/user/shanhai-web.service文件，配置systemctl常驻服务
