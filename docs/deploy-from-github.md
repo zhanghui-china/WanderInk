@@ -204,7 +204,7 @@ cd web && npm run dev              # 前端 :5173,已代理 /api 与 /files 到 
 想用本地 GPU 出图 / 配音 / 配乐时才需要。**先把三件事说清楚:**
 
 1. **不是必需品。** 上面说过,代码只认 OpenAI 兼容协议,全接云端一样跑通。
-2. 仓库里的 `scripts/dgx-shims/*.main.py` 是**存档副本,不是线上真源**(见 [scripts/dgx-shims/README.md](../scripts/dgx-shims/README.md))。改仓库这份对线上没有任何效果。
+2. 仓库里的 `scripts/dgx-shims/<shim>/`(每个含 `main.py` + `pyproject.toml`)是**存档副本,不是线上真源**(见 [scripts/dgx-shims/README.md](../scripts/dgx-shims/README.md))。改仓库这份对线上没有任何效果。
 3. 它们**没有各自的依赖清单**,且读取的 ComfyUI 工作流模板是那台机器的绝对路径。**照搬不能开箱即用**,需要你自己适配。
 
 结构是:shim 是薄壳,把 OpenAI 兼容请求翻译成 ComfyUI(默认 `127.0.0.1:8188`)的 websocket 排队协议,再转回 OpenAI 风格响应。

@@ -1,0 +1,16 @@
+[project]
+name = "shanhai-qwentts-shim"
+version = "0.1.0"
+description = "ComfyUI 语音合成中转层(Qwen3-TTS,OpenAI 兼容 /v1/audio/speech)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "websockets",         # 作为客户端连 ComfyUI 的 /ws 监听完成事件
+    "python-multipart",   # /v1/voices/clone 收 multipart 上传
+]
+# 另需系统 ffmpeg(带 libmp3lame),仅音色克隆调速用,非 pip 依赖。
+
+[tool.uv]
+package = false

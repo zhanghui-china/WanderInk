@@ -80,18 +80,25 @@ shim 每次请求都**现读**这些 JSON,并按写死的节点号往里塞参�
 
 ## 3. shim 层依赖(这一层能写全)
 
-### 3.1 Python
+### 3.1 Python(用 uv)
 
-三个 shim 共用同一套依赖,一个虚拟环境即可:
+每个 shim 都是一个自包含的 uv 项目:仓库里 `scripts/dgx-shims/<shim>/` 各含一个
+`main.py` 和一个 `pyproject.toml`。部署时把整个目录拷到 home,`cd` 进去 `uv sync`
+就会建好 `.venv` 并装好依赖(§4 逐个给命令)。需要 Python ≥ 3.10 与 `uv`。
 
-```bash
-python3 -m venv ~/shim-venv           # Python ≥ 3.10
-~/shim-venv/bin/pip install \
-    fastapi 'uvicorn[standard]' httpx websockets python-multipart
-```
+三者依赖略有差别(已按各自实际 import 精确声明,不用背):
 
-- `python-multipart`:image 的 `/images/edits` 和 qwentts 的 `/voices/clone` 收 multipart 上传,缺了这两个路由 500。
-- `websockets`:qwentts / music 作为**客户端**连 ComfyUI 的 `/ws`(image 不用)。
+| 依赖 | image | qwentts | music | 为什么 |
+|---|:-:|:-:|:-:|---|
+| `fastapi` / `uvicorn[standard]` / `httpx` | ✓ | ✓ | ✓ | 三者的骨架 |
+| `websockets` | | ✓ | ✓ | 作为客户端连 ComfyUI 的 `/ws`;image 走 HTTP 轮询,用不到 |
+| `python-multipart` | ✓ | ✓ | | 收 multipart 上传(image `/images/edits`、qwentts `/voices/clone`);music 只收 JSON |
+
+> `pyproject.toml` 里写了 `[tool.uv] package = false`——因为 shim 是散装脚本、不是可
+> 安装的包,这行让 `uv sync` 只装依赖、不去构建本项目。别删。
+
+> 已经手动建过 venv(比如某次 `uv venv` 留下的空 `.venv`)也没关系:在项目目录里
+> `uv sync` 会直接复用/补齐那个 `.venv`。
 
 ### 3.2 ffmpeg(带 libmp3lame)
 
@@ -111,13 +118,13 @@ ffmpeg -encoders 2>/dev/null | grep libmp3lame     # 有输出才算过关
 
 ## 4. 逐个部署
 
-下面用占位符:`<COMFYUI_ROOT>` = 你存放 §2.2 工作流 JSON 的目录;`~/shim-venv` = §3.1 的虚拟环境。三个 shim 各自一个目录。
+下面用占位符:`<COMFYUI_ROOT>` = 你存放 §2.2 工作流 JSON 的目录。拷贝命令从**仓库根目录**执行;每个 shim 拷成 home 下一个独立目录,各自 `uv sync` 建 `.venv`。
 
 ### 4.1 image-shim
 
 ```bash
-mkdir -p ~/image-shim
-cp scripts/dgx-shims/image-shim.main.py ~/image-shim/main.py
+cp -r scripts/dgx-shims/image-shim ~/image-shim   # 得到 ~/image-shim/{main.py, pyproject.toml}
+cd ~/image-shim && uv sync                        # 建 .venv、装依赖
 ```
 
 ⚠️ **image-shim 的 ComfyUI 地址和模板目录是硬编码常量,必须改源码**(它是三个里唯一不认环境变量的)。编辑 `~/image-shim/main.py` 顶部:
@@ -127,18 +134,18 @@ COMFYUI_SERVER = "http://127.0.0.1:8188"                 # 你的 ComfyUI 地址
 COMFYUI_ROOT   = Path("<COMFYUI_ROOT>")                  # 改成你放 4 个图像工作流 JSON 的目录
 ```
 
-启动 + 冒烟:
+启动 + 冒烟(在 `~/image-shim` 下):
 
 ```bash
-~/shim-venv/bin/uvicorn main:app --host 127.0.0.1 --port 8091   # 在 ~/image-shim 下
-curl -s http://127.0.0.1:8091/health                            # {"ok": true} 才算 ComfyUI 也通
+uv run uvicorn main:app --host 127.0.0.1 --port 8091
+curl -s http://127.0.0.1:8091/health                     # {"ok": true} 才算 ComfyUI 也通
 ```
 
 ### 4.2 qwentts-shim
 
 ```bash
-mkdir -p ~/qwentts-shim
-cp scripts/dgx-shims/qwentts-shim.main.py ~/qwentts-shim/main.py
+cp -r scripts/dgx-shims/qwentts-shim ~/qwentts-shim
+cd ~/qwentts-shim && uv sync
 # 若要音色克隆,把自备的 VoiceClone-QwenTTS.json 也放进 ~/qwentts-shim/
 ```
 
@@ -155,15 +162,15 @@ qwentts 认环境变量,**不改源码**,靠 systemd 或 shell 注入(见 §5):
 
 ```bash
 WORKFLOW_JSON_PATH=<COMFYUI_ROOT>/VoiceDesign-QwenTTS.json \
-  ~/shim-venv/bin/uvicorn main:app --host 127.0.0.1 --port 8090
+  uv run uvicorn main:app --host 127.0.0.1 --port 8090     # 在 ~/qwentts-shim 下
 curl -s http://127.0.0.1:8090/health          # {"status": "ok"}
 ```
 
 ### 4.3 music-shim
 
 ```bash
-mkdir -p ~/music-shim
-cp scripts/dgx-shims/music-shim.main.py ~/music-shim/main.py
+cp -r scripts/dgx-shims/music-shim ~/music-shim
+cd ~/music-shim && uv sync
 ```
 
 同样认环境变量:
@@ -178,7 +185,7 @@ cp scripts/dgx-shims/music-shim.main.py ~/music-shim/main.py
 ```bash
 WORKFLOW_JSON_PATH=<COMFYUI_ROOT>/MusicCreation-ACESTEP1.5XL_api.json \
 FFMPEG_BIN=$(command -v ffmpeg) \
-  ~/shim-venv/bin/uvicorn main:app --host 127.0.0.1 --port 8092
+  uv run uvicorn main:app --host 127.0.0.1 --port 8092     # 在 ~/music-shim 下
 curl -s http://127.0.0.1:8092/health          # {"status": "ok"}
 ```
 
@@ -198,7 +205,7 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=%h/image-shim
-ExecStart=%h/shim-venv/bin/uvicorn main:app --host 127.0.0.1 --port 8091
+ExecStart=%h/image-shim/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8091
 Restart=always
 RestartSec=3
 
@@ -213,7 +220,7 @@ qwentts / music 的 unit 额外用 `Environment=` 注入 §4 表里的变量,例
 WorkingDirectory=%h/music-shim
 Environment="WORKFLOW_JSON_PATH=<COMFYUI_ROOT>/MusicCreation-ACESTEP1.5XL_api.json"
 Environment="FFMPEG_BIN=%h/…/ffmpeg"
-ExecStart=%h/shim-venv/bin/uvicorn main:app --host 127.0.0.1 --port 8092
+ExecStart=%h/music-shim/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8092
 ```
 
 启用:

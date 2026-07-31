@@ -11,11 +11,15 @@ shanhai 通过 OpenAI 兼容接口调用三个本地服务,它们各自是"薄�
 真正的算力在 ComfyUI(`127.0.0.1:8188`),那个进程由另一位队友(系统用户 `wuzi`)维护,
 `huntun` 账号无权管理它。
 
-| 存档文件 | 线上位置 | 端口 | 用途 |
+每个 shim 现在是一个自包含的 uv 项目子目录(`main.py` + `pyproject.toml`),
+空白新机器上 `cd` 进去 `uv sync` 就能建好环境——完整部署见
+[`../../docs/deploy-shims.md`](../../docs/deploy-shims.md)。
+
+| 存档目录 | 线上位置 | 端口 | 用途 |
 |---|---|---|---|
-| `image-shim.main.py` | `~/image-shim/main.py` | 8091 | 图像生成/编辑(S3 三视图、S4 漫画页) |
-| `qwentts-shim.main.py` | `~/qwentts-shim/main.py` | 8090 | 语音合成(S5 配音,Qwen3-TTS VoiceDesign) |
-| `music-shim.main.py` | `~/music-shim/main.py` | 8092 | 背景音乐(S5 BGM,ACE-Step) |
+| `image-shim/` | `~/image-shim/main.py` | 8091 | 图像生成/编辑(S3 三视图、S4 漫画页) |
+| `qwentts-shim/` | `~/qwentts-shim/main.py` | 8090 | 语音合成(S5 配音,Qwen3-TTS VoiceDesign) |
+| `music-shim/` | `~/music-shim/main.py` | 8092 | 背景音乐(S5 BGM,ACE-Step) |
 
 三者都读 `wuzi` 维护的工作流模板(`/home1/wuzi/WanderInk/comfyui-bridge/*.json`),
 **只读、不写入他的目录树**——所以模板一旦改版/搬家,shim 里的节点号或路径可能失配
@@ -64,7 +68,7 @@ ComfyUI 对"输入完全相同"的节点有执行缓存,而工作流模板里的
 ## 同步回 DGX
 
 ```bash
-scp -P 14801 scripts/dgx-shims/image-shim.main.py huntun@21.tcp.vip.cpolar.cn:~/image-shim/main.py
+scp -P 14801 scripts/dgx-shims/image-shim/main.py huntun@21.tcp.vip.cpolar.cn:~/image-shim/main.py
 ssh -p 14801 huntun@21.tcp.vip.cpolar.cn "systemctl --user restart shanhai-image && curl -s http://127.0.0.1:8091/health"
 ```
 
