@@ -167,14 +167,32 @@ mkdir -p ~/.config/systemd/user
 cd ~
 ln -s ~/WanderInk/web shanhai
 
-#安装shim共用的shim环境
-python3 -m venv ~/shim-venv
-~/shim-venv/bin/pip install fastapi 'uvicorn[standard]' httpx websockets python-multipart
-
 #准备image-shim环境
 cd ~/WanderInk/web
 mkdir -p ~/image-shim
 cp scripts/dgx-shims/image-shim.main.py ~/image-shim/main.py
+cd ~/image-shim
+python3 -m venv .venv
+source .venv/bin/activate
+pip install fastapi 'uvicorn[standard]' httpx websockets python-multipart
+
+#准备qwentts-shim环境
+cd ~/WanderInk/web
+mkdir -p ~/qwentts-shim
+cp scripts/dgx-shims/qwentts-shim.main.py ~/qwentts-shim/main.py
+cd ~/qwentts-shim
+python3 -m venv .venv
+source .venv/bin/activate
+pip install fastapi 'uvicorn[standard]' httpx websockets python-multipart
+
+#准备music-shim环境
+cd ~/WanderInk/web
+mkdir -p ~/music-shim
+cp scripts/dgx-shims/music-shim.main.py ~/music-shim/main.py
+cd ~/music-shim
+python3 -m venv .venv
+source .venv/bin/activate
+pip install fastapi 'uvicorn[standard]' httpx websockets python-multipart
 ```
 
 编辑\~/.config/systemd/user/shanhai-web.service文件，配置systemctl常驻服务
