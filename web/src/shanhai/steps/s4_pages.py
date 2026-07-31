@@ -10,7 +10,7 @@ from PIL import Image
 
 from shanhai import typeset
 from shanhai import paneling
-from shanhai.providers.image import ImageClient, reject_if_framed
+from shanhai.providers.image import ImageClient, reject_if_framed, trim_letterbox
 from shanhai.schema import CharacterCard, Panel, Project, StoryboardCell
 from shanhai.styles import STYLE_PRESETS
 
@@ -198,8 +198,8 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
                 refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
                         for c in present if c.turnaround_image]
                 gen_t0 = time.monotonic()
-                art = reject_if_framed(
-                    image.generate(prompt, size=panel_size, references=refs or None))
+                art = trim_letterbox(reject_if_framed(
+                    image.generate(prompt, size=panel_size, references=refs or None)))
                 gen_ms_total += round((time.monotonic() - gen_t0) * 1000)
                 panel_route = image.route_for(refs or None)
                 out = pages_dir / f"page_{cell.index:02d}_panel{i}.png"
@@ -211,7 +211,11 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
                 panel_routes.append(panel_route)
                 lora = image.lora_model or ""
                 break
-            except Exception:  # noqa: BLE001 单格失败不拖垮整页,重试/预算耗尽后放弃该格(不占位符硬凑)
+            except Exception as e:  # noqa: BLE001 单格失败不拖垮整页,重试/预算耗尽后放弃该格(不占位符硬凑)
+                # 必须打印:原先是裸 continue,一格失败连原因都不留,整页最后 status=failed
+                # 而日志里一个字都没有——2026-07-30 排查第 10 页两格全失败时,只能另写脚本
+                # 复现才拿得到异常。放弃这一格可以,悄无声息地放弃不行。
+                print(f"第 {cell.index} 页第 {i} 格生成失败(第 {attempt + 1} 次):{e}")
                 continue
     if not imgs:
         cell.image_route = ""      # 同上:本轮无产出,不留描述上一次生成的陈旧值
@@ -250,8 +254,8 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
             refs = [_downscaled_ref(workdir / c.turnaround_image, ref_cache)
                     for c in present if c.turnaround_image]
             gen_t0 = time.monotonic()
-            art = reject_if_framed(
-                image.generate(prompt, size=image_size, references=refs or None))
+            art = trim_letterbox(reject_if_framed(
+                image.generate(prompt, size=image_size, references=refs or None)))
             gen_ms = round((time.monotonic() - gen_t0) * 1000)
             typeset.compose_page(art, out)
             # 耗时与图同生共死:先存局部变量、等排版和 image 都落定了再写回 cell。
@@ -264,8 +268,8 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
             cell.image_lora = image.lora_model or ""
             cell.status = "confirmed"
             return
-        except Exception:  # noqa: BLE001 单页失败不拖垮整轮,重试/预算耗尽后标 failed
-            pass
+        except Exception as e:  # noqa: BLE001 单页失败不拖垮整轮,重试/预算耗尽后标 failed
+            print(f"第 {cell.index} 页生成失败(第 {attempt + 1} 次):{e}")   # 同上:不静默
     # 清掉可能残留的上一次成功值:这一轮没产出新图,旧的路径/LoRA 描述的是另一次生成,
     # 挂在 failed 页上就是三条假信息(image/image_gen_ms 的同类残留是既有行为,不在本次范围)。
     cell.image_route = ""

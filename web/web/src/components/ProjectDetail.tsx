@@ -137,10 +137,12 @@ function paragraphs(text: string): string[] {
 export function ProjectDetailView({
   project,
   meta,
+  user,
   onChanged,
 }: {
   project: Detail
   meta: Meta | null
+  user: string | null
   onChanged: () => void
 }) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
@@ -159,7 +161,12 @@ export function ProjectDetailView({
   const voiceUpload = useUpload<VoiceSample>()
 
   const generating = project.pipeline === 'queued' || project.pipeline === 'running'
-  const editable = !meta?.readonly && !generating
+  // 别人的作品只能看不能改。判据必须与后端 _editable 严格一致:owner 为空的历史作品视为
+  // 无主、不做归属限制(否则界面把按钮藏了、后端其实允许);owner 非空且不是自己就一律
+  // 只读。**不给 is_admin 开旁路**——后端的 _editable 也没有,管理员旁路只存在于删除作品
+  // 和改全局配置那两处。前端多放行一颗按钮的下场是点了报 403,而不是真能改。
+  const owned = !project.owner || project.owner === user
+  const editable = !meta?.readonly && !generating && owned
   const pendingCount = project.pages.filter(
     (p) => p.status === 'draft' || p.status === 'failed' || !p.audio,
   ).length
@@ -315,6 +322,11 @@ export function ProjectDetailView({
               {project.params.voice && (
                 <> · 音色 {project.params.voice.startsWith('clone:') ? '自定义' : project.params.voice}</>
               )}
+              {/* 按钮直接消失而不给理由,用户会以为功能坏了(上一轮「只有英文旁白支持校对」
+                  就是这么来的)。别人的作品说清楚是谁的、为什么只能看。 */}
+              {!owned && (
+                <> · <span className="text-alarm">{project.owner} 的作品,仅可查看</span></>
+              )}
             </p>
             {/* 剧本/分镜这两步实际用的引擎(模型 + 是否走大师 skill)。勾了大师开关但该环节
                 后端不是 hermes-agent 时后端会静默退化,退化原因也写在这两个值里——在此之前
@@ -343,7 +355,7 @@ export function ProjectDetailView({
               {voiceSampleOpen ? '收起音色' : '当前自定义音色'}
             </button>
           )}
-          {!meta?.readonly && (
+          {!meta?.readonly && owned && (
             <button type="button" onClick={() => setVoiceOpen(true)} className={ghostBtn}>
               换音色
             </button>
@@ -375,7 +387,7 @@ export function ProjectDetailView({
       <ProgressSteps project={project} />
 
       {/* 编辑操作条 */}
-      {!meta?.readonly && (
+      {!meta?.readonly && owned && (
         <div className={card}>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium tracking-wide text-muted">补全重生成</span>
@@ -409,7 +421,7 @@ export function ProjectDetailView({
       )}
 
       {/* 多语种轨:面向外国游客的另一支成片(共用同一套画面,只换译文与配音) */}
-      {!meta?.readonly && (meta?.track_langs?.length ?? 0) > 0 && project.pages.length > 0 && (
+      {!meta?.readonly && owned && (meta?.track_langs?.length ?? 0) > 0 && project.pages.length > 0 && (
         <div className={card}>
           <CardHead glyph="译" title="多语种" />
           <div className="space-y-3">

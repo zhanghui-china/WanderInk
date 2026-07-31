@@ -250,6 +250,54 @@ def test_generate_does_not_apply_frame_check():
     assert c.generate("a cat")           # 带框的图在 provider 层照常放行
 
 
+def _letterboxed_png(w=1024, h=1024, bar=0.12) -> bytes:
+    """模拟"模型自己加了信箱黑边"的图:上下各一整片纯黑,中间是内容。
+    线上 f50b97f4 第 10 页右格就是这样(上下各占 17%)。"""
+    im = Image.new("RGB", (w, h), (0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rectangle((0, round(h * bar), w, h - round(h * bar)), fill=(246, 244, 240))
+    d.ellipse((w // 3, h // 3, w * 2 // 3, h * 2 // 3), fill=(120, 110, 100))  # 画面内容
+    buf = io.BytesIO(); im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_trim_letterbox_crops_the_black_bars():
+    """黑边**裁掉而不是拒绝**:位置精确已知,裁完就是干净的图。
+    最初写成抛异常走重试,线上直接把 f50b97f4 第 10 页从"有黑边"变成"两格都没图、
+    整页 failed"——模型对某些提示词稳定输出带黑边的画幅,重试多少次都一样。"""
+    from shanhai.providers.image import trim_letterbox
+    src = _letterboxed_png(w=1024, h=1024, bar=0.12)
+    out = Image.open(io.BytesIO(trim_letterbox(src))).convert("L")
+    assert out.height < 1024 and out.width == 1024        # 只裁上下,不动宽度
+    assert min(out.getpixel((out.width // 2, 0)),
+               out.getpixel((out.width // 2, out.height - 1))) > 100   # 裁完边上不再是黑的
+
+
+def test_trim_letterbox_needs_both_opposing_edges():
+    """letterbox 恒是成对出现的。只有一条边黑(夜空、深色前景)不该裁——
+    这条守的是 992 张线上成图零误伤的标定结果。"""
+    from shanhai.providers.image import trim_letterbox
+    im = Image.open(io.BytesIO(_letterboxed_png())).convert("RGB")
+    d = ImageDraw.Draw(im)
+    d.rectangle((0, im.height - round(im.height * 0.12), im.width, im.height),
+                fill=(246, 244, 240))            # 抹掉下边那条,只剩上边黑
+    buf = io.BytesIO(); im.save(buf, format="PNG")
+    assert trim_letterbox(buf.getvalue()) == buf.getvalue()    # 原样返回
+
+
+def test_trim_letterbox_leaves_normal_images_untouched():
+    from shanhai.providers.image import trim_letterbox
+    assert trim_letterbox(_scene_png()) == _scene_png()        # 满幅渐变图不该被裁
+
+
+def test_trim_letterbox_ignores_uniformly_dark_images():
+    """整张图本身就暗且平时,从任何一条边扫进去都满足"近黑且均匀",会一路扫到深度上限——
+    那不是边带,是这张图就长这样。少了这条,纯色桩图会被裁成空图。"""
+    from shanhai.providers.image import trim_letterbox
+    buf = io.BytesIO(); Image.new("RGB", (256, 256), (10, 10, 30)).save(buf, format="PNG")
+    assert trim_letterbox(buf.getvalue()) == buf.getvalue()
+
+
 def test_frame_check_needs_both_sides():
     # 只有一侧有暗带(如画面本身左边是深色物体)不该判为边框,否则误报率会很高
     from shanhai.providers.image import reject_if_framed

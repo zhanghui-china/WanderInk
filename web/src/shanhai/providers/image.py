@@ -29,6 +29,22 @@ FRAME_DEPTH_TO = 0.08     # 找到多深为止(再往里就是画面内容了)
 FRAME_SCANLINES = (0.3, 0.5, 0.7)   # 沿边取三条采样线
 FRAME_MIN_VOTES = 2       # 三条里至少两条都看到框线,才认定这条边有框
 
+# --- 信箱黑边检测(2026-07-30 实测标定) ---
+# 与上面的框线是**两类**缺陷:框线是"外侧留白 + 内侧一条暗线",而这里是整条边就是一整片
+# 纯黑(模型把画面当成带黑边的电影画幅来画)。上面那套判据要求 min(outer) > 200,遇到
+# 纯黑边直接不成立,查上下边也拦不住——线上 f50b97f4 第 10 页右格正是这么漏过去的。
+# 判据:一条边往内连续若干行/列都"近黑且极均匀",且**对边同时成立**。letterbox 恒是
+# 成对出现的,要求成对能把夜景/大片深色画面的误伤压到零。
+# 标定:DGX 全量 992 张成图扫描,命中 2 张,人眼复核**两张都是真黑边**,零误伤。
+LETTERBOX_DARK = 40      # 边带平均亮度上限
+LETTERBOX_FLAT = 12      # 边带亮度极差上限(纯色带才算,渐变的深色画面不算)
+LETTERBOX_MIN_DEPTH = 0.01   # 边带至少占这么深(实测命中值 0.014~0.17,远高于此)
+# 也必须是**少数**:整张图本身就暗且平(如纯色桩图、大片夜色)时,从任何一条边扫进去都
+# 满足"近黑且均匀",会一路扫到底——那不是信箱边,是这张图就长这样。实测真黑边最深 0.17,
+# 取 0.35 作上限,扫到上限即判定"不是边带"。少了这条,64×64 纯蓝的测试桩图会被全判成黑边。
+LETTERBOX_MAX_DEPTH = 0.35
+LETTERBOX_SAMPLES = 64   # 每行/列沿边取多少个采样点
+
 
 class ImageGenError(Exception):
     pass
@@ -60,8 +76,63 @@ def _edge_has_line(depth: int, span: int, at) -> bool:
     return votes >= FRAME_MIN_VOTES
 
 
+def _band_depth(at, span: int, depth: int) -> float:
+    """从某条边往内数,连续多少行/列是"近黑且均匀"的,返回占该方向的比例。
+    at(i, x):距该边第 i 行/列、沿边方向第 x 个像素。"""
+    step = max(1, span // LETTERBOX_SAMPLES)
+    cap = round(depth * LETTERBOX_MAX_DEPTH)
+    n = 0
+    for i in range(cap):
+        line = [at(i, x) for x in range(0, span, step)]
+        if sum(line) / len(line) > LETTERBOX_DARK or max(line) - min(line) > LETTERBOX_FLAT:
+            return n / depth
+        n += 1
+    return 0.0      # 一路扫到上限:整张图就是暗的,不是信箱边
+
+
+def _letterbox_bars(px, w: int, h: int) -> tuple[int, int, int, int]:
+    """返回上下左右各要裁掉多少像素(0 = 该边没有黑带)。见文件头 LETTERBOX_* 的标定说明。
+    只认**成对**出现的边带:letterbox 恒是对称的,要求成对能把夜景/深色画面的误伤压到零。"""
+    top = _band_depth(lambda i, x: px[x, i], w, h)
+    bottom = _band_depth(lambda i, x: px[x, h - 1 - i], w, h)
+    left = _band_depth(lambda i, x: px[i, x], h, w)
+    right = _band_depth(lambda i, x: px[w - 1 - i, x], h, w)
+    if min(top, bottom) < LETTERBOX_MIN_DEPTH:
+        top = bottom = 0.0
+    if min(left, right) < LETTERBOX_MIN_DEPTH:
+        left = right = 0.0
+    return (round(top * h), round(bottom * h), round(left * w), round(right * w))
+
+
+def trim_letterbox(data: bytes) -> bytes:
+    """裁掉模型自己加的信箱黑边,没有则原样返回。
+
+    ⚠️ 与 reject_if_framed **刻意不同:这里裁而不是拒**。黑边的位置是精确已知的,裁掉
+    就得到一张干净的图;而画进画面里的分格框线没法安全裁,只能重生成。
+    最初这条也写成了抛异常走重试,线上实测直接把 f50b97f4 第 10 页从"有黑边"变成
+    "两格都没图、整页 failed"——模型对某些提示词稳定输出带黑边的画幅,重试多少次都一样,
+    耗光单格时间预算后该格被丢弃。判据对、处置错。"""
+    try:
+        im = Image.open(io.BytesIO(data))
+        gray = im.convert("L")
+    except Exception:  # noqa: BLE001 解码失败交给 _reject_if_blank 统一报,这里不重复
+        return data
+    w, h = gray.size
+    px = gray.load()
+    if px is None:
+        return data
+    top, bottom, left, right = _letterbox_bars(px, w, h)
+    if not (top or bottom or left or right):
+        return data
+    cropped = im.convert("RGB").crop((left, top, w - right, h - bottom))
+    buf = io.BytesIO()
+    cropped.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def reject_if_framed(data: bytes) -> bytes:
     """拦截"模型自己画了分格边框"的图。判据与阈值见文件头常量的标定说明。
+    (信箱黑边是另一类,走 trim_letterbox 裁掉而不是拒绝。)
 
     ⚠️ 公开但**不在** generate() 里调用,由 s4_pages 在自己的调用点调:这是"S4 页面合格性"
     判据(阈值取自 646 个成图**页**样本),不是通用的图像合格性判据。挂在共享 generate() 上时

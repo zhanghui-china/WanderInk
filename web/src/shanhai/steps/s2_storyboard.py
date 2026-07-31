@@ -2,6 +2,7 @@ import re
 
 from pydantic import BaseModel, Field
 
+from shanhai import paneling
 from shanhai.providers.llm import LLMClient, LLMError
 from shanhai.schema import Panel, Project, StoryboardCell
 from shanhai.steps.s1_script import is_narrator
@@ -16,6 +17,9 @@ MAX_PANELS_PER_PAGE = 4  # 每页分格上限,防成本失控
 # 大多数页给 0 格,代码只截断不补足,于是静默退回单图。
 # 下限取 2 而不是 1:paneling.LAYOUTS[1] 是整页满铺,1 格与单图页产出完全同形,
 # 用户肉眼分不出来,等于没分格。
+# ⚠️ 这个下限卡的是 **paneling.regular_slots(独立版位数)**,不是 len(panels):
+# insert 格叠在别的格子上面、不占独立版位,所以 [medium, insert] 虽然有 2 格,排出来
+# 仍是整页满铺加一个角标(线上 f50b97f4 第 10 页,用户数分格页时数不到它)。
 MIN_PANELS_PER_PAGE = 2
 
 PANEL_RULES = f"""
@@ -29,6 +33,8 @@ PANEL_RULES = f"""
   漫画里常见的裁成异形叠在其它格子上面的手法)
 - characters:该格实际出现的角色,可以是页面角色的子集
 每页最多一个 insert 格,只在情绪转折或关键台词处使用,不是每页都要有。
+insert 格是叠在别的格子上面的,**不占独立版位**:要用 insert 就得配至少 2 个非 insert 的格子
+(即整页至少 3 格),否则这一页排出来仍是整页一张图,等于没分格。
 panels 数量最多 {MAX_PANELS_PER_PAGE} 个,超出会被截断,请自行控制在这个范围内。"""
 
 # 开头这句随分格开关切换:分格模式下**绝不能**出现「一页一格」——它与 PANEL_RULES
@@ -186,7 +192,8 @@ def _backfill_panels(project: Project, llm: LLMClient) -> None:
     整份分镜(以及这一轮已经跑好的一切)全部白跑。补齐失败的代价不该是这个,
     退化成"这几页还是单图"即可,由调用方记进 status 让它可见。
     """
-    pending = [c for c in project.storyboard if len(c.panels) < MIN_PANELS_PER_PAGE]
+    pending = [c for c in project.storyboard
+               if paneling.regular_slots(c.panels) < MIN_PANELS_PER_PAGE]
     if not pending:
         return
     by_index = {c.index: c for c in project.storyboard}
@@ -201,7 +208,7 @@ def _backfill_panels(project: Project, llm: LLMClient) -> None:
     for item in batch.items:
         cell = by_index.get(item.index)
         panels = [p for p in item.panels if p.visual_desc.strip()]
-        if cell is None or len(panels) < MIN_PANELS_PER_PAGE:
+        if cell is None or paneling.regular_slots(panels) < MIN_PANELS_PER_PAGE:
             continue   # 模型偶发多吐/空吐/仍旧只给 1 格,忽略而不是让整轮失败
         cell.panels = panels[:MAX_PANELS_PER_PAGE]
 
@@ -243,7 +250,8 @@ def run(project: Project, llm: LLMClient, use_skill: bool = False) -> Project:
         # 细节**不能**塞进 status["s2"]:前端 ProgressSteps 对环节键是严格相等判断
         # 'done'/'partial',写成 "done: 4/10" 会让界面把 S2 当成没跑完。
         # 独立键是既有做法(s5_audio 的 status["bgm"])。
-        paneled = sum(1 for c in project.storyboard if len(c.panels) >= MIN_PANELS_PER_PAGE)
+        paneled = sum(1 for c in project.storyboard
+                      if paneling.regular_slots(c.panels) >= MIN_PANELS_PER_PAGE)
         project.status["panels"] = f"{paneled}/{len(project.storyboard)}"
     project.status["s2"] = "done"
     return project
