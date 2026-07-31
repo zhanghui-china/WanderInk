@@ -2,6 +2,9 @@
 
 WanderInk 有声连环画生成器的 web 前端(React + Vite + Tailwind),后端为 `src/shanhai/api.py`(FastAPI)。
 
+> 全新机器从零部署(装依赖、配 `.env`、建账号、systemd 托管)见 [../docs/deploy-from-github.md](../docs/deploy-from-github.md)。
+> 本文只讲前端本地开发与构建,默认你已经能把后端跑起来。
+
 ## 本地开发
 
 类型检查用 TypeScript 7 原生编译器 tsgo(@typescript/native-preview),Vite/esbuild 负责转译。
