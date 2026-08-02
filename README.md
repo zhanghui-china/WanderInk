@@ -1,5 +1,11 @@
 # WanderInk
 
+![congratulation_cover](congratulation_cover.jpg)
+
+**《WanderInk》项目获第二届Nvidia DGX Spark黑客松大赛优秀奖！！！**
+
+![nvidia-certificate](nvidia-certificate.jpg)
+
 ## 📖项目简介
 
 **项目起名：**
@@ -771,7 +777,7 @@ WanderInk/
 | 成员                                        | 职责                                             |
 | ------------------------------------------- | ------------------------------------------------ |
 | [张小白](https://github.com/zhanghui-china) | 队长、项目策划、环境部署、项目测试、文档编写     |
-| [Nancy](https://github.com/nancysxy000)     | 队员、文档编制、DEMO视频制作                     |
+| [Nancy](https://github.com/nancysxy000)     | 队员、PPT文档编制、DEMO视频制作                  |
 | [轻踏](https://github.com/DoubleCore)       | 队员、Hermes 编剧/导演 skill 迭代                |
 | [般度五子](https://github.com/Bandukids)    | 队员、ComfyUI 服务部署与开发、图像/音频/音乐管线 |
 | [馄饨](https://github.com/nativeas)         | 队员、Web 前后台开发                             |
