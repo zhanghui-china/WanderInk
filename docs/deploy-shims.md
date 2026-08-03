@@ -6,7 +6,7 @@
 >
 > **不管什么**:ComfyUI 本体、自定义节点、模型权重的安装。那些是**外部依赖、且不在本仓库**,本文只给出「你必须自备什么」的精确清单(见 §2),给不出保证跑通的安装步骤。
 >
-> 相关文档:shim 源码存档与设计说明见 [`../scripts/dgx-shims/README.md`](../scripts/dgx-shims/README.md);参考机(DGX)的历史变更见 [`deploy-dgx.md`](deploy-dgx.md);日常运维速查见 [`ops-dgx.md`](ops-dgx.md)。
+> 相关文档:三个 shim 的**接口文档**(字段、状态码、示例)见 [`shims-api.md`](shims-api.md);源码存档与设计说明见 [`../scripts/dgx-shims/README.md`](../scripts/dgx-shims/README.md);参考机(DGX)的历史变更见 [`deploy-dgx.md`](deploy-dgx.md);日常运维速查见 [`ops-dgx.md`](ops-dgx.md)。
 
 ---
 

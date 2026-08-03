@@ -13,7 +13,8 @@ shanhai 通过 OpenAI 兼容接口调用三个本地服务,它们各自是"薄�
 
 每个 shim 现在是一个自包含的 uv 项目子目录(`main.py` + `pyproject.toml`),
 空白新机器上 `cd` 进去 `uv sync` 就能建好环境——完整部署见
-[`../../docs/deploy-shims.md`](../../docs/deploy-shims.md)。
+[`../../docs/deploy-shims.md`](../../docs/deploy-shims.md),
+对外 HTTP 接口(字段/状态码/示例)见 [`../../docs/shims-api.md`](../../docs/shims-api.md)。
 
 | 存档目录 | 线上位置 | 端口 | 用途 |
 |---|---|---|---|
