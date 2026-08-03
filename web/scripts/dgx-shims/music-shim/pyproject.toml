@@ -1,0 +1,15 @@
+[project]
+name = "shanhai-music-shim"
+version = "0.1.0"
+description = "ComfyUI 背景音乐中转层(ACE-Step,OpenAI 兼容 /v1/audio/music)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "websockets",         # 作为客户端连 ComfyUI 的 /ws 监听完成事件
+]
+# 另需系统 ffmpeg(带 libmp3lame),每次输出转 mp3 都用,硬依赖。
+
+[tool.uv]
+package = false
