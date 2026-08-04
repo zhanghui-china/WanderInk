@@ -3,7 +3,7 @@
 `image` / `qwentts` / `music` 三个 shim 对外暴露的 HTTP 接口。本文档以源码为准
 (`scripts/dgx-shims/<shim>/main.py`),字段、默认值、状态码均逐条核对过。
 
-- 部署方式见 [deploy-shims.md](deploy-shims.md);存档与设计说明见 [../scripts/dgx-shims/README.md](../scripts/dgx-shims/README.md)。
+- 部署方式见 [deploy-shims.md](deploy-shims.md);对局域网开放这三个接口见 [deploy-gateway.md](deploy-gateway.md);存档与设计说明见 [../scripts/dgx-shims/README.md](../scripts/dgx-shims/README.md)。
 - 调用方是 shanhai 的 `src/shanhai/providers/{image,tts,music}.py`,契约见 §5。
 
 ---
@@ -14,7 +14,7 @@
 |---|---|
 | 服务 | image `:8091` · qwentts `:8090` · music `:8092`(均 FastAPI + uvicorn) |
 | 路由前缀 | 业务接口一律 `/v1/...`(OpenAI 兼容);**`/health` 在根路径,不带 `/v1`** |
-| 鉴权 | **无。** 三个 shim 不校验任何 token,安全边界完全靠只监听 `127.0.0.1`。⚠️ 若改绑 `0.0.0.0`,等于把生图/合成能力裸奔到网络上 |
+| 鉴权 | **无。** 三个 shim 不校验任何 token。三者本身仍只监听 `127.0.0.1`,⚠️ 别改绑 `0.0.0.0`;但**若部署了网关**(`:8099`,见 [deploy-gateway.md](deploy-gateway.md)),它们会经网关间接暴露到局域网,此时安全边界完全落在网络层 |
 | 调用语义 | **同步阻塞**:一个请求 = 一次完整生成,响应返回时产物已就绪。内部是 ComfyUI 排队协议,但对调用方不暴露任务 id、无需轮询 |
 | 并发 | 单进程 async;真正的串行点在 ComfyUI(共享 GPU 排队),shim 本身不限流 |
 | 错误体 | FastAPI 默认形状:`{"detail": "<中文说明>"}`(`/health` 的 503 除外,见 §2.1) |

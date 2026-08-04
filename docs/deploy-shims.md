@@ -6,7 +6,7 @@
 >
 > **不管什么**:ComfyUI 本体、自定义节点、模型权重的安装。那些是**外部依赖、且不在本仓库**,本文只给出「你必须自备什么」的精确清单(见 §2),给不出保证跑通的安装步骤。
 >
-> 相关文档:三个 shim 的**接口文档**(字段、状态码、示例)见 [`shims-api.md`](shims-api.md);源码存档与设计说明见 [`../scripts/dgx-shims/README.md`](../scripts/dgx-shims/README.md);参考机(DGX)的历史变更见 [`deploy-dgx.md`](deploy-dgx.md);日常运维速查见 [`ops-dgx.md`](ops-dgx.md)。
+> 相关文档:三个 shim 的**接口文档**(字段、状态码、示例)见 [`shims-api.md`](shims-api.md);要让局域网其它机器也能调用这三个能力,见 [`deploy-gateway.md`](deploy-gateway.md)(可选的统一入口);源码存档与设计说明见 [`../scripts/dgx-shims/README.md`](../scripts/dgx-shims/README.md);参考机(DGX)的历史变更见 [`deploy-dgx.md`](deploy-dgx.md);日常运维速查见 [`ops-dgx.md`](ops-dgx.md)。
 
 ---
 
@@ -233,11 +233,21 @@ loginctl enable-linger "$USER"     # 没这条,注销后服务被杀
 
 > image-shim 因为地址/目录是**改在源码里**的,unit 不需要为它注入 ComfyUI 相关环境变量。
 
+三个 unit 都绑 `127.0.0.1`,这是刻意的——shim 没有任何鉴权,安全边界就靠它。
+要让**局域网其它机器**也能调这三个能力,不要改这里的绑定地址,而是在前面加一层网关:
+见 [`deploy-gateway.md`](deploy-gateway.md)(第 4 个 user 服务 `shanhai-gateway`,端口 8099)。
+
 ---
 
 ## 6. 接回 shanhai
 
 在 shanhai 应用的 `.env` 里把三类端点指到本机 shim。**base_url 要带 `/v1` 后缀**(路由是 `/v1/...`):
+
+> ⚠️ **这三行必须是 `127.0.0.1`,不能填 shim 网关(`:8099`)的局域网地址。**
+> `providers/_http.py` 的本地单并发锁与 `runtime_config.py` 的出图并发档位都按 hostname 判定:
+> 换成非 loopback 地址后,同卡串行保护会**静默失效**、出图会自动变 2 路并发抢同一张卡
+> (2026-07-13 实测:并发命中同卡时 LLM 从数十秒被拖到接近 900s 超时)。
+> 网关只服务外部调用方,详见 [`deploy-gateway.md`](deploy-gateway.md) §0。
 
 ```bash
 # 图像 —— 注意 API_MODE 必须是 images_api(shim 走 /images/generations|edits 契约,

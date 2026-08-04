@@ -1,0 +1,15 @@
+[project]
+name = "shanhai-shim-gateway"
+version = "0.1.0"
+description = "三个 ComfyUI shim 的统一局域网入口(纯转发,不解析请求体)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    # 刻意**不**装 python-multipart:网关按原始字节透传,从不解析 multipart。
+]
+
+# 这是散装脚本(只有 main.py),不是可安装的包:告诉 uv 只装依赖、不构建/安装本项目。
+[tool.uv]
+package = false
