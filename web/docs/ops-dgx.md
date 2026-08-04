@@ -5,7 +5,7 @@
 
 ## 服务清单
 
-一共 4 个 systemd **user** 服务(不是系统级服务,别加 `sudo`,命令里也不用 `--system`):
+一共 5 个 systemd **user** 服务(不是系统级服务,别加 `sudo`,命令里也不用 `--system`):
 
 | 服务名 | 端口 | 作用 | 依赖 |
 |---|---|---|---|
@@ -13,6 +13,10 @@
 | `shanhai-image` | 8091 | 图像生成 shim,把 OpenAI 兼容接口转发给本机 ComfyUI(:8188) | ComfyUI 进程(队友 wuzi 维护,见下方"8091 图像服务"一节) |
 | `shanhai-tts` | 8090 | 配音 shim(Qwen3-TTS VoiceDesign),同样经 ComfyUI | 同上,ComfyUI |
 | `shanhai-music` | 8092 | 配乐 shim(ACE-Step),同样经 ComfyUI | 同上,ComfyUI |
+| `shanhai-gateway` | 8099 | **可选**。三个 shim 的统一局域网入口,让别的机器也能调生成能力 | 弱依赖:三个 shim 挂着它照样起,只是转发时返回 502 |
+
+前四个只绑 `127.0.0.1`;**只有 `shanhai-gateway` 绑 `0.0.0.0`**,它是唯一对局域网可见的 shim 入口。
+没部署网关就当它不存在,下面凡是提到 `shanhai-gateway` 的命令跳过即可。详见 [deploy-gateway.md](deploy-gateway.md)。
 
 image/tts/music 三个都是"薄壳"(shim):自己只做协议转换,真正算力都在 ComfyUI(`127.0.0.1:8188`)——这个 ComfyUI 进程**不是** shanhai 的服务,由另一个系统用户 `wuzi` 独立维护,`huntun` 这个账号既没有 sudo 也没有权限直接管它,这三个 shim 挂了/超时,先查 ComfyUI 是不是活的(见下)。
 
@@ -20,9 +24,9 @@ image/tts/music 三个都是"薄壳"(shim):自己只做协议转换,真正算力
 
 ```bash
 # 全部一起
-systemctl --user start   shanhai-web shanhai-tts shanhai-image shanhai-music
-systemctl --user stop    shanhai-web shanhai-tts shanhai-image shanhai-music
-systemctl --user restart shanhai-web shanhai-tts shanhai-image shanhai-music
+systemctl --user start   shanhai-web shanhai-tts shanhai-image shanhai-music shanhai-gateway
+systemctl --user stop    shanhai-web shanhai-tts shanhai-image shanhai-music shanhai-gateway
+systemctl --user restart shanhai-web shanhai-tts shanhai-image shanhai-music shanhai-gateway
 
 # 单个(把服务名换掉即可)
 systemctl --user status  shanhai-web
@@ -54,7 +58,17 @@ curl http://127.0.0.1:8091/health     # 图像 shim:{"ok":true}
 curl http://127.0.0.1:8090/health     # 配音 shim:{"status":"ok"}
 curl http://127.0.0.1:8092/health     # 配乐 shim:{"status":"ok"}
 curl http://127.0.0.1:8188/system_stats   # ComfyUI 本尊:200 说明它还活着
+curl http://127.0.0.1:8099/health     # 网关(若已部署):一次探完三个上游,全通才 200
 ```
+
+网关那条最省事——它把三个 shim 的健康状态聚合成一份,不通时 body 里直接指名是哪个、上游原话是什么:
+
+```json
+{"ok": false, "upstreams": {"image": {"ok": true}, "tts": {"ok": true},
+ "music": {"ok": false, "status_code": 502, "upstream": {"detail": "ComfyUI 不可达: ..."}}}}
+```
+
+⚠️ image shim 的 `/health` 在 ComfyUI 异常时返回的是 **200 + `{"ok":false}`**,别只看状态码。
 
 > **三个 shim 的源码存档**:`~/image-shim`、`~/qwentts-shim`、`~/music-shim` 的 `main.py`
 > 都不在版本控制里,但仓库的 [`scripts/dgx-shims/`](../scripts/dgx-shims/) 存了一份**副本**,
@@ -94,7 +108,7 @@ scripts/deploy-dgx.sh --force    # 确实要打断在途任务时才用
 
 **DGX 整机重启后的兜底**(即便 linger 已开,出问题时的手动补救):
 ```bash
-systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music
+systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music shanhai-gateway
 curl http://127.0.0.1:8188/system_stats   # 200 说明 ComfyUI 也活着;不通则联系 wuzi
 ```
 
@@ -104,3 +118,9 @@ curl http://127.0.0.1:8188/system_stats   # 200 说明 ComfyUI 也活着;不通�
 
 - 局域网直连:`http://<DGX 局域网 IP>:5000`(IP 走 DHCP 会变,DGX 上 `hostname -I` 现查为准,不要死记旧 IP)。
 - 团队公网访问走 cpolar 隧道(具体域名/端口由维护 cpolar 的人提供)。
+- **shim 网关**(若已部署):`http://<DGX 局域网 IP>:8099/v1` —— 给别的机器直接调生图/配音/配乐用,
+  三种能力共用这一个 base_url。接口与示例见 [deploy-gateway.md](deploy-gateway.md) §2、§6。
+
+> ⚠️ **cpolar 只暴露主站(5000),不要把 8099 也转出去。** 网关没有任何鉴权,安全边界完全靠"仅局域网可达";
+> 一旦被转到公网,等于把这块 GPU 和 ComfyUI 的 `input/` 目录向所有人开放,而 ComfyUI 归队友 wuzi 维护、
+> 这个账号无权处置。网关自己察觉不到被转发,只能靠人守住这条线。

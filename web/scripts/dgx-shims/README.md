@@ -21,6 +21,11 @@ shanhai 通过 OpenAI 兼容接口调用三个本地服务,它们各自是"薄�
 | `image-shim/` | `~/image-shim/main.py` | 8091 | 图像生成/编辑(S3 三视图、S4 漫画页) |
 | `qwentts-shim/` | `~/qwentts-shim/main.py` | 8090 | 语音合成(S5 配音,Qwen3-TTS VoiceDesign) |
 | `music-shim/` | `~/music-shim/main.py` | 8092 | 背景音乐(S5 BGM,ACE-Step) |
+| `gateway/` | `~/gateway/main.py` | 8099 | **可选**。三个 shim 的统一局域网入口,见 [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md) |
+
+`gateway/` **不是** shim——它不做协议转换、不碰 ComfyUI,只按路由表原样转发字节。
+上面三个只绑 `127.0.0.1`,只有它绑 `0.0.0.0`。
+⚠️ **给某个 shim 加了新路由,必须同步 `gateway/main.py` 的 `_ROUTES` 表**,否则新路由经网关是静默 404。
 
 三者都读 `wuzi` 维护的工作流模板(`/home1/wuzi/WanderInk/comfyui-bridge/*.json`),
 **只读、不写入他的目录树**——所以模板一旦改版/搬家,shim 里的节点号或路径可能失配
@@ -73,7 +78,8 @@ scp -P 14801 scripts/dgx-shims/image-shim/main.py huntun@21.tcp.vip.cpolar.cn:~/
 ssh -p 14801 huntun@21.tcp.vip.cpolar.cn "systemctl --user restart shanhai-image && curl -s http://127.0.0.1:8091/health"
 ```
 
-qwentts/music 同理(服务名 `shanhai-tts` / `shanhai-music`,健康检查端口 8090 / 8092)。
+qwentts/music/gateway 同理(服务名 `shanhai-tts` / `shanhai-music` / `shanhai-gateway`,
+健康检查端口 8090 / 8092 / 8099)。
 **改线上前先备份**:`cp ~/<shim>/main.py ~/<shim>/main.py.bak-$(date +%Y%m%d-%H%M)`。
 
 日常运维排查见 [`docs/ops-dgx.md`](../../docs/ops-dgx.md)。
