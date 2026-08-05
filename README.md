@@ -176,29 +176,34 @@ ln -s ~/WanderInk/web shanhai
 #准备image-shim环境
 cd ~/WanderInk/web
 mkdir -p ~/image-shim
-cp scripts/dgx-shims/image-shim.main.py ~/image-shim/main.py
+cp scripts/dgx-shims/image-shim/main.py ~/image-shim/main.py
+cp scripts/dgx-shims/image-shim/pyproject.toml ~/image-shim/pyproject.toml
 cd ~/image-shim
-python3 -m venv .venv
-source .venv/bin/activate
-pip install fastapi 'uvicorn[standard]' httpx websockets python-multipart
+uv sync
 
 #准备qwentts-shim环境
 cd ~/WanderInk/web
 mkdir -p ~/qwentts-shim
-cp scripts/dgx-shims/qwentts-shim.main.py ~/qwentts-shim/main.py
+cp scripts/dgx-shims/qwentts-shim/main.py ~/qwentts-shim/main.py
+cp scripts/dgx-shims/qwentts-shim/pyproject.toml ~/qwentts-shim/pyproject.toml
 cd ~/qwentts-shim
-python3 -m venv .venv
-source .venv/bin/activate
-pip install fastapi 'uvicorn[standard]' httpx websockets python-multipart
+uv sync
 
 #准备music-shim环境
 cd ~/WanderInk/web
 mkdir -p ~/music-shim
-cp scripts/dgx-shims/music-shim.main.py ~/music-shim/main.py
+cp scripts/dgx-shims/music-shim/main.py ~/music-shim/main.py
+cp scripts/dgx-shims/music-shim/pyproject.toml ~/music-shim/pyproject.toml
 cd ~/music-shim
-python3 -m venv .venv
-source .venv/bin/activate
-pip install fastapi 'uvicorn[standard]' httpx websockets python-multipart
+uv sync
+
+#准备gateway环境
+cd ~/WanderInk/web
+mkdir -p ~/gateway
+cp scripts/dgx-shims/gateway/main.py ~/gateway/main.py
+cp scripts/dgx-shims/gateway/pyproject.toml ~/gateway/pyproject.toml
+cd ~/gateway
+uv sync
 ```
 
 编辑\~/.config/systemd/user/shanhai-web.service文件，配置systemctl常驻服务
@@ -281,6 +286,28 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 ```
+
+编辑\~/.config/systemd/user/shanhai-gateway.service文件，配置systemctl常驻服务
+
+```
+[Unit]
+Description=shanhai gateway
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=%h/gateway
+
+[Service]
+WorkingDirectory=%h/gateway
+Environment="PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=%h/gateway/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8099
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+
 
 #### 2.3 安装Hermes环境
 
@@ -537,11 +564,11 @@ Jul 18 16:27:09 gx10-8e22 conda[86116]: [INFO] Prompt executed in 28.26 seconds
 #使用huntun用户登录
 source ~/.bashrc
 
-# 启动 Web、TTS、图像和音乐服务
-systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music
+# 启动 Web、TTS、图像和音乐、Gateway服务
+systemctl --user start shanhai-web shanhai-tts shanhai-image shanhai-music shanhai-gateway
 
 # 查看服务状态
-systemctl --user status shanhai-web shanhai-tts shanhai-image shanhai-music
+systemctl --user status shanhai-web shanhai-tts shanhai-image shanhai-music shanhai-gateway
 ```
 
 服务将在 `8090、8091、8092`端口 启动。
@@ -722,6 +749,10 @@ WanderInk/
 
 ## 📆更新说明及团队动态
 
+[2026.8.4] **馄饨**增加反向代理shanhai-gateway功能。
+
+[2026.8.2] WanderInk团队**张小白**、**馄饨**和**般度五子**到上海松江**上影昊浦智慧产业社区**参加决赛路演，并获得阳光普照的**优秀奖**。 
+
 [2026.7.30] WanderInk完善**分格排版**功能，允许用户**修改分镜脚本**和**旁白文字**。
 
 [2026.7.29] **馄饨**制作决赛路演PPT。WanderInk提供**用户上传图片生成人物三视图**功能，允许用户**自创文旅IP形象**，并支持**多语言字幕封装**。
@@ -778,7 +809,7 @@ WanderInk/
 | ------------------------------------------- | ------------------------------------------------ |
 | [张小白](https://github.com/zhanghui-china) | 队长、项目策划、环境部署、项目测试、文档编写     |
 | [Nancy](https://github.com/nancysxy000)     | 队员、PPT文档编制、DEMO视频制作                  |
-| [轻踏](https://github.com/DoubleCore)       | 队员、Hermes 编剧/导演 skill 迭代                |
+| [轻踏](https://github.com/DoubleCore)       | 队员、Hermes 编剧/导演 skill 试验                |
 | [般度五子](https://github.com/Bandukids)    | 队员、ComfyUI 服务部署与开发、图像/音频/音乐管线 |
 | [馄饨](https://github.com/nativeas)         | 队员、Web 前后台开发                             |
 
