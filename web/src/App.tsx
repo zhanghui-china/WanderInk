@@ -107,7 +107,9 @@ export default function App() {
         const d = await api.get(selectedId)
         if (!alive) return
         setDetail(d)
-        if (ACTIVE.has(d.pipeline)) {
+        // 失联的项目磁盘上永远停在 running,不排除它的话这里会 2 秒一轮转到用户关标签页
+        // (原本无重试上限、无超时)。它已经没人在推进,轮询不会等到任何变化。
+        if (ACTIVE.has(d.pipeline) && !d.stalled) {
           timer = window.setTimeout(tick, 2000)
         } else {
           refreshList()
@@ -159,7 +161,9 @@ export default function App() {
     refreshList()
   }
 
-  const activeCount = list.filter((p) => ACTIVE.has(p.pipeline)).length
+  // 排除失联项:这个数字来自列表(读盘),而队列面板来自内存 _JOBS。不排除的话两个数据源
+  // 会打架——顶栏说「1 部生成中」,队列面板却因为没有条目整个不渲染。
+  const activeCount = list.filter((p) => ACTIVE.has(p.pipeline) && !p.stalled).length
 
   if (!authChecked) return null // 登录态未知前先不渲染,避免闪现登录页
   const drifted = isDrifted(__BUILD__, backendBuild)

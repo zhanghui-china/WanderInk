@@ -181,6 +181,29 @@ def _job_of(project_id: str) -> Future | None:
         return _JOBS.get(project_id)
 
 
+def _stalled(project_id: str, pipeline: str) -> bool:
+    """作业失联:磁盘写着生成中,但内存里已经没有还在推进它的作业。
+
+    最常见的成因是重启硬杀——ThreadPoolExecutor 的工作线程是非守护线程,atexit 会 join 它们,
+    而 S4 可能跑几十分钟,systemd 默认 90s 后升级 SIGKILL,所以"重启时正在跑管线"几乎必然
+    走成硬杀(那一类由下次启动的 reconcile_zombie_jobs 对账)。另有一条**不需要重启**就能中招的
+    路径:_save_error 自身失败(项目文件损坏 → 静默 return;或落盘抛异常 → 被 Future 吞掉),
+    线程正常结束、f.done() 立即为真,磁盘却停在 running。
+
+    「有无活作业」的定义与 cancel_project(f is None or f.done())、_editable
+    (f is not None and not f.done())逐字一致,收口在这里,不要在第三处手写。
+
+    不会误报提交窗口:create_project/run_step/run_track 的「写 queued → submit」整段在
+    _JOBS_LOCK 内,而 _job_of 取同一把锁,故并发请求看不到中间态。
+
+    收 pipeline 字符串而不是 Project:list_projects 刻意不做全量反序列化(见其 PERF 注释),
+    只有裸 dict 可用,两处得共用同一个判据。"""
+    if pipeline not in ("running", "queued"):
+        return False
+    f = _job_of(project_id)
+    return f is None or f.done()
+
+
 def _check_cancelled(project_id: str) -> bool:
     """在 _JOBS_LOCK 下查询并消费该项目的取消标记(命中即移除,不重复触发)。"""
     with _JOBS_LOCK:
@@ -499,6 +522,9 @@ def _serialize(p: Project) -> dict:
         "params": p.params.model_dump(),
         "status": p.status,
         "pipeline": p.status.get("pipeline", "pending"),
+        # 计算字段,**不落盘**:它是"此刻内存里有没有作业"的函数,写进 project.json 就会变成
+        # 过期的谎言。前端靠它区分「真在生成」与「磁盘写着生成中但没人在推」,后者要给出口。
+        "stalled": _stalled(p.project_id, p.status.get("pipeline", "pending")),
         "legend": p.legend.model_dump() if p.legend else None,
         # 只给布尔位,原文走 /api/projects/{id}/story 按需拉。原文上限 20000 字,
         # 而详情端点在管线跑动时被前端每 2 秒轮询一次(App.tsx 的 tick),
@@ -714,6 +740,44 @@ def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
     return {"cancelling": True}
 
 
+@app.post("/api/projects/{project_id}/reset")
+def reset_project(project_id: str, user: str = Depends(current_user)) -> dict:
+    """把**失联**作业的状态改回终态,让作品从"永远显示生成中"的死局里出来。
+
+    与 cancel 是一对:cancel 管还活着的作业(协作式,在下一个环节切换点生效),
+    reset 管已经没人推进、cancel 会返回 400 的那种。
+
+    **刻意不能打断真在跑的作业**:Python 杀不掉线程,重置一个仍在运行的作业,只会被它醒来后的
+    _locked_save 盖回去——按钮会变成"时灵时不灵",比没有更坏。故有活作业时一律 409 指回 cancel。
+
+    写成 error 态而不是回滚到某一步:与 reconcile_zombie_jobs 的 "error: 服务重启,生成中断"
+    同形,复用现成的展示与重跑路径,且保留"这次生成出过问题"这个事实供事后排查。
+    已完成的步骤全部保留,用户重置后可以直接单步重跑接着往下走。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止重置")
+    # 全程持 project 锁并在锁内重载:与后台线程的 _locked_save 互斥,避免丢更新。
+    # 锁序恒为 project→jobs(_stalled 内的 _job_of 再取 _JOBS_LOCK),与其它端点一致。
+    with _project_lock(project_id):
+        try:
+            p = store.load(project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(404, f"项目不存在: {project_id}") from e
+        if not _may_edit(p, user):
+            raise HTTPException(403, "只能重置自己的项目")
+        if not _stalled(project_id, p.status.get("pipeline", "pending")):
+            # 两种"不该重置"分开回,不合并成一句:用户要知道自己撞的是哪一堵墙。
+            f = _job_of(project_id)
+            if f is not None and not f.done():
+                raise HTTPException(409, "该项目有生成作业正在进行,请用「取消」")
+            raise HTTPException(400, "该项目当前不是生成中状态,无需重置")
+        p.status["pipeline"] = "error: 已手动重置(生成已中断)"
+        p.status["pipeline_finished_at"] = _now_iso()
+        store.save(p)
+    with _JOBS_LOCK:  # 与三处提交路径同样的卫生动作:清掉可能残留的陈旧取消标记
+        _CANCELLED.discard(project_id)
+    return _serialize(p)
+
+
 @app.get("/api/projects")
 def list_projects(user: str = Depends(current_user)) -> list[dict]:
     # PERF:列表端点每次登录/管线跑完都触发,项目多时逐个 store.load(Pydantic 全量校验)会成最慢端点。
@@ -727,10 +791,16 @@ def list_projects(user: str = Depends(current_user)) -> list[dict]:
             continue
         if not isinstance(d, dict):  # 合法 JSON 但非对象(null/[]/42/字符串):下面 d.get 会抛,同样跳过
             continue
+        pid = d.get("project_id") or meta.parent.name
+        pipeline = (d.get("status") or {}).get("pipeline", "pending")
         item = {
-            "project_id": d.get("project_id") or meta.parent.name,
+            "project_id": pid,
             "scenic_spot": d.get("scenic_spot", ""), "owner": d.get("owner", ""),
-            "pipeline": (d.get("status") or {}).get("pipeline", "pending"),
+            "pipeline": pipeline,
+            # 顶栏「N 部生成中」从这份列表算,而队列面板读的是内存 _JOBS。不带上 stalled 的话
+            # 两个数据源会打架:顶栏说「1 部生成中」、队列面板却整个不渲染。_job_of 只是一次
+            # 加锁的字典查找,逐项调用的开销相对上面这段 json.loads 可忽略。
+            "stalled": _stalled(pid, pipeline),
             "mp4": _mp4_url((d.get("output") or {}).get("mp4", "")),
             # 建作品时勾没勾分格排版。d 本来就是已解析的 dict,多取一个键零额外成本,
             # 不必为它退回 store.load 全量反序列化(那正是上面这段注释在避免的事)。

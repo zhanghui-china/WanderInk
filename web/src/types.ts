@@ -16,6 +16,8 @@ export interface ProjectSummary {
   scenic_spot: string
   owner: string
   pipeline: string
+  // 后端计算字段(不落盘):磁盘写着生成中,但后台已无作业在推进它。见 api._stalled
+  stalled: boolean
   mp4: string | null
   // 老作品的 project.json 没有这个键,后端取默认 false —— 与它们当时的实际行为一致
   multi_panel: boolean
@@ -94,6 +96,9 @@ export interface ProjectDetail {
   }
   status: Record<string, string>
   pipeline: string
+  // 后端计算字段(不落盘):磁盘写着生成中,但后台已无作业在推进它——服务重启硬杀或
+  // 异常中断的残留。为 true 时界面不能再假装在生成,要给出恢复入口。见 api._stalled
+  stalled: boolean
   legend: { title: string; summary: string; source_type: string; sources: string[] } | null
   // 用户新建项目时自备的故事原文(≤20000 字)。历史项目当时根本没落盘,永远是 null。
   // 只是"有没有原文"的标志位;原文本体走 api.story(id) 按需拉,不跟着详情轮询走

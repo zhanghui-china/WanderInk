@@ -108,7 +108,10 @@ function totalElapsedSeconds(status: Record<string, string>, currentIdx: number)
 }
 
 export function ProgressSteps({ project }: { project: ProjectDetail }) {
-  const running = project.pipeline === 'running' || project.pipeline === 'queued'
+  // 与 ProjectDetail 的 generating 同一判据:失联时磁盘虽写着 running,却没人在推进它,
+  // 不能再播动画、不能再把"进行中 · 约 N 分"越算越大(那个数字会一路涨到几天)。
+  const running = (project.pipeline === 'running' || project.pipeline === 'queued')
+    && !project.stalled
   const failed = project.pipeline.startsWith('error')
   const label = pipelineLabel(project.pipeline)
   // 第一个未完成步骤即“当前步”;partial 是合法降级完成态,视为已推进,
@@ -133,6 +136,10 @@ export function ProgressSteps({ project }: { project: ProjectDetail }) {
         <span className="text-xs tracking-wide text-muted">
           {running ? (
             '正在生成…'
+          ) : project.stalled ? (
+            // 磁盘上写的还是 running/queued,直接走 pipelineLabel 会显示「生成中」,
+            // 与上方的失联横幅自相矛盾。这里说真话。
+            <span className="text-alarm">已失联 · 无进程推进</span>
           ) : (
             <>
               {label.text}

@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -453,7 +454,8 @@ def test_list_projects_fields_and_skips_corrupt(tmp_path, monkeypatch):
     items = r.json()
     assert len(items) == 1                    # 损坏项目被跳过
     item = items[0]
-    assert set(item) == {"project_id", "scenic_spot", "owner", "pipeline", "mp4", "multi_panel"}
+    assert set(item) == {"project_id", "scenic_spot", "owner", "pipeline", "mp4",
+                         "multi_panel", "stalled"}
     assert item["project_id"] == p.project_id
     assert item["scenic_spot"] == "雷峰塔"
     assert item["owner"] == "someone"
@@ -521,6 +523,124 @@ def test_cancel_rejects_other_owner(tmp_path, monkeypatch):
     p.owner = "someone-else"
     store.save(p, root=tmp_path)
     assert client.post(f"/api/projects/{p.project_id}/cancel").status_code == 403
+
+
+# ---------- 失联作业(磁盘写着生成中,内存里已无人推进)与「重置状态」 ----------
+
+def _stalled_project(tmp_path, monkeypatch, owner: str = "testuser", pipeline: str = "running"):
+    """手工制造失联态:磁盘写 running,但**不提交任何作业**——精确复刻用户遇到的现场
+    (重启硬杀、或 _save_error 自身失败之后的样子)。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = owner
+    p.status["pipeline"] = pipeline
+    store.save(p, root=tmp_path)
+    return p
+
+
+def test_stalled_true_when_no_job():
+    assert api._stalled("nojobid", "running") is True
+    assert api._stalled("nojobid", "queued") is True
+
+
+def test_stalled_false_while_job_alive():
+    f = Future()
+    api._JOBS["aliveid"] = f
+    try:
+        assert api._stalled("aliveid", "running") is False
+    finally:
+        f.set_result(None)
+        api._JOBS.pop("aliveid", None)
+
+
+def test_stalled_true_when_job_already_done():
+    """**不需要重启就能卡死**的那条路径:_save_error 自身失败时线程会正常结束,
+    f.done() 立刻为真、条目还滞留在 _JOBS 里(它没有 finally 清理),而磁盘停在 running。"""
+    f = Future()
+    f.set_result(None)
+    api._JOBS["doneid"] = f
+    try:
+        assert api._stalled("doneid", "running") is True
+    finally:
+        api._JOBS.pop("doneid", None)
+
+
+def test_stalled_false_for_terminal_status():
+    for s in ("done", "error: x", "cancelled", "partial: y", "pending"):
+        assert api._stalled("whatever", s) is False
+
+
+def test_detail_and_list_expose_stalled_without_persisting_it(tmp_path, monkeypatch):
+    """stalled 是"此刻内存里有没有作业"的函数,落盘就会变成过期的谎言,故只出现在响应里。"""
+    p = _stalled_project(tmp_path, monkeypatch)
+    assert client.get(f"/api/projects/{p.project_id}").json()["stalled"] is True
+    assert client.get("/api/projects").json()[0]["stalled"] is True
+    on_disk = json.loads((tmp_path / p.project_id / "project.json").read_text(encoding="utf-8"))
+    assert "stalled" not in on_disk and "stalled" not in on_disk.get("status", {})
+
+
+def test_cancel_still_400_when_stalled(tmp_path, monkeypatch):
+    """复现用户撞的那堵墙:取消端点对失联作业一律 400(有意为之,注释与本用例一起锁着)。
+    这正是「重置」必须单独存在的理由——cancel 永远救不了这种状态。"""
+    p = _stalled_project(tmp_path, monkeypatch)
+    r = client.post(f"/api/projects/{p.project_id}/cancel")
+    assert r.status_code == 400
+
+
+def test_reset_recovers_stalled_project(tmp_path, monkeypatch):
+    p = _stalled_project(tmp_path, monkeypatch)
+    r = client.post(f"/api/projects/{p.project_id}/reset")
+    assert r.status_code == 200
+    assert r.json()["stalled"] is False
+    assert store.load(p.project_id, root=tmp_path).status["pipeline"].startswith("error: 已手动重置")
+
+
+def test_reset_rejects_non_owner(tmp_path, monkeypatch):
+    p = _stalled_project(tmp_path, monkeypatch, owner="someone-else")
+    assert client.post(f"/api/projects/{p.project_id}/reset").status_code == 403
+
+
+def test_reset_allows_admin_on_other_owner_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    p = _stalled_project(tmp_path, monkeypatch, owner="someone-else")
+    assert client.post(f"/api/projects/{p.project_id}/reset").status_code == 200
+
+
+def test_reset_rejects_terminal_project(tmp_path, monkeypatch):
+    """刻意不做成幂等 200:静默成功会掩盖"前端状态陈旧"这类真问题。"""
+    p = _stalled_project(tmp_path, monkeypatch, pipeline="done")
+    r = client.post(f"/api/projects/{p.project_id}/reset")
+    assert r.status_code == 400
+
+
+def test_reset_refuses_while_job_alive(tmp_path, monkeypatch):
+    """有活作业时指回「取消」。重置一个仍在跑的作业会被它醒来后的 _locked_save 盖回去,
+    做出来就是个时灵时不灵的按钮。"""
+    p = _stalled_project(tmp_path, monkeypatch)
+    f = Future()
+    api._JOBS[p.project_id] = f
+    try:
+        r = client.post(f"/api/projects/{p.project_id}/reset")
+        assert r.status_code == 409
+    finally:
+        f.set_result(None)
+        api._JOBS.pop(p.project_id, None)
+
+
+def test_reset_blocked_in_readonly(tmp_path, monkeypatch):
+    p = _stalled_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(api, "_READONLY", True)
+    assert client.post(f"/api/projects/{p.project_id}/reset").status_code == 403
+
+
+def test_reset_then_step_rerun_works(tmp_path, monkeypatch):
+    """重置之后恢复链路真的通:能重新提交单步生成,作品是活的。"""
+    p = _stalled_project(tmp_path, monkeypatch)
+    assert client.post(f"/api/projects/{p.project_id}/reset").status_code == 200
+    with patch("shanhai.api._run_step"), patch("shanhai.api.Settings"):
+        r = client.post(f"/api/projects/{p.project_id}/steps/s4")
+    assert r.status_code == 202
+    api._JOBS.pop(p.project_id, None)
 
 
 def test_write_config_requires_admin(monkeypatch):

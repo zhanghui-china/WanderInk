@@ -114,6 +114,16 @@ curl http://127.0.0.1:8188/system_stats   # 200 说明 ComfyUI 也活着;不通�
 
 **磁盘/项目数据**:项目数据在 `~/shanhai/projects/`(每个作品一个目录,含 `project.json` + 生成的图片/音频/成片),配置在 `~/shanhai/config.json`(Web 配置面板改的内容落这里),账号在 `~/shanhai/users.json`。这三者都不进 git、不随 rsync 部署覆盖(部署命令里显式 `--exclude`),线上数据安全。
 
+**「作品一直显示生成中,队列里却没有它」= 失联作业**。磁盘上 `status.pipeline` 停在 `running`/`queued`,但进程内存里已经没有作业在推进它。
+
+- **重启几乎必然制造失联**:`ThreadPoolExecutor` 的工作线程是非守护线程,`atexit` 会 join 它们,而 S4 可能跑几十分钟,systemd 默认 90s 后升级 SIGKILL。所以「重启时正在跑管线」基本都会被硬杀。走 `scripts/deploy-dgx.sh` 的在途闸门就能避开;`--force` 打断后记得让作者去点重置。
+- **处置**:让作者本人或管理员在作品详情页点「重置状态」(`POST /api/projects/{id}/reset`)。**不需要重启服务**,也不影响别人正在跑的作业。
+- 服务下次启动时 `reconcile_zombie_jobs()` 也会自动把这类状态对账成 `error: 服务重启,生成中断`,但它**只在启动时跑一次**,且有两个已知的洞:①`project.json` 损坏读不出来的项目会被静默跳过、永远修不掉;②它的写盘不在 try 内,写失败会让服务起不来。
+- 排查当前有哪些:
+```bash
+grep -l '"pipeline": "running"\|"pipeline": "queued"' ~/shanhai/projects/*/project.json
+```
+
 **「只有某个人的作品生成慢/失败,别人都正常」**:先看 `~/shanhai/config.json` 的 `users` 段——每个用户可以给自己配一套 LLM 端点,他那条配错(端点不通、模型名写错)只会影响他名下的作品。
 ```bash
 python3 -c "import json;print(json.dumps(json.load(open('config.json')).get('users',{}),ensure_ascii=False,indent=2))"
