@@ -15,8 +15,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-SSH_OPTS=(-o ConnectTimeout=25 -p 14801)
-HOST="huntun@21.tcp.vip.cpolar.cn"
+# 默认走 cpolar 公网隧道。cpolar 的地址和端口会轮换,而 Tailscale 的内网地址是固定的,
+# 传大文件也快得多,所以留一个口子:SHANHAI_DGX_HOST=huntun@100.x.y.z SHANHAI_DGX_PORT=22
+HOST="${SHANHAI_DGX_HOST:-huntun@21.tcp.vip.cpolar.cn}"
+# ConnectTimeout 从 25 提到 60:Tailscale 到 DGX 是**走 relay 而不是直连**,链路空闲断开后
+# 重新打洞要十几秒,25 秒卡在边缘上——2026-08-06 部署时第 1 步就这么超时失败过一次。
+# 放宽它不花代价:主机可达时该多快还是多快,变的只是"多久才放弃"。
+SSH_OPTS=(-o ConnectTimeout="${SHANHAI_DGX_CONNECT_TIMEOUT:-60}" -p "${SHANHAI_DGX_PORT:-14801}")
 REMOTE="~/shanhai"
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
@@ -51,7 +56,10 @@ say "构建前端"
 # 排除项沿用 docs/ops-dgx.md,外加 __pycache__(2026-07-27 踩过的 .pyc/mtime 陷阱:
 # 旧 .pyc 会让 DGX 静默跑旧代码)。version.json 不在排除项里,要跟着过去。
 say "同步代码"
-rsync -az --delete --timeout=90 \
+# --progress:这两趟是整个脚本最慢的一步,不加它 rsync 全程一声不吭,看着像卡死。
+# ⚠️ 别改成更清爽的 --info=progress2:那是 rsync 3.1+ 的参数,而 macOS 自带的是
+# openrsync(自称"2.6.9 compatible"),遇到 --info 会直接吐 usage 退出。
+rsync -az --delete --timeout=90 --progress \
   --exclude='.env' --exclude='projects' --exclude='config.json' --exclude='users.json' \
   --exclude='.venv' --exclude='web/node_modules' --exclude='web/dist' \
   --exclude='spike' --exclude='out' --exclude='.git' --exclude='__pycache__' \
@@ -59,7 +67,7 @@ rsync -az --delete --timeout=90 \
 
 # ---- 5. 同步前端产物(与代码分两次传,历史上正是这里断过一半) ----
 say "同步前端产物"
-rsync -az --delete --timeout=90 -e "ssh ${SSH_OPTS[*]}" web/dist/ "$HOST:$REMOTE/web/dist/"
+rsync -az --delete --timeout=90 --progress -e "ssh ${SSH_OPTS[*]}" web/dist/ "$HOST:$REMOTE/web/dist/"
 
 # ---- 6. 依赖 + 测试(失败即中止,不重启,让旧版继续服务) ----
 say "远端 uv sync + pytest"
