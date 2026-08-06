@@ -80,6 +80,8 @@ export interface Character {
   image: string | null
   // 上传的参考图;后端 _file_url 为空串时归一为 null
   reference_image: string | null
+  // 三视图生成耗时(毫秒)。老作品没这个字段、生成失败时为 0,前端一律 > 0 才渲染
+  turnaround_gen_ms: number
 }
 
 export interface ProjectDetail {
@@ -206,6 +208,14 @@ export interface ConfigDefaults {
   music_base_url: string | null
   music_api_key: boolean
   music_model: string
+}
+
+// 账号(users.json)。⚠️ 别与 AppConfigView.users 混淆——那个是「按用户的模型端点覆盖」,
+// 存在 config.json 里,与账号无关。故这里叫 UserAccount 而不是 User。
+export interface UserAccount {
+  username: string
+  is_admin: boolean
+  disabled: boolean
 }
 
 // 按用户覆盖只有 LLM 五个字段(后端 UserOverride 刻意不开图像/配音/配乐,见其 docstring)

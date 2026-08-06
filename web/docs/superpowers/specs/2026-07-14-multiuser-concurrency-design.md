@@ -37,6 +37,9 @@
 - 用 `store.py` 已有的原子写模式(唯一临时名 + `os.replace`)读写 `users.json`,不新建存储抽象。
 - 提供一个一次性 CLI 子命令或脚本供管理员建账号(如 `shanhai adduser <name>`,交互输入密码后 bcrypt 哈希落盘)——**不做自助注册页面**。
 
+> **2026-08-06 修订(原文保留,以上是当时的决策记录)**:CLI 建账号仍然是**第一个管理员**的唯一途径,但之后的账号管理已经搬进 Web(设置 → 账号):管理员可新增用户、重置密码、停用/启用、改管理员标记,普通用户可改自己的密码。**「不做自助注册」这条没变**——建号仍然只有管理员能做。
+> 同期补了两处这份 spec 当时没覆盖的东西:① `auth.add_user` 一直是**无锁**的读-改-写(`atomic_write_text` 只防单次写入撕裂、不防丢更新),此前安全纯粹因为唯一写路径是人工敲 CLI;加了 HTTP 端点后照 `runtime_config.update_overrides` 的形状收口到 `_update_users`。② 账号记录加了 `pwd_ver`,登录时写进 session、`current_user` 每请求比对,于是改密/重置/停用能让**该用户已有的签名 cookie 立刻失效**——本文档 §「登录端点」当时只存了用户名,而签名 cookie 无服务端存储、默认有效期 14 天。
+
 **登录端点**:
 - `POST /api/login`(body: `username`/`password`)→ 校验 bcrypt → 成功则 `request.session["user"] = username`(Starlette `SessionMiddleware` 已处理签名 cookie 的下发/校验,无需服务端 session 表)→ 返回 200。
 - `POST /api/logout` → `request.session.clear()`。

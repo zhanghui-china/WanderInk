@@ -20,3 +20,8 @@ users.json
 
 # 构建标识,由 scripts/stamp-version.py 生成。不能提交:内容依赖 HEAD,提交它就永远差一个提交
 version.json
+
+# 本地装的第三方 Claude Code 技能(如 impeccable,143 个文件 / 3.2MB)。不进版本控制:
+# 它是开发工具不是产品代码,而 sync-wanderink.sh 会把整个仓库根发布到公开的 WanderInk 仓库。
+# .claude/launch.json 这类项目自己的配置仍然照常提交。
+.claude/skills/

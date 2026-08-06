@@ -1,4 +1,6 @@
 """auth 模块 + 登录流程测试:bcrypt 校验、current_user 401、真实 cookie 登录/登出闭环。"""
+import json
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -144,3 +146,114 @@ def test_add_user_long_password_raises_friendly_error(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="密码过长"):
         auth.add_user("bob", "b" * 200)
     assert not users.exists()          # 失败不应留下半写文件
+
+
+# ---------- 账号管理:建号 / 改密 / 管理员标记 / 停用 ----------
+
+def _users_at(tmp_path, monkeypatch):
+    monkeypatch.setattr(auth, "USERS_PATH", tmp_path / "users.json")
+    return tmp_path / "users.json"
+
+
+def test_create_user_rejects_duplicate(tmp_path, monkeypatch):
+    """create_user 与 add_user 的分水岭:后者遇同名**覆盖口令**(CLI 的既定语义),
+    拿它做"新增用户"等于给管理员一个静默改掉别人密码的入口。"""
+    _users_at(tmp_path, monkeypatch)
+    auth.create_user("wuzi", "goodpassword")
+    with pytest.raises(ValueError, match="已存在"):
+        auth.create_user("wuzi", "otherpassword")
+    assert auth.verify_login("wuzi", "goodpassword")     # 原密码没被动过
+
+
+def test_create_user_validates_name_and_password(tmp_path, monkeypatch):
+    _users_at(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="用户名"):
+        auth.create_user("有 空格", "goodpassword")
+    with pytest.raises(ValueError, match="至少"):
+        auth.create_user("wuzi", "short")
+
+
+def test_set_password_bumps_pwd_ver(tmp_path, monkeypatch):
+    """pwd_ver 自增是"改密后旧会话立刻失效"的全部机制。"""
+    _users_at(tmp_path, monkeypatch)
+    auth.create_user("wuzi", "goodpassword")
+    assert auth.find_user("wuzi")["pwd_ver"] == 0
+    auth.set_password("wuzi", "newpassword1")
+    assert auth.find_user("wuzi")["pwd_ver"] == 1
+    assert auth.verify_login("wuzi", "newpassword1")
+
+
+def test_pwd_ver_starts_from_zero_for_legacy_record(tmp_path, monkeypatch):
+    """老 users.json 没有 pwd_ver 字段,不能因此报错或从 1 起跳。"""
+    p = _users_at(tmp_path, monkeypatch)
+    p.write_text(json.dumps({"users": [
+        {"username": "old", "password_hash": auth.hash_password("goodpassword")}]}),
+        encoding="utf-8")
+    assert auth.find_user("old").get("pwd_ver", 0) == 0
+    auth.set_password("old", "newpassword1")
+    assert auth.find_user("old")["pwd_ver"] == 1
+
+
+def test_cannot_demote_or_disable_last_admin(tmp_path, monkeypatch):
+    """降/停最后一个启用中的管理员 = 没人能再建号,只能 SSH 上服务器手改 users.json。"""
+    _users_at(tmp_path, monkeypatch)
+    auth.create_user("boss", "goodpassword", admin=True)
+    auth.create_user("worker", "goodpassword")
+    with pytest.raises(ValueError, match="最后一个"):
+        auth.set_admin("boss", False)
+    with pytest.raises(ValueError, match="最后一个"):
+        auth.set_disabled("boss", True)
+    assert auth.is_admin("boss")                          # 失败不留半个改动
+
+
+def test_can_demote_admin_when_another_one_remains(tmp_path, monkeypatch):
+    _users_at(tmp_path, monkeypatch)
+    auth.create_user("boss", "goodpassword", admin=True)
+    auth.create_user("boss2", "goodpassword", admin=True)
+    auth.set_admin("boss", False)
+    assert not auth.is_admin("boss") and auth.is_admin("boss2")
+
+
+def test_disabled_admin_does_not_count_as_the_remaining_one(tmp_path, monkeypatch):
+    """判据是"启用中的管理员":一个已停用的管理员不能拿来给另一个管理员的降级背书。"""
+    _users_at(tmp_path, monkeypatch)
+    auth.create_user("boss", "goodpassword", admin=True)
+    auth.create_user("boss2", "goodpassword", admin=True)
+    auth.set_disabled("boss2", True)
+    with pytest.raises(ValueError, match="最后一个"):
+        auth.set_admin("boss", False)
+
+
+def test_list_users_never_leaks_password_hash(tmp_path, monkeypatch):
+    _users_at(tmp_path, monkeypatch)
+    auth.create_user("wuzi", "goodpassword", admin=True)
+    rows = auth.list_users()
+    assert rows == [{"username": "wuzi", "is_admin": True, "disabled": False}]
+    for r in rows:
+        assert "password_hash" not in r
+
+
+def test_concurrent_writes_do_not_lose_updates(tmp_path, monkeypatch):
+    """**本次最有价值的单测。** add_user 原本是无保护的读-改-写,atomic_write_text 只防
+    单次写入撕裂、不防丢更新;此前安全纯粹因为唯一写路径是人工敲 CLI。加了 HTTP 端点后
+    并发写成为常态,这条锁住 _WRITE_LOCK 真的在起作用。"""
+    _users_at(tmp_path, monkeypatch)
+    auth.create_user("seed", "goodpassword")
+    errors: list[Exception] = []
+
+    def _mk(i: int):
+        def _run():
+            try:
+                auth.create_user(f"u{i}", "goodpassword")
+            except Exception as e:  # noqa: BLE001 收集起来在主线程断言
+                errors.append(e)
+        return _run
+
+    threads = [threading.Thread(target=_mk(i)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    names = {u["username"] for u in auth.list_users()}
+    assert names == {"seed", *(f"u{i}" for i in range(8))}   # 一个都没丢

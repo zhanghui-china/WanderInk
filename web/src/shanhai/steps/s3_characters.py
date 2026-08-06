@@ -1,4 +1,5 @@
 import concurrent.futures as cf
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -113,6 +114,12 @@ def _process_character(c: CharacterCard, llm: LLMClient, image: ImageClient,
     if should_draw:
         ref = _resolve_ref(c, workdir)
         out = char_dir / f"{c.name}.png"
+        # 只包生图,不含上面那次 LLM 特征浓缩——它和"这张图画了多久"无关(S4 也只包 image.generate)。
+        # t0 放在整块之前而不是每个 generate 各自计时:参考图路径失败后会回退文生图再跑一次,
+        # 那两次是**两条不同路径各一次**、用户实打实等了两遍,只记后一次会出现"显示生成 3s、
+        # 实际等了 40s"。S4 单图页的重试是同一条路径重试,故只记成功那次;S4 分格页则是累加。
+        # 两种读法本仓库都有,这里按"用户等了多久"取累加。
+        gen_t0 = time.monotonic()
         try:
             if ref is not None:
                 # 参考图编辑路径是新启用的、走另一套带 LoRA 的 ComfyUI 工作流,
@@ -132,13 +139,16 @@ def _process_character(c: CharacterCard, llm: LLMClient, image: ImageClient,
             else:
                 out.write_bytes(image.generate(
                     TURNAROUND_TMPL.format(style=style, feature=c.feature_prompt), size=image_size))
+            # 耗时与图同生共死:等图真的落定了再写,免得中途抛异常时留下一个"生成 X.Xs"配没有图。
             c.turnaround_image = str(out.relative_to(workdir))
+            c.turnaround_gen_ms = round((time.monotonic() - gen_t0) * 1000)
             c.locked = True
         except Exception as e:  # noqa: BLE001 单角色三视图失败不拖垮整轮(同 S4 单页失败模式);
             # 清掉可能残留的旧三视图并解锁,不保留旧图冒充成功(否则重跑时旧图会掩盖本次失败);
             # 但 reference_image 必须保留——用户的上传不能因为一次生成失败就丢,留着下次重跑还能再试。
             # 该角色退化为仅文字特征约束,与 MAX_TURNAROUND 之外的次要角色同等对待
             c.turnaround_image = ""
+            c.turnaround_gen_ms = 0   # 跟着图一起清:留着上一次成功的读数就是条假信息
             c.locked = False
             # 措辞按是否真有参考图分开:此前无论有没有传图都印"两条路径均失败",
             # 排查时会误以为用户上传过参考图。

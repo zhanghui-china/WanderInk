@@ -57,6 +57,9 @@ class CharacterCard(BaseModel):
     # 已知限制:重跑 S1 会重建 characters,该字段随之丢失、图片文件成孤儿。但 _STEP_NAMES
     # 不含 s1(网页上根本触发不到),只有 CLI 全量重跑会碰到,不值得为此写迁移/清理逻辑。
     reference_image: str = ""
+    # 最近一次成功生成三视图所花的时间(重绘直接覆盖,不累计),与 turnaround_image 同进同退。
+    # 有默认值 → 老 project.json 零迁移(老作品显示不出读数,重绘后才有)。
+    turnaround_gen_ms: int = 0
     locked: bool = False
 
 

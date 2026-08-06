@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from shanhai import editing, export, ffmpeg, runtime_config, store, uploads
+from shanhai import auth, editing, export, ffmpeg, runtime_config, store, uploads
 from shanhai.auth import current_user, is_admin, verify_login
 from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _clients,
                          resolve_stage_clients)
@@ -513,6 +513,7 @@ def _serialize(p: Project) -> dict:
         "name": c.name, "role": c.role,
         "image": _file_url(p.project_id, c.turnaround_image, workdir),
         "reference_image": _file_url(p.project_id, c.reference_image, workdir),
+        "turnaround_gen_ms": c.turnaround_gen_ms,
     } for c in (p.script.characters if p.script else [])]
     return {
         "project_id": p.project_id,
@@ -574,10 +575,18 @@ class LoginBody(BaseModel):
 
 @app.post("/api/login")
 def login(body: LoginBody, request: Request) -> dict:
-    """校验 bcrypt 口令,成功则写签名 session cookie;失败 401。此端点自身不要求登录。"""
+    """校验 bcrypt 口令,成功则写签名 session cookie;失败 401。此端点自身不要求登录。
+
+    停用的账号一律按"用户名或密码错误"回,不单独给"该账号已停用"——那等于告诉未认证的
+    调用方这个用户名真实存在(verify_login 里那次假哈希防的就是同一类枚举)。
+    session 里连 pwd_ver 一起写:current_user 每次请求比对它,改密/重置后旧会话立刻作废。"""
     if not verify_login(body.username, body.password):
         raise HTTPException(401, "用户名或密码错误")
+    rec = auth.find_user(body.username)
+    if rec is None or rec.get("disabled"):
+        raise HTTPException(401, "用户名或密码错误")
     request.session["user"] = body.username
+    request.session["pwd_ver"] = int(rec.get("pwd_ver", 0))
     return {"username": body.username}
 
 
@@ -592,6 +601,102 @@ def logout(request: Request) -> dict:
 def me(user: str = Depends(current_user)) -> dict:
     """已登录返回用户名+管理员标记;未登录经 current_user 抛 401(前端靠状态码判断登录态)。"""
     return {"username": user, "is_admin": is_admin(user)}
+
+
+# ---------- 账号管理 ----------
+# 鉴权一律沿用既有形状:签名里**字面**写 Depends(current_user) + 函数体内判 is_admin。
+# 不要抽成 Depends(require_admin) 之类的包装——tests/test_auth.py 的反射式测试查的是路由的
+# **顶层**依赖,包一层会让 current_user 藏进第二层,那条测试会直接挂(而它正是防"新端点漏加
+# 登录依赖"的兜底,不该为图好看去绕过它)。
+# 分层判据照 PUT /api/config:影响面超出自己的只认 is_admin;只影响自己的,本人可改、admin 可代改。
+
+class NewUserBody(BaseModel):
+    username: str
+    password: str
+    is_admin: bool = False
+
+
+class PasswordBody(BaseModel):
+    # 改自己的密码必须带原密码(防会话被劫持后直接改密);管理员重置别人的不需要。
+    old_password: str | None = None
+    new_password: str
+
+
+class UserPatchBody(BaseModel):
+    is_admin: bool | None = None
+    disabled: bool | None = None
+
+
+def _users_admin_gate(user: str, action: str) -> None:
+    if _READONLY:
+        raise HTTPException(403, f"公开演示为只读,禁止{action}")
+    if not is_admin(user):
+        raise HTTPException(403, f"仅管理员可{action}")
+
+
+@app.get("/api/users")
+def list_users(user: str = Depends(current_user)) -> list[dict]:
+    """账号清单(仅管理员)。auth.list_users 逐字段挑选,绝不带 password_hash 出去。"""
+    if not is_admin(user):
+        raise HTTPException(403, "仅管理员可查看用户列表")
+    return auth.list_users()
+
+
+@app.post("/api/users")
+def create_user(body: NewUserBody, user: str = Depends(current_user)) -> dict:
+    """新增账号(仅管理员)。走 auth.create_user 而**不是** add_user——后者遇同名会静默
+    覆盖口令(CLI 的既定语义),拿它做"新增"等于给管理员一个悄悄改掉别人密码的入口。"""
+    _users_admin_gate(user, "新增用户")
+    try:
+        auth.create_user(body.username, body.password, admin=body.is_admin)
+    except ValueError as e:
+        # "用户已存在"是冲突不是参数错;其余(用户名不合法/密码太短或过长)都是 400。
+        raise HTTPException(409 if "已存在" in str(e) else 400, str(e)) from e
+    return {"username": body.username, "is_admin": body.is_admin, "disabled": False}
+
+
+@app.post("/api/users/{name}/password")
+def set_user_password(name: str, body: PasswordBody,
+                      user: str = Depends(current_user)) -> dict:
+    """改密码与重置密码是同一个端点,判据分层:
+      · name == user  → 本人改自己的,**必须带对原密码**(管理员改自己的也一样)
+      · name != user  → 管理员重置别人的,不需要原密码
+    两种都会自增 pwd_ver,于是该用户所有设备上的现有会话立刻失效。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止修改密码")
+    if name == user:
+        if not body.old_password or not verify_login(user, body.old_password):
+            raise HTTPException(400, "原密码不正确")
+    elif not is_admin(user):
+        raise HTTPException(403, "只能修改自己的密码")
+    try:
+        auth.set_password(name, body.new_password)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"username": name}
+
+
+@app.patch("/api/users/{name}")
+def patch_user(name: str, body: UserPatchBody, user: str = Depends(current_user)) -> dict:
+    """改管理员标记 / 停用启用(仅管理员)。用 model_fields_set 区分"没发这个字段"与
+    "发了 false",否则 PATCH 只想改一项时会把另一项静默重置。"""
+    _users_admin_gate(user, "修改用户")
+    if name == user:
+        # 防止把自己锁在门外:要降级或停用自己,让另一个管理员来做。
+        raise HTTPException(400, "不能修改自己的管理员标记或停用状态")
+    sent = body.model_fields_set
+    try:
+        if "is_admin" in sent and body.is_admin is not None:
+            auth.set_admin(name, body.is_admin)
+        if "disabled" in sent and body.disabled is not None:
+            auth.set_disabled(name, body.disabled)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    rec = auth.find_user(name)
+    if rec is None:
+        raise HTTPException(404, f"用户不存在: {name}")
+    return {"username": name, "is_admin": bool(rec.get("is_admin")),
+            "disabled": bool(rec.get("disabled"))}
 
 
 # ---------- 接口 ----------

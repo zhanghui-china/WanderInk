@@ -1,8 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import { CardHeadInline } from './decor'
 import { STAGE_LABEL } from '../stages'
-import type { AppConfigInput, AppConfigView, ConfigOverrideInput, ConfigOverrideView, Meta } from '../types'
+import type {
+  AppConfigInput,
+  AppConfigView,
+  ConfigOverrideInput,
+  ConfigOverrideView,
+  Meta,
+  UserAccount,
+} from '../types'
 
 // PUT 密钥语义:未改送此哨兵(后端保持已存值不变);与 runtime_config.py 的 _SENTINEL 对应
 const SENTINEL = '__UNCHANGED__'
@@ -409,7 +416,8 @@ export function SettingsPanel({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <CardHeadInline glyph="配" title="端点与模型配置" />
+          {/* 标题从「端点与模型配置」改成中性的「设置」:面板里现在还有账号那一块 */}
+          <CardHeadInline glyph="设" title="设置" />
           <button
             type="button"
             onClick={onClose}
@@ -494,6 +502,8 @@ export function SettingsPanel({
               </div>
             )}
 
+            <AccountSection user={user} isAdmin={isAdmin} readonly={ro} />
+
             {err && <p className="rounded-md bg-alarm/8 px-3 py-2 text-sm text-alarm">{err}</p>}
 
             <button
@@ -507,6 +517,219 @@ export function SettingsPanel({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ---------- 账号 ----------
+// 独立组件、独立的 busy/err state:**不能**复用面板底部那颗「保存」——它走 handleSave()
+// 提交整份 AppConfigInput,与账号操作语义完全不同,混在一起会让人以为改密码也要点那颗才生效。
+// 表单惯例照 LoginPage:busy/err 两个 state、错误条同一套类名、必填校验做在按钮 disabled 里。
+function AccountSection({
+  user,
+  isAdmin,
+  readonly,
+}: {
+  user: string
+  isAdmin: boolean
+  readonly: boolean
+}) {
+  const [oldPwd, setOldPwd] = useState('')
+  const [newPwd, setNewPwd] = useState('')
+  const [confirmPwd, setConfirmPwd] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const [users, setUsers] = useState<UserAccount[] | null>(null)
+  const [newName, setNewName] = useState('')
+  const [newUserPwd, setNewUserPwd] = useState('')
+  const [newIsAdmin, setNewIsAdmin] = useState(false)
+
+  const fieldCls =
+    'w-full rounded-lg border border-line bg-white/70 px-3 py-2 text-sm text-ink outline-none transition focus:border-cinnabar focus:bg-white disabled:cursor-not-allowed disabled:opacity-50'
+  const label = 'mb-1.5 block text-xs font-medium tracking-wide text-muted'
+  const smallBtn =
+    'rounded-md border border-line bg-white/50 px-2 py-1 text-[11px] text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
+
+  const refreshUsers = useCallback(() => {
+    if (!isAdmin) return
+    api
+      .listUsers()
+      .then(setUsers)
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+  }, [isAdmin])
+
+  useEffect(refreshUsers, [refreshUsers])
+
+  // 后端 HTTPException 的 detail 会被 j<T>() 原样抛成 Error.message,直接显示即可
+  async function run(fn: () => Promise<unknown>, ok: string) {
+    setBusy(true)
+    setErr(null)
+    setNotice(null)
+    try {
+      await fn()
+      setNotice(ok)
+      refreshUsers()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const pwdMismatch = !!newPwd && !!confirmPwd && newPwd !== confirmPwd
+  const canSubmitPwd = !readonly && !busy && !!oldPwd && newPwd.length >= 8 && !pwdMismatch
+
+  return (
+    <div className="space-y-4 border-t border-line pt-4">
+      <h3 className="text-sm font-semibold tracking-wide text-ink">账号</h3>
+
+      <div className="space-y-2.5">
+        <p className="text-[11px] leading-relaxed text-muted">
+          修改自己的登录密码。改完之后<b>你在其它设备上的登录会立刻失效</b>,需要用新密码重新登录。
+        </p>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className={label}>原密码</label>
+            <input className={fieldCls} type="password" value={oldPwd} disabled={readonly}
+                   onChange={(e) => setOldPwd(e.target.value)} />
+          </div>
+          <div>
+            <label className={label}>新密码</label>
+            <input className={fieldCls} type="password" value={newPwd} disabled={readonly}
+                   onChange={(e) => setNewPwd(e.target.value)} />
+          </div>
+          <div>
+            <label className={label}>确认新密码</label>
+            <input className={fieldCls} type="password" value={confirmPwd} disabled={readonly}
+                   onChange={(e) => setConfirmPwd(e.target.value)} />
+          </div>
+        </div>
+        <button
+          type="button"
+          disabled={!canSubmitPwd}
+          onClick={() =>
+            run(() => api.setPassword(user, newPwd, oldPwd), '密码已修改,其它设备需重新登录').then(
+              () => {
+                setOldPwd('')
+                setNewPwd('')
+                setConfirmPwd('')
+              },
+            )
+          }
+          className={smallBtn}
+        >
+          {busy ? '处理中…' : '修改密码'}
+        </button>
+        {/* 按钮置灰但不说原因会让人以为功能坏了(ProjectDetail 里有过同样的教训),故显式提示 */}
+        {!canSubmitPwd && !readonly && (
+          <p className="text-[11px] text-muted">
+            {pwdMismatch
+              ? '两次输入的新密码不一致'
+              : newPwd && newPwd.length < 8
+                ? '新密码至少 8 位'
+                : '请填写原密码与新密码'}
+          </p>
+        )}
+      </div>
+
+      {isAdmin && (
+        <div className="space-y-2.5 border-t border-line pt-3">
+          <h4 className="text-sm font-semibold tracking-wide text-ink">新增用户</h4>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className={label}>用户名</label>
+              <input className={fieldCls} value={newName} disabled={readonly}
+                     onChange={(e) => setNewName(e.target.value)} />
+            </div>
+            <div>
+              <label className={label}>初始密码</label>
+              <input className={fieldCls} type="password" value={newUserPwd} disabled={readonly}
+                     onChange={(e) => setNewUserPwd(e.target.value)} />
+            </div>
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-1.5 text-xs text-muted">
+                <input type="checkbox" checked={newIsAdmin} disabled={readonly}
+                       onChange={(e) => setNewIsAdmin(e.target.checked)} />
+                设为管理员
+              </label>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={readonly || busy || !newName.trim() || newUserPwd.length < 8}
+            onClick={() =>
+              run(
+                () => api.createUser(newName.trim(), newUserPwd, newIsAdmin),
+                `已新增用户 ${newName.trim()}`,
+              ).then(() => {
+                setNewName('')
+                setNewUserPwd('')
+                setNewIsAdmin(false)
+              })
+            }
+            className={smallBtn}
+          >
+            新增用户
+          </button>
+        </div>
+      )}
+
+      {isAdmin && users && users.length > 0 && (
+        <div className="space-y-2 border-t border-line pt-3">
+          <h4 className="text-sm font-semibold tracking-wide text-ink">用户</h4>
+          {users.map((u) => (
+            <div key={u.username}
+                 className="flex flex-wrap items-center gap-2 rounded-lg border border-line px-3 py-2">
+              <span className="text-sm text-ink">{u.username}</span>
+              {u.is_admin && (
+                <span className="rounded-full bg-gold/20 px-2 py-0.5 text-[10px] text-gold">管理员</span>
+              )}
+              {u.disabled && (
+                <span className="rounded-full bg-kraft px-2 py-0.5 text-[10px] text-muted">已停用</span>
+              )}
+              {/* 自己那一行不给这些按钮:后端也拦(不能改自己的管理员标记/停用状态),
+                  免得把最后一个管理员锁在门外。改自己的密码走上面那块。 */}
+              {u.username !== user && (
+                <span className="ml-auto flex gap-1.5">
+                  <button type="button" className={smallBtn} disabled={readonly || busy}
+                    onClick={() => {
+                      const pwd = window.prompt(`给用户「${u.username}」设置新密码(至少 8 位):`)
+                      if (!pwd) return
+                      if (!window.confirm(
+                        `确定重置「${u.username}」的密码?对方在所有设备上的登录会立刻失效,` +
+                        `需要用新密码重新登录。此操作不可撤销。`)) return
+                      run(() => api.setPassword(u.username, pwd, null), `已重置 ${u.username} 的密码`)
+                    }}>
+                    重置密码
+                  </button>
+                  <button type="button" className={smallBtn} disabled={readonly || busy}
+                    onClick={() =>
+                      run(() => api.patchUser(u.username, { is_admin: !u.is_admin }),
+                        u.is_admin ? `已取消 ${u.username} 的管理员` : `已设 ${u.username} 为管理员`)
+                    }>
+                    {u.is_admin ? '取消管理员' : '设为管理员'}
+                  </button>
+                  <button type="button" className={smallBtn} disabled={readonly || busy}
+                    onClick={() => {
+                      if (!u.disabled && !window.confirm(
+                        `确定停用「${u.username}」?对方将无法登录,现有登录也会立刻失效。` +
+                        `其名下作品保持不变,随时可以重新启用。`)) return
+                      run(() => api.patchUser(u.username, { disabled: !u.disabled }),
+                        u.disabled ? `已启用 ${u.username}` : `已停用 ${u.username}`)
+                    }}>
+                    {u.disabled ? '启用' : '停用'}
+                  </button>
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {notice && <p className="rounded-md bg-jade/10 px-3 py-2 text-sm text-jade">{notice}</p>}
+      {err && <p className="rounded-md bg-alarm/8 px-3 py-2 text-sm text-alarm">{err}</p>}
     </div>
   )
 }
