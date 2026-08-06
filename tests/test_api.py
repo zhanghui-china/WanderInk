@@ -490,8 +490,8 @@ def test_list_projects_skips_non_object_json(tmp_path, monkeypatch):
 def test_cancel_matches_editable_ownership_rule(tmp_path, monkeypatch):
     """取消权限必须与编辑权限同判据。此前用的是 `p.owner != user`,而 _editable 用的是
     `p.owner and p.owner != user`——历史项目 owner 为空时人人可编辑,却**没有人**能取消
-    它的作业(此处也没有 is_admin 旁路),那个作业只能靠重启进程停下,期间一直占着
-    执行槽。两个判据的差异没有任何理由,对齐即可。"""
+    它的作业,那个作业只能靠重启进程停下,期间一直占着执行槽。两个判据的差异没有任何
+    理由,现已共用 _may_edit,不再靠人肉保持一致。"""
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     p = store.create_project("雷峰塔", root=tmp_path)
     p.owner = ""                              # 无主的历史项目
@@ -1340,6 +1340,78 @@ def test_patch_cell_allows_legacy_project_without_owner():
     with patch("shanhai.api.store.load", return_value=p), patch("shanhai.api.store.save"):
         r = client.patch("/api/projects/legacyid/cells/1", json={"caption": "新"})
     assert r.status_code == 200
+
+
+# ---- 管理员归属旁路(_may_edit)。前四条锁"能",后两条锁"能到哪为止"。----
+
+def test_patch_cell_allows_admin_on_other_owner_project(monkeypatch):
+    """管理员可编辑任何人的作品。这是产品要求(「admin 用户可以执行任何用户的命令」),
+    此前 _editable 里没有这条旁路,管理员改别人的作品一样吃 403。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    p = Project(project_id="adminpatchid", scenic_spot="雷峰塔", owner="someoneelse")
+    p.storyboard = [StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
+                                   caption="c1", emotion="宁静")]
+    with patch("shanhai.api.store.load", return_value=p), patch("shanhai.api.store.save"):
+        r = client.patch("/api/projects/adminpatchid/cells/1", json={"caption": "新"})
+    assert r.status_code == 200
+
+
+def test_delete_cell_allows_admin_on_other_owner_project(monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    p = Project(project_id="admindelcellid", scenic_spot="雷峰塔", owner="someoneelse")
+    p.storyboard = [StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
+                                   caption="c1", emotion="宁静")]
+    with patch("shanhai.api.store.load", return_value=p), patch("shanhai.api.store.save"):
+        r = client.delete("/api/projects/admindelcellid/cells/1")
+    assert r.status_code == 200
+
+
+def test_cancel_allows_admin_on_other_owner_project(tmp_path, monkeypatch):
+    """cancel 有自己的一份归属判据(不走 _editable),必须同样认管理员——否则管理员
+    看得到别人卡住的作业却停不掉,只能重启进程。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = "someone-else"
+    store.save(p, root=tmp_path)
+    r = client.post(f"/api/projects/{p.project_id}/cancel")
+    assert r.status_code == 400   # 归属放行 → 落到"当前没有可取消的作业",而不是 403
+
+
+def test_export_allows_admin_on_other_owner_project(tmp_path, monkeypatch):
+    """export 也有自己的一份判据(刻意不走 _editable,因为导出不受只读拦截)。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = "someone-else"
+    store.save(p, root=tmp_path)
+    with patch("shanhai.api.export.build_exports", side_effect=lambda proj, _d: proj):
+        assert client.post(f"/api/projects/{p.project_id}/export").status_code == 200
+
+
+def test_admin_bypass_does_not_cover_readonly(monkeypatch):
+    """旁路只覆盖「归属」。只读是部署模式(公开演示),不是权限档位——管理员照样被拦,
+    否则演示站上一个管理员会话就能改数据。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setattr(api, "_READONLY", True)
+    r = client.patch("/api/projects/anyid/cells/1", json={"caption": "x"})
+    assert r.status_code == 403
+
+
+def test_admin_bypass_does_not_cover_pending_job(monkeypatch):
+    """同上:「有未完成作业」拦的是并发写导致的丢更新,与身份无关,管理员一样 409。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f = Future()
+    api._JOBS["adminpendingid"] = f
+    try:
+        r = client.patch("/api/projects/adminpendingid/cells/1", json={"caption": "x"})
+        assert r.status_code == 409
+    finally:
+        f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
 
 
 def test_reorder_rejects_non_permutation():

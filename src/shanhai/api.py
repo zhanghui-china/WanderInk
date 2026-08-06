@@ -568,11 +568,23 @@ def me(user: str = Depends(current_user)) -> dict:
 
 # ---------- 接口 ----------
 
+def _may_edit(p: Project, user: str) -> bool:
+    """项目级写操作的统一归属判据:自己的、无主的(历史项目 owner 为空)、或管理员。
+
+    此前这条规则在 _editable/cancel_project/export_project 里各抄了一遍,已经翻过一次车
+    (cancel 少写了 `p.owner and`,见 cancel_project 内注释),故收敛到这里,三处共用。
+
+    **管理员旁路只覆盖「归属」这一层**:_READONLY(部署模式,不是权限)与「有未完成作业→409」
+    (并发写会丢更新,与身份无关)对管理员同样生效——那两道是数据安全屏障,别往这里搬。
+    is_admin 要读 users.json,故放在最后短路:常规路径(改自己的项目)不产生文件 IO。"""
+    return not p.owner or p.owner == user or is_admin(user)
+
+
 def _editable(project_id: str, user: str) -> Project:
     """编辑端点公共校验+载入,须在持有 _project_lock(project_id) 时调用:此时 job-check 成为
     真正的屏障(锁内确认无未完成作业才改),并载入最新快照,杜绝 check→加锁 的 TOCTOU 与丢更新。
-    只读模式拒绝写入;有未完成后台作业拒绝并发编辑;项目须存在;非所有者不可编辑
-    (历史项目 owner 为空,视为无主,不做归属限制)。锁序 project→jobs(此处再取 _JOBS_LOCK)。"""
+    只读模式拒绝写入;有未完成后台作业拒绝并发编辑;项目须存在;归属按 _may_edit 判定
+    (自己的/无主的/管理员)。锁序 project→jobs(此处再取 _JOBS_LOCK)。"""
     if _READONLY:
         raise HTTPException(403, "公开演示为只读,禁止编辑")
     f = _job_of(project_id)  # 调用方已持 project 锁,此处再取 _JOBS_LOCK 一致快照(project→jobs)
@@ -582,7 +594,7 @@ def _editable(project_id: str, user: str) -> Project:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
-    if p.owner and p.owner != user:
+    if not _may_edit(p, user):
         raise HTTPException(403, "只能编辑自己的项目")
     return p
 
@@ -672,10 +684,10 @@ def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
-    # 判据必须与 _editable 逐字一致:历史项目 owner 为空视为无主。此前写的是
-    # `p.owner != user`,于是那些项目人人可编辑、却**没有人**能取消它们的作业
-    # (这里也没有 is_admin 旁路),作业只能靠重启进程停下,期间一直占着执行槽。
-    if p.owner and p.owner != user:
+    # 判据与 _editable 共用 _may_edit,不再手抄——此前这里写的是 `p.owner != user`
+    # (漏了 `p.owner and`),于是无主项目人人可编辑、却**没有人**能取消它们的作业,
+    # 只能靠重启进程停下,期间一直占着执行槽。同一条规则抄第二遍就出过这个事故。
+    if not _may_edit(p, user):
         raise HTTPException(403, "只能取消自己的生成任务")
     # 「取 f→判定 done/cancel→标记 _CANCELLED」整段收进 _JOBS_LOCK,与 _pipeline/_run_step finally
     # 里同锁的 _CANCELLED.discard 互斥:否则作业恰在此窗口跑完时,discard 先执行、随后此处 add 让
@@ -772,8 +784,8 @@ def get_project_story(project_id: str, user: str = Depends(current_user)) -> dic
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: str, user: str = Depends(current_user)) -> dict:
     """管理员专用:彻底删除作品目录(project.json + 全部生成产物),不可恢复。
-    与其它编辑端点不同,不复用 _editable 的"owner 为空即可编辑"规则——删除权限只看
-    is_admin,与作品归属无关(避免无主项目被任意登录用户删除)。"""
+    与其它编辑端点不同,不走 _may_edit——那条规则放行"无主项目",而删除不可恢复,
+    放行无主项目等于任意登录用户可删。故删除只认 is_admin,owner 本人也不例外。"""
     if not is_admin(user):
         raise HTTPException(403, "仅管理员可删除作品")
     if _READONLY:
@@ -803,10 +815,9 @@ def export_project(project_id: str, user: str = Depends(current_user)) -> dict:
             p = store.load(project_id)
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(404, f"项目不存在: {project_id}") from e
-        # 归属校验必须单独写一遍,不能改调 _editable:导出刻意不受只读拦截(见上方 docstring),
-        # 而 _editable 头一件事就是拦只读。判据与 _editable 逐字一致——历史项目 owner 为空
-        # 视为无主,否则那些项目会连自己都导不出。
-        if p.owner and p.owner != user:
+        # 归属校验单独写,不能改调 _editable:导出刻意不受只读拦截(见上方 docstring),而
+        # _editable 头一件事就是拦只读。但判据本身与它共用 _may_edit,不手抄。
+        if not _may_edit(p, user):
             raise HTTPException(403, "只能导出自己的项目")
         p = export.build_exports(p, store.project_dir(project_id))
         store.save(p)

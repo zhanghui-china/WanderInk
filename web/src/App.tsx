@@ -243,7 +243,7 @@ export default function App() {
         <div className="grid grid-cols-1 gap-7 lg:grid-cols-[21rem_1fr]">
           <aside className="space-y-5">
             <NewProjectForm meta={meta} onCreated={onCreated} />
-            <QueuePanel user={user} onSelect={setSelectedId} />
+            <QueuePanel user={user} isAdmin={isAdmin} onSelect={setSelectedId} />
             <ProjectList
               items={list}
               selectedId={selectedId}
@@ -260,6 +260,7 @@ export default function App() {
                 project={detail}
                 meta={meta}
                 user={user}
+                isAdmin={isAdmin}
                 onChanged={onDetailChanged}
               />
             ) : (
