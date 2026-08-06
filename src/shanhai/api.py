@@ -350,13 +350,15 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         p = store.load(project_id)
         workdir = store.project_dir(project_id)
         # 逐环节解析生效 Settings 与 client(同一 cfg 快照,作业内配置一致;不同环节可用不同端点/模型)。
-        settings, clients = resolve_stage_clients(cfg)
+        # owner 而非提交者:admin 帮别人重跑时仍用作品主人的 LLM,见 resolve_settings 的说明。
+        settings, clients = resolve_stage_clients(cfg, owner=p.owner)
         if not p.params.use_hermes_agent:
             # 开关关闭的真实语义:S0/S1 跳过按环节覆盖(用 resolve_settings(None) 只叠全局层),
             # 回退到全局默认 LLM——保留"原始通过 LLM 生成剧本/分镜"的路径,不依赖任何特定 skill。
             # 注意与字段名 use_hermes_agent 的字面义解耦:仅当 hermes 恰配成 s0/s1 stage 覆盖时两者等价。
+            # owner 层保留:该开关针对的是环节级钉死的 skill 后端,用户自选的 LLM 不是 skill。
             for st in ("s0", "s1"):
-                settings[st] = resolve_settings(None, cfg)
+                settings[st] = resolve_settings(None, cfg, owner=p.owner)
                 clients[st] = _clients(settings[st])
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
@@ -1135,7 +1137,7 @@ def _run_one_step(p: Project, project_id: str, name: str, cfg: AppConfig,
     在函数内重绑局部名的话调用方手里还是旧的那个,级联跑第二步时就会拿着上一步之前的
     快照去跑——这类"看着能跑、结果全错"的 bug 最难查。
     异常照常向上抛给 _run_step 的兜底(不在这里吞)。"""
-    s = resolve_settings(name, cfg)  # 该环节生效 Settings + client
+    s = resolve_settings(name, cfg, owner=p.owner)  # 该环节生效 Settings + client
     llm, image, tts, music = _clients(s)
     if _check_cancelled(project_id):  # 协作式取消:环节开始执行前检查
         p.status["pipeline"] = "cancelled"
@@ -1291,12 +1293,14 @@ def _run_track(project_id: str, lang: str, cfg: AppConfig) -> None:
         p.status.pop(f"track_{lang}", None)
         _locked_save(p)
 
-        s_llm = resolve_settings("s2", cfg)      # 译文属文本环节,沿用 S2 的 LLM 配置
+        # 译文属文本环节,沿用 S2 的 LLM 配置;owner 层同样生效(译文也是"这个人的模型"产出的)
+        s_llm = resolve_settings("s2", cfg, owner=p.owner)
         llm, _image, _tts, _music = _clients(s_llm)
         p = s5t_translate.run(p, llm, lang=lang)
         _locked_save(p)
 
-        s_tts = resolve_settings("s5", cfg)
+        # owner 传上保持一致;users 层没有 tts 字段,故对配音实际无影响
+        s_tts = resolve_settings("s5", cfg, owner=p.owner)
         _l, _i, tts, _m = _clients(s_tts)
         # 自定义音色跨语种继承:同一部作品的中文与英文视频该是同一个人的声音
         # (判据与逃生口见 runtime_config.default_track_voice)
@@ -1420,26 +1424,34 @@ def meta(user: str = Depends(current_user)) -> dict:
 
 @app.get("/api/config")
 def read_config(user: str = Depends(current_user)) -> dict:
-    return config_view(_READONLY)
+    """users 层做行级过滤:管理员看全部,其他人只看自己那条(别人配了什么模型不该互相可见)。
+    global/stages 维持对所有登录用户可见——既有行为,且前端要靠它显示继承值。"""
+    return config_view(_READONLY, viewer=user, viewer_is_admin=is_admin(user))
 
 
 @app.put("/api/config")
 def write_config(body: AppConfig, user: str = Depends(current_user)) -> dict:
     """写入端点/模型覆盖。校验(Literal/extra=forbid)由 AppConfig 解析完成:非法 provider/越权字段→422;
     只读→403;未知 stage→400。读-合并-写在 update_overrides 写锁内原子完成(避免并发 PUT 丢更新),
-    合并语义(部分更新/密钥哨兵/环节保留与剪枝)见 runtime_config.apply_put。"""
+    合并语义(部分更新/密钥哨兵/条目保留与剪枝)见 runtime_config.apply_put。"""
     if _READONLY:
         raise HTTPException(403, "公开演示为只读,禁止修改配置")
-    # 管理员闸门:这个端点决定全站所有环节的上游地址与密钥。任意登录用户可写的话,
-    # 把 llm_base_url 指向自己的机器就能收走所有人的剧本与自备故事原文,顺带让全站
-    # 生成瘫痪。与 delete_project 同标准——影响面超出单个作品的操作只认 is_admin。
+    # 按层分权,不再一刀切。global/stages 决定全站所有环节的上游地址与密钥:任意登录用户可写
+    # 的话,把 llm_base_url 指向自己的机器就能收走所有人的剧本与自备故事原文,顺带让全站生成
+    # 瘫痪——与 delete_project 同标准,影响面超出单个作品的操作只认 is_admin。
+    # users[自己] 只影响自己名下的作品,故本人可改;admin 可代改任何人(与 _may_edit 同一归属模型)。
+    # 必须用 model_fields_set 而非真值判断:三个字段都有 default_factory,body.stages 永远存在。
+    sent = body.model_fields_set
     if not is_admin(user):
-        raise HTTPException(403, "仅管理员可修改端点配置")
+        if {"global", "global_", "stages"} & sent:
+            raise HTTPException(403, "仅管理员可修改全站与环节配置")
+        if set(body.users) - {user}:
+            raise HTTPException(403, "只能修改自己的模型配置")
     unknown = [st for st in body.stages if st not in STAGE_CLIENTS]
     if unknown:
         raise HTTPException(400, f"未知环节: {unknown}(合法环节 {list(STAGE_CLIENTS)})")
     update_overrides(lambda existing: apply_put(existing, body))
-    return config_view(_READONLY)
+    return config_view(_READONLY, viewer=user, viewer_is_admin=is_admin(user))
 
 
 # 音色样本目录在挂载根下,但整个命名空间不经 /files 对外:见 _ArtifactStatic 说明。

@@ -1,17 +1,21 @@
 # src/shanhai/runtime_config.py
-"""运行时配置覆盖:全局默认 + 按环节覆盖,叠加到 .env 基线的 Settings 之上。
+"""运行时配置覆盖:全局默认 + 按用户覆盖 + 按环节覆盖,叠加到 .env 基线的 Settings 之上。
 
-三层叠加,后者压前者,只有"已设置(非 None)"的字段才覆盖:
+四层叠加,后者压前者,只有"已设置(非 None)"的字段才覆盖:
     Settings()  (.env / 进程环境变量,必填基线)
-       └─ 叠加 config.json.global        (全局默认覆盖)
-            └─ 叠加 config.json.stages[stage]   (该环节覆盖)
+       └─ 叠加 config.json.global          (全局默认覆盖)
+            └─ 叠加 config.json.users[owner]    (该作品归属者的个人覆盖,仅 LLM)
+                 └─ 叠加 config.json.stages[stage] (该环节覆盖,优先级最高)
+
+users 层刻意排在 stages 之下:管理员为某个环节钉死的配置(如"S4 必须走本机 shim")不该被
+个人偏好盖掉。它也只开放 LLM 字段,理由见 UserOverride 的 docstring。
 
 持久化于 cwd 根的 config.json(gitignore,含明文密钥),原子写发布。"""
 import os
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -77,12 +81,36 @@ class ConfigOverride(BaseModel):
     music_model: str | None = None
 
 
+class UserOverride(BaseModel):
+    """按用户覆盖:**只开放 LLM 五个字段**,图像/配音/配乐刻意不给。
+
+    不是嫌麻烦——image_base_url 一旦被改成非 loopback,两处按 hostname 的判定会同时静默失效:
+    providers/_http.py 的 local_backend_guard(全局单并发锁直接不生效)与本模块的
+    image_concurrency(S3/S4 扇出从 1 变 2)。方向叠加恶化,且无日志无告警(见
+    docs/deploy-gateway.md §0)。把"用户不能改 image 端点"做成 extra="forbid" 的结构约束,
+    塞任何非 llm_* 字段直接 422,而不是留一条要靠人记住的纪律。
+
+    TTS/音乐同样不开:它们与 image 共用那把本地锁,且音色列表(/api/meta)与音色样本注册
+    走的是请求上下文而非作品 owner,开放后会出现"表单列的是 A 的音色、生成时用 B 的端点"
+    这类静默失配。保持全站统一最简单也最不容易错。"""
+    model_config = ConfigDict(extra="forbid")
+
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_model: str | None = None
+    llm_provider: Literal["openai", "ollama"] | None = None
+    llm_timeout: float | None = None
+
+
 class AppConfig(BaseModel):
-    """config.json 的顶层结构:全局默认 + 按环节覆盖。
-    populate_by_name=True 让 global_ 既可用别名 global 也可用字段名填充。"""
+    """config.json 的顶层结构:全局默认 + 按用户覆盖 + 按环节覆盖。
+    populate_by_name=True 让 global_ 既可用别名 global 也可用字段名填充。
+    users 的键是登录名,不校验是否为真实账号——校验会让配置读写耦合上账号存储,
+    而账号删除后留一条无人使用的覆盖是无害的。"""
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     global_: ConfigOverride = Field(default_factory=ConfigOverride, alias="global")
+    users: dict[str, UserOverride] = Field(default_factory=dict)
     stages: dict[str, ConfigOverride] = Field(default_factory=dict)
 
 
@@ -123,13 +151,22 @@ def resolve_settings(
     stage: str | None = None,
     cfg: AppConfig | None = None,
     base: Settings | None = None,
+    owner: str = "",
 ) -> Settings:
-    """把 global + stages[stage] 覆盖叠加到 base(默认 Settings())之上,返回该环节生效的 Settings。
-    用 exclude_none(None=继承,避免显式 null 击穿必填字段);model_copy 不重校验 Literal
-    (provider 合法性由写入/读取层的 ConfigOverride 校验保证)。base 可注入,便于单测隔离真实 .env。"""
+    """把 global + users[owner] + stages[stage] 覆盖依次叠加到 base(默认 Settings())之上,
+    返回该环节生效的 Settings。用 exclude_none(None=继承,避免显式 null 击穿必填字段);
+    model_copy 不重校验 Literal(provider 合法性由写入/读取层的模型校验保证)。
+    base 可注入,便于单测隔离真实 .env。
+
+    owner 传作品归属者(Project.owner),**不是当前操作者**:admin 帮别人重跑某一步时仍用
+    作品主人的模型,否则同一部作品的 S1 与 S4 会走两套模型、文风画风对不上。
+    owner="" 是默认值,故历史无主项目与 CLI(无登录态)自然跳过 users 层回落到 global——
+    与写侧 _may_edit 的"owner 为空视为无主"是同一种处理。"""
     base = base or Settings()
     cfg = cfg or load_overrides()
     updates = cfg.global_.model_dump(exclude_none=True)
+    if owner and owner in cfg.users:
+        updates.update(cfg.users[owner].model_dump(exclude_none=True))
     if stage is not None and stage in cfg.stages:
         updates.update(cfg.stages[stage].model_dump(exclude_none=True))
     return base.model_copy(update=updates) if updates else base
@@ -151,12 +188,18 @@ def image_concurrency(s: Settings) -> int:
 
 # ---------- PUT 合并 + GET 脱敏视图(HTTP 层与 CLI 共用同一契约) ----------
 
-def merge_override(incoming: ConfigOverride, existing: ConfigOverride) -> ConfigOverride:
+_Override = TypeVar("_Override", ConfigOverride, UserOverride)
+
+
+def merge_override(incoming: _Override, existing: _Override) -> _Override:
     """按 PUT 的"部分更新"语义把 incoming 合并进 existing:
     - 只有 incoming 里**实际发来**的字段(model_fields_set,经 exclude_unset 提取)才参与合并,
       未发来的字段一律保留 existing 值——故前端不渲染的字段(如共享 base_url/api_key)不会被静默抹掉。
     - 密钥字段:值=SENTINEL 或 MASK→保持已存值(掩码回填不会被当成真密钥);值=""→清除(继承);其它→更新。
-    - 非密钥字段:值=""或显式 null→清除(继承);其它→更新。"""
+    - 非密钥字段:值=""或显式 null→清除(继承);其它→更新。
+
+    对 ConfigOverride 与 UserOverride 通用:逻辑只依赖字段名与 SECRET_FIELDS,不依赖具体模型,
+    故用 type(existing) 构造回同一类型,而不是抄第二份合并逻辑(两份迟早漂)。"""
     merged = existing.model_dump()
     for field, val in incoming.model_dump(exclude_unset=True).items():
         if field in SECRET_FIELDS:
@@ -165,30 +208,40 @@ def merge_override(incoming: ConfigOverride, existing: ConfigOverride) -> Config
             merged[field] = None if val == "" else val
         else:
             merged[field] = None if val == "" else val
-    return ConfigOverride(**merged)
+    return type(existing)(**merged)
 
 
-def _is_empty_override(ov: ConfigOverride) -> bool:
+def _is_empty_override(ov: ConfigOverride | UserOverride) -> bool:
     return all(v is None for v in ov.model_dump().values())
 
 
-def apply_put(existing: AppConfig, incoming: AppConfig) -> AppConfig:
-    """把一次 PUT(incoming)按部分更新语义合并进 existing:
-    - global 逐字段合并;
-    - stages:未在 incoming 出现的环节保留(裸 API 部分 PUT 不会误删其它环节),出现的环节逐字段合并;
-      合并后全空的环节条目删除(用户清空某环节全部字段即可删除该环节覆盖)。"""
-    merged_stages = dict(existing.stages)
-    for st, ov in incoming.stages.items():
-        merged = merge_override(ov, existing.stages.get(st, ConfigOverride()))
-        if _is_empty_override(merged):
-            merged_stages.pop(st, None)
+def _merge_layer(incoming: dict[str, _Override], existing: dict[str, _Override],
+                 empty: Callable[[], _Override]) -> dict[str, _Override]:
+    """users / stages 这类"键 → 覆盖"字典的部分更新:未在 incoming 出现的键保留(裸 API 部分
+    PUT 不会误删其它条目),出现的键逐字段合并,合并后全空的条目删除(清空全部字段即删除该覆盖)。"""
+    merged = dict(existing)
+    for key, ov in incoming.items():
+        m = merge_override(ov, existing.get(key, empty()))
+        if _is_empty_override(m):
+            merged.pop(key, None)
         else:
-            merged_stages[st] = merged
-    return AppConfig(global_=merge_override(incoming.global_, existing.global_), stages=merged_stages)
+            merged[key] = m
+    return merged
 
 
-def override_view(ov: ConfigOverride) -> dict:
-    """把一层覆盖脱敏为 GET 视图:密钥字段 已设→MASK / 未设→None;非密钥字段 原值或 None。"""
+def apply_put(existing: AppConfig, incoming: AppConfig) -> AppConfig:
+    """把一次 PUT(incoming)按部分更新语义合并进 existing:global 逐字段合并,
+    users 与 stages 走同一套 _merge_layer(保留未提及的键、逐字段合并、空条目剪枝)。"""
+    return AppConfig(
+        global_=merge_override(incoming.global_, existing.global_),
+        users=_merge_layer(incoming.users, existing.users, UserOverride),
+        stages=_merge_layer(incoming.stages, existing.stages, ConfigOverride),
+    )
+
+
+def override_view(ov: ConfigOverride | UserOverride) -> dict:
+    """把一层覆盖脱敏为 GET 视图:密钥字段 已设→MASK / 未设→None;非密钥字段 原值或 None。
+    对两种覆盖模型通用:只按字段名查 SECRET_FIELDS,不依赖具体模型。"""
     return {
         k: (MASK if v is not None else None) if k in SECRET_FIELDS else v
         for k, v in ov.model_dump().items()
@@ -263,13 +316,18 @@ def use_master_skill(p: Project, stage_settings: Settings, stage: str) -> bool:
     return False
 
 
-def config_view(readonly: bool) -> dict:
-    """GET /api/config 的完整响应体(也用作 PUT 成功后的回显)。所有密钥字段脱敏。"""
+def config_view(readonly: bool, viewer: str = "", viewer_is_admin: bool = False) -> dict:
+    """GET /api/config 的完整响应体(也用作 PUT 成功后的回显)。所有密钥字段脱敏。
+
+    users 层做**行级过滤**:管理员看全部,其他人只看得到自己那一条——别人配了什么模型
+    不该互相可见。global/stages 维持对所有登录用户可见(既有行为,且前端要靠它显示继承值)。"""
     cfg = load_overrides()
+    users = cfg.users if viewer_is_admin else {u: ov for u, ov in cfg.users.items() if u == viewer}
     return {
         "readonly": readonly,
         "stage_clients": {st: list(clients) for st, clients in STAGE_CLIENTS.items()},
         "defaults": defaults_view(),
         "global": override_view(cfg.global_),
+        "users": {u: override_view(ov) for u, ov in users.items()},
         "stages": {st: override_view(ov) for st, ov in cfg.stages.items()},
     }

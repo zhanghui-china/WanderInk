@@ -210,18 +210,17 @@ export default function App() {
                 {activeCount > 0 ? `${activeCount} 部生成中` : `${list.length} 部作品`}
               </span>
             </div>
-            {/* 配置面板是纯编辑用途,而 PUT /api/config 现在只认管理员(它决定全站上游端点)。
-                入口对非管理员开着的话,人家填完一整张表单才吃 403,不如不给入口。 */}
-            {isAdmin && (
-              <button
-                type="button"
-                onClick={() => setShowSettings(true)}
-                aria-label="配置"
-                className="flex h-8 w-8 items-center justify-center rounded-full border border-gold/25 bg-white/5 text-rice/80 transition hover:text-gold-pale"
-              >
-                ⚙
-              </button>
-            )}
+            {/* 入口现在对所有登录用户开:每个人都能配自己的 LLM(只影响自己名下的作品)。
+                全局默认与按环节覆盖仍是管理员专属,面板内部按 isAdmin 决定渲染哪几块——
+                非管理员看不到那两块,也就不会填完一整张表单才吃 403。 */}
+            <button
+              type="button"
+              onClick={() => setShowSettings(true)}
+              aria-label="配置"
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-gold/25 bg-white/5 text-rice/80 transition hover:text-gold-pale"
+            >
+              ⚙
+            </button>
             <div className="flex items-center gap-2 rounded-full border border-gold/25 bg-white/5 px-3 py-[7px]">
               <span className="text-[13px] text-rice/85">{user}</span>
               <button
@@ -237,7 +236,14 @@ export default function App() {
         <div className="meander relative opacity-90" />
       </header>
 
-      {showSettings && <SettingsPanel meta={meta} onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsPanel
+          meta={meta}
+          user={user}
+          isAdmin={isAdmin}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
 
       <div className="mx-auto max-w-6xl px-6 py-8">
         <div className="grid grid-cols-1 gap-7 lg:grid-cols-[21rem_1fr]">

@@ -114,6 +114,13 @@ curl http://127.0.0.1:8188/system_stats   # 200 说明 ComfyUI 也活着;不通�
 
 **磁盘/项目数据**:项目数据在 `~/shanhai/projects/`(每个作品一个目录,含 `project.json` + 生成的图片/音频/成片),配置在 `~/shanhai/config.json`(Web 配置面板改的内容落这里),账号在 `~/shanhai/users.json`。这三者都不进 git、不随 rsync 部署覆盖(部署命令里显式 `--exclude`),线上数据安全。
 
+**「只有某个人的作品生成慢/失败,别人都正常」**:先看 `~/shanhai/config.json` 的 `users` 段——每个用户可以给自己配一套 LLM 端点,他那条配错(端点不通、模型名写错)只会影响他名下的作品。
+```bash
+python3 -c "import json;print(json.dumps(json.load(open('config.json')).get('users',{}),ensure_ascii=False,indent=2))"
+```
+生效优先级 `global → users[作品归属者] → stages[环节]`,后者压前者。注意判据是**作品的 owner**,不是点按钮的人——管理员帮别人重跑,用的仍是作品主人那套配置。
+另外:某人把 LLM 配成**本机**端点时,他的推理会和全站出图/配音抢同一把 GPU 锁(`providers/_http.py` 的全局单并发),表现为"他一跑,大家的图都慢"——这是设计使然,不是故障。
+
 ## 访问地址
 
 - 局域网直连:`http://<DGX 局域网 IP>:5000`(IP 走 DHCP 会变,DGX 上 `hostname -I` 现查为准,不要死记旧 IP)。

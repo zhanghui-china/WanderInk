@@ -538,6 +538,63 @@ def test_write_config_allows_admin(monkeypatch, tmp_path):
     assert r.status_code == 200
 
 
+# ---- 按用户配 LLM:分层写权限 + 行级读过滤 ----
+# global/stages 决定全站上游,仍限 admin;users[自己] 只影响自己名下的作品,故本人可改。
+
+def test_write_config_allows_non_admin_to_edit_own_user_layer(monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "cfg.json"))
+    r = client.put("/api/config", json={"users": {"testuser": {"llm_model": "my-model"}}})
+    assert r.status_code == 200
+    assert runtime_config.load_overrides().users["testuser"].llm_model == "my-model"
+
+
+def test_write_config_rejects_non_admin_editing_others_user_layer(monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    r = client.put("/api/config", json={"users": {"someone-else": {"llm_model": "x"}}})
+    assert r.status_code == 403
+
+
+def test_write_config_rejects_non_admin_touching_global_or_stages(monkeypatch):
+    """只发 users 才放行;夹带 global/stages 一律 403,不做"部分执行"。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    assert client.put("/api/config", json={"global": {"llm_model": "x"}}).status_code == 403
+    assert client.put("/api/config", json={"stages": {"s0": {}}}).status_code == 403
+    # 夹带在合法的 users 里也不行
+    r = client.put("/api/config", json={"users": {"testuser": {}}, "global": {"llm_model": "x"}})
+    assert r.status_code == 403
+
+
+def test_write_config_admin_can_edit_any_user_layer(monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "cfg.json"))
+    r = client.put("/api/config", json={"users": {"zhanghui": {"llm_model": "for-zhanghui"}}})
+    assert r.status_code == 200
+    assert runtime_config.load_overrides().users["zhanghui"].llm_model == "for-zhanghui"
+
+
+def test_write_config_rejects_image_field_in_user_layer(monkeypatch, tmp_path):
+    """422 而不是 403:这是 UserOverride 的 extra="forbid" 在拦,连管理员也塞不进去。
+    image 端点按人可配的话,单并发的两处 hostname 判定会静默失效。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "cfg.json"))
+    r = client.put("/api/config",
+                   json={"users": {"testuser": {"image_base_url": "http://192.168.1.9:8099/v1"}}})
+    assert r.status_code == 422
+
+
+def test_read_config_filters_user_layer_for_non_admin(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "cfg.json"))
+    runtime_config.save_overrides(runtime_config.AppConfig(users={
+        "testuser": runtime_config.UserOverride(llm_model="mine"),
+        "someone-else": runtime_config.UserOverride(llm_model="theirs"),
+    }))
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    assert set(client.get("/api/config").json()["users"]) == {"testuser"}
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    assert set(client.get("/api/config").json()["users"]) == {"testuser", "someone-else"}
+
+
 def test_export_rejects_other_owner(tmp_path, monkeypatch):
     """导出会读改写他人的 project.json 并往他人目录落盘,必须校验归属。
     注意不能改走 _editable:导出不受只读拦截是 export_project 里刻意的设计。"""
@@ -953,8 +1010,10 @@ def test_pipeline_use_hermes_agent_false_falls_back_to_global_llm():
     # use_hermes_agent=False:S0/S1 应跳过按环节覆盖(如 hermes-agent),改用仅叠加全局默认
     # 的 Settings/client——即调 resolve_settings(None, cfg),而非 resolve_stage_clients 给的
     # 那份按环节覆盖后的 s0/s1 client。S2 及之后的环节不受影响,仍用 resolve_stage_clients 原样结果。
+    # 注意 owner 层**保留**(只跳环节层):该开关针对的是环节级钉死的 skill 后端,
+    # 而用户自选的 LLM 不是 skill——跳掉它会让 use_hermes_agent=False 顺带没收个人配置。
     from unittest.mock import MagicMock
-    p = Project(project_id="hafid", scenic_spot="雷峰塔")
+    p = Project(project_id="hafid", scenic_spot="雷峰塔", owner="zhanghui")
     p.params.use_hermes_agent = False
     mock_settings = MagicMock()
     mock_settings.image_endpoint = ("https://example.com/v1", "key")
@@ -984,7 +1043,7 @@ def test_pipeline_use_hermes_agent_false_falls_back_to_global_llm():
             m.run.return_value = p
         api._pipeline("hafid", runtime_config.AppConfig(), "自备故事")
 
-    resolve_settings.assert_any_call(None, runtime_config.AppConfig())
+    resolve_settings.assert_any_call(None, runtime_config.AppConfig(), owner="zhanghui")
     assert s0.from_text.call_args[0][1] is fallback_llm    # S0 用了回退 client,不是 hermes
     assert s1.run.call_args[0][1] is fallback_llm          # S1 同上
     assert s2.run.call_args[0][1] is stage_clients["s2"][0]  # S2 不受影响,原样用 resolve_stage_clients 的结果
@@ -1426,6 +1485,57 @@ def test_admin_bypass_does_not_cover_pending_job(monkeypatch):
         f.set_result(None)
         api._JOBS.clear()
         api._JOBS.update(saved)
+
+
+def _spy_clients():
+    """替身 _clients:记下每次拿到的 Settings 的 llm_model,返回四个假 client。
+    断言的是"解析出的模型是谁的",不是 Settings 对象本身。"""
+    from unittest.mock import MagicMock
+
+    class Spy:
+        models: list[str] = []
+
+        def __call__(self, s):
+            self.models.append(s.llm_model)
+            return (MagicMock(), MagicMock(), MagicMock(), MagicMock())
+
+    spy = Spy()
+    spy.models = []
+    return spy
+
+
+def test_run_one_step_resolves_with_project_owner_not_operator(tmp_path, monkeypatch):
+    """**决策 4 的锁**:按作品 owner 解析,不是按当前操作者。
+
+    admin 帮 zhanghui 重跑 S1 时若切成 admin 自己的 LLM,同一部作品的 S1 与 S4 会走两套模型、
+    文风对不上。而且后台线程手里本来就只有 p.owner(提交时 user 就丢了)。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = Project(project_id="ownerresolve", scenic_spot="雷峰塔", owner="zhanghui")
+    cfg = runtime_config.AppConfig(
+        global_=runtime_config.ConfigOverride(llm_model="admin-cloud"),
+        users={"zhanghui": runtime_config.UserOverride(llm_model="zhanghui-local")},
+    )
+    seen = _spy_clients()
+    with patch("shanhai.api._clients", side_effect=seen), \
+         patch("shanhai.api._check_cancelled", return_value=True):   # 解析完立刻短路,不真跑
+        api._run_one_step(p, p.project_id, "s1", cfg, tmp_path)
+    assert seen.models == ["zhanghui-local"]
+
+
+def test_run_one_step_ownerless_project_uses_global(tmp_path, monkeypatch):
+    """历史无主项目(owner="")跳过 users 层——存量数据行为与今天完全一致。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = Project(project_id="ownerlessres", scenic_spot="雷峰塔")
+    assert p.owner == ""
+    cfg = runtime_config.AppConfig(
+        global_=runtime_config.ConfigOverride(llm_model="admin-cloud"),
+        users={"zhanghui": runtime_config.UserOverride(llm_model="zhanghui-local")},
+    )
+    seen = _spy_clients()
+    with patch("shanhai.api._clients", side_effect=seen), \
+         patch("shanhai.api._check_cancelled", return_value=True):
+        api._run_one_step(p, p.project_id, "s1", cfg, tmp_path)
+    assert seen.models == ["admin-cloud"]
 
 
 def test_reorder_rejects_non_permutation():

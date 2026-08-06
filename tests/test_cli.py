@@ -199,7 +199,7 @@ def test_status(store):
 def test_resolve_stage_clients_reuses_same_config(mock_resolve, mock_clients):
     # 全环节同配置 → 只建一组 client,6 个环节复用同一实例(避免泄漏 24 个连接池)
     same = _stub_settings()
-    mock_resolve.side_effect = lambda st, cfg=None: same
+    mock_resolve.side_effect = lambda st, cfg=None, owner="": same
     mock_clients.side_effect = lambda s: object()
     _settings, clients = resolve_stage_clients()
     assert mock_clients.call_count == 1
@@ -213,7 +213,7 @@ def test_resolve_stage_clients_distinct_config_not_shared(mock_resolve, mock_cli
     order = list(STAGE_CLIENTS)
     a, b = _stub_settings(), _stub_settings()
     mapping = {st: (a if i < 3 else b) for i, st in enumerate(order)}
-    mock_resolve.side_effect = lambda st, cfg=None: mapping[st]
+    mock_resolve.side_effect = lambda st, cfg=None, owner="": mapping[st]
     mock_clients.side_effect = lambda s: object()
     _settings, clients = resolve_stage_clients()
     assert mock_clients.call_count == 2                    # 两种配置各建一组
@@ -244,7 +244,7 @@ def test_resolve_stage_clients_key_covers_image_timeout(mock_resolve, mock_clien
     a = _explicit_settings(image_timeout=600.0)
     b = _explicit_settings(image_timeout=120.0)
     mapping = {st: (a if i < 3 else b) for i, st in enumerate(order)}
-    mock_resolve.side_effect = lambda st, cfg=None: mapping[st]
+    mock_resolve.side_effect = lambda st, cfg=None, owner="": mapping[st]
     mock_clients.side_effect = lambda s: object()
     _settings, clients = resolve_stage_clients()
     assert mock_clients.call_count == 2                    # 仅 image_timeout 不同也各建一组

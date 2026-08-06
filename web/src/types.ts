@@ -203,11 +203,19 @@ export interface ConfigDefaults {
   music_model: string
 }
 
+// 按用户覆盖只有 LLM 五个字段(后端 UserOverride 刻意不开图像/配音/配乐,见其 docstring)
+export type UserOverrideView = Pick<
+  ConfigOverrideView,
+  'llm_base_url' | 'llm_api_key' | 'llm_model' | 'llm_provider' | 'llm_timeout'
+>
+
 export interface AppConfigView {
   readonly: boolean
   stage_clients: Record<string, string[]>
   defaults: ConfigDefaults
   global: ConfigOverrideView
+  // 行级过滤:管理员拿到全部条目,其他人只拿到自己那条
+  users: Record<string, UserOverrideView>
   stages: Record<string, ConfigOverrideView>
 }
 
@@ -216,5 +224,6 @@ export type ConfigOverrideInput = Partial<ConfigOverrideView>
 
 export interface AppConfigInput {
   global?: ConfigOverrideInput
+  users?: Record<string, ConfigOverrideInput>
   stages?: Record<string, ConfigOverrideInput>
 }

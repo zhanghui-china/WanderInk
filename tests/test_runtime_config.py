@@ -7,8 +7,11 @@ from shanhai import runtime_config
 from shanhai.cli import _clients
 from shanhai.config import Settings
 from shanhai.schema import Project
+from pydantic import ValidationError
+
+from shanhai.providers._http import is_local_endpoint
 from shanhai.runtime_config import (MASK, SECRET_FIELDS, SENTINEL, STAGE_CLIENTS,
-                                     AppConfig, ConfigOverride, apply_put,
+                                     AppConfig, ConfigOverride, UserOverride, apply_put,
                                      defaults_view, load_overrides,
                                      merge_override, override_view, use_master_skill,
                                      resolve_settings, save_overrides,
@@ -82,6 +85,61 @@ def test_resolve_stage_without_override_falls_back_to_global():
     cfg = AppConfig(global_=ConfigOverride(llm_model="global-model"))
     s = resolve_settings("s1", cfg, base=_base())  # s1 不在 cfg.stages 中
     assert s.llm_model == "global-model"
+
+
+# ---------- users 层(按作品归属者覆盖 LLM)----------
+
+def test_resolve_user_overrides_global():
+    cfg = AppConfig(global_=ConfigOverride(llm_model="global-model"),
+                    users={"zhanghui": UserOverride(llm_model="local-model")})
+    assert resolve_settings("s1", cfg, base=_base(), owner="zhanghui").llm_model == "local-model"
+
+
+def test_resolve_stage_overrides_user():
+    """四层优先级的关键一条:环节层压用户层。管理员为某环节钉死的配置(如"S4 必须走本机
+    shim")不该被个人偏好盖掉——这也是 image 单并发保护的最后一道人为闸门。"""
+    cfg = AppConfig(
+        global_=ConfigOverride(llm_model="global-model"),
+        users={"zhanghui": UserOverride(llm_model="user-model")},
+        stages={"s1": ConfigOverride(llm_model="stage-model")},
+    )
+    assert resolve_settings("s1", cfg, base=_base(), owner="zhanghui").llm_model == "stage-model"
+    # 没有环节覆盖的环节仍走用户层
+    assert resolve_settings("s2", cfg, base=_base(), owner="zhanghui").llm_model == "user-model"
+
+
+def test_resolve_ignores_user_layer_without_owner():
+    """owner=""(历史无主项目、CLI 无登录态)跳过 users 层回落到 global——这条同时是
+    "本功能不影响存量项目"的回归证据。"""
+    cfg = AppConfig(global_=ConfigOverride(llm_model="global-model"),
+                    users={"zhanghui": UserOverride(llm_model="user-model")})
+    assert resolve_settings("s1", cfg, base=_base()).llm_model == "global-model"
+    assert resolve_settings("s1", cfg, base=_base(), owner="").llm_model == "global-model"
+
+
+def test_resolve_unknown_owner_falls_back_to_global():
+    cfg = AppConfig(global_=ConfigOverride(llm_model="global-model"),
+                    users={"zhanghui": UserOverride(llm_model="user-model")})
+    assert resolve_settings("s1", cfg, base=_base(), owner="someone-else").llm_model == "global-model"
+
+
+def test_user_override_rejects_non_llm_fields():
+    """**image 单并发保护的执法点。** image_base_url 一旦能按人配,改成非 loopback 会让
+    _http.local_backend_guard(锁失效)与 image_concurrency(扇出 1→2)同时静默失效。
+    用 extra="forbid" 让它成为结构约束,而不是一条要靠人记住的纪律。"""
+    for field in ("image_base_url", "image_model", "tts_base_url", "music_base_url", "base_url"):
+        with pytest.raises(ValidationError):
+            UserOverride(**{field: "http://192.168.1.9:8099/v1"})
+
+
+def test_user_layer_never_touches_image_settings():
+    """配了用户层之后,图像侧必须逐字不变——单并发的两处判定都只看 image 端点。"""
+    cfg = AppConfig(global_=ConfigOverride(image_base_url="http://127.0.0.1:8091/v1"),
+                    users={"zhanghui": UserOverride(llm_base_url="http://127.0.0.1:11434/v1")})
+    s = resolve_settings("s4", cfg, base=_base(), owner="zhanghui")
+    assert s.image_endpoint[0] == "http://127.0.0.1:8091/v1"
+    assert runtime_config.image_concurrency(s) == 1          # 仍串行
+    assert is_local_endpoint(s.image_endpoint[0])            # 仍受全局单并发锁保护
 
 
 # ---------- llm_endpoint 回退 ----------
