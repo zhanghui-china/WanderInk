@@ -87,8 +87,8 @@ function isGroup(g: string): g is Group {
   return g === 'llm' || g === 'image' || g === 'tts' || g === 'music'
 }
 
-function initValues(view: ConfigOverrideView | undefined): Record<string, string> {
-  const v = view ?? EMPTY_OVERRIDE_VIEW
+function initValues(view: Partial<ConfigOverrideView> | undefined): Record<string, string> {
+  const v = { ...EMPTY_OVERRIDE_VIEW, ...(view ?? {}) }
   const out: Record<string, string> = {}
   for (const f of ALL_FIELDS) {
     if (f.kind === 'secret') {
@@ -101,9 +101,26 @@ function initValues(view: ConfigOverrideView | undefined): Record<string, string
   return out
 }
 
-export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: () => void }) {
+// scope 是这个面板的统一寻址方式:'global' / 环节名(s0…s5)/ `user:<登录名>`。
+// 用同一套 getValue/buildOverride/renderField 走三种层,不为用户层另开一条渲染路径。
+const USER_SCOPE = 'user:'
+const userScope = (name: string) => USER_SCOPE + name
+const scopeUser = (scope: string) => (scope.startsWith(USER_SCOPE) ? scope.slice(USER_SCOPE.length) : null)
+
+export function SettingsPanel({
+  meta,
+  user,
+  isAdmin,
+  onClose,
+}: {
+  meta: Meta | null
+  user: string
+  isAdmin: boolean
+  onClose: () => void
+}) {
   const [cfg, setCfg] = useState<AppConfigView | null>(null)
   const [globalValues, setGlobalValues] = useState<Record<string, string>>({})
+  const [userValues, setUserValues] = useState<Record<string, Record<string, string>>>({})
   const [stageValues, setStageValues] = useState<Record<string, Record<string, string>>>({})
   const [touched, setTouched] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState(false)
@@ -114,6 +131,12 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
   const applyConfig = (next: AppConfigView) => {
     setCfg(next)
     setGlobalValues(initValues(next.global))
+    // 自己那条一定要有编辑态(哪怕后端还没存过);管理员另外拿到别人已存在的条目
+    setUserValues(
+      Object.fromEntries(
+        [user, ...Object.keys(next.users)].map((u) => [u, initValues(next.users[u])])
+      )
+    )
     setStageValues(
       Object.fromEntries(Object.keys(next.stage_clients).map((s) => [s, initValues(next.stages[s])]))
     )
@@ -132,12 +155,17 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
 
   function getValue(scope: string, key: FieldKey): string {
     if (scope === 'global') return globalValues[key] ?? ''
+    const u = scopeUser(scope)
+    if (u !== null) return userValues[u]?.[key] ?? ''
     return stageValues[scope]?.[key] ?? ''
   }
 
   function setFieldValue(scope: string, key: FieldKey, val: string) {
+    const u = scopeUser(scope)
     if (scope === 'global') {
       setGlobalValues((v) => ({ ...v, [key]: val }))
+    } else if (u !== null) {
+      setUserValues((v) => ({ ...v, [u]: { ...(v[u] ?? {}), [key]: val } }))
     } else {
       setStageValues((v) => ({ ...v, [scope]: { ...(v[scope] ?? {}), [key]: val } }))
     }
@@ -147,7 +175,9 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
     setTouched((t) => new Set(t).add(`${scope}::${key}`))
   }
 
-  // 有效继承值:非密钥字段的 placeholder——全局区显示 defaults,环节区显示 global 覆盖 defaults
+  // 有效继承值:非密钥字段的 placeholder——全局区显示 defaults,用户区与环节区显示 global 覆盖 defaults。
+  // 用户区不叠环节层、环节区也不叠用户层:那两层谁生效取决于"这是谁的作品",在配置面板里无从得知,
+  // 与其显示一个可能是错的数字,不如只显示确定成立的那段继承链(界面上另有文字说明优先级)。
   function effectiveNonSecret(scope: string, key: FieldKey): string | number | null {
     if (!cfg) return null
     const fallback = cfg.defaults[key] as string | number | null
@@ -177,6 +207,11 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
     const defaultsBool = Boolean(cfg.defaults[key])
     const globalSet = cfg.global[key] != null
     if (scope === 'global') return globalSet || defaultsBool
+    const u = scopeUser(scope)
+    if (u !== null) {
+      const userSet = (cfg.users[u] as Record<string, unknown> | undefined)?.[key] != null
+      return userSet || globalSet || defaultsBool
+    }
     const stageSet = cfg.stages[scope]?.[key] != null
     return stageSet || globalSet || defaultsBool
   }
@@ -191,6 +226,9 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
 
   function fieldsForScope(scope: string): FieldDef[] {
     if (scope === 'global') return ALL_FIELDS
+    // 用户层只有 LLM:图像端点若能按人配,后端两处按 hostname 的单并发判定会静默失效
+    // (见 runtime_config.UserOverride 的说明)。后端 extra="forbid" 会 422,这里也别画出来。
+    if (scopeUser(scope) !== null) return LLM_FIELDS
     return (cfg?.stage_clients[scope] ?? []).filter(isGroup).flatMap((g) => GROUP_FIELDS[g])
   }
 
@@ -215,9 +253,9 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
     return out
   }
 
-  // 该环节是否需要写入:已有持久化覆盖(保留,避免整份替换时丢失)或用户实际填了内容
-  // (非密钥非空 / 已改动的非空密钥)。避免给未定制的环节塞空覆盖污染 config.json。
-  function stageHasContent(scope: string): boolean {
+  // 该 scope(环节或用户)是否需要写入:已有持久化覆盖(保留,避免整份替换时丢失)或用户实际
+  // 填了内容(非密钥非空 / 已改动的非空密钥)。避免给未定制的条目塞空覆盖污染 config.json。
+  function scopeHasContent(scope: string): boolean {
     for (const field of fieldsForScope(scope)) {
       const raw = getValue(scope, field.key)
       if (field.kind === 'secret') {
@@ -234,11 +272,23 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
     setSaving(true)
     setErr(null)
     try {
-      const stages: Record<string, ConfigOverrideInput> = {}
-      for (const s of Object.keys(cfg.stage_clients)) {
-        if (cfg.stages[s] !== undefined || stageHasContent(s)) stages[s] = buildOverride(s)
+      // 只发自己有权改的层:非管理员发 global/stages 会被后端 403,连带自己的改动一起丢。
+      const users: Record<string, ConfigOverrideInput> = {}
+      for (const u of Object.keys(userValues)) {
+        if (!isAdmin && u !== user) continue
+        if (cfg.users[u] !== undefined || scopeHasContent(userScope(u))) {
+          users[u] = buildOverride(userScope(u))
+        }
       }
-      const payload: AppConfigInput = { global: buildOverride('global'), stages }
+      const payload: AppConfigInput = { users }
+      if (isAdmin) {
+        const stages: Record<string, ConfigOverrideInput> = {}
+        for (const s of Object.keys(cfg.stage_clients)) {
+          if (cfg.stages[s] !== undefined || scopeHasContent(s)) stages[s] = buildOverride(s)
+        }
+        payload.global = buildOverride('global')
+        payload.stages = stages
+      }
       const next = await api.saveConfig(payload)
       applyConfig(next)
     } catch (e) {
@@ -382,35 +432,67 @@ export function SettingsPanel({ meta, onClose }: { meta: Meta | null; onClose: (
               </p>
             )}
 
+            {/* 自己的个人配置放最前:对普通用户这是唯一能改的一块,对管理员也是最常改的。 */}
             <div className="space-y-4">
-              <h3 className="text-sm font-semibold tracking-wide text-ink">全局默认</h3>
-              {renderGroup('global', 'llm')}
-              {renderGroup('global', 'image')}
-              {renderGroup('global', 'tts')}
-              {renderGroup('global', 'music')}
+              <h3 className="text-sm font-semibold tracking-wide text-ink">我的模型</h3>
+              <p className="text-[11px] leading-relaxed text-muted">
+                只对<b>你自己的作品</b>生效,不影响别人。只能配文本生成(LLM)——图像、配音、
+                配乐由管理员全站统一配置,因为本机出图靠"端点是本地回环地址"来保证同时只跑一路,
+                改成别的地址会让这个保护静默失效。
+                {isAdmin && '管理员为某个环节单独钉死的配置优先级更高,会盖过这里。'}
+              </p>
+              {renderGroup(userScope(user), 'llm')}
             </div>
 
-            <div className="border-t border-line pt-4">
-              <button
-                type="button"
-                onClick={() => setExpanded((v) => !v)}
-                className="text-sm font-semibold tracking-wide text-ink-soft transition hover:text-cinnabar"
-              >
-                {expanded ? '▾' : '▸'} 按环节覆盖
-              </button>
-              {expanded && (
-                <div className="mt-4 space-y-5">
-                  {Object.entries(cfg.stage_clients).map(([stage, groups]) => (
-                    <div key={stage} className="space-y-3 rounded-lg border border-line p-3">
-                      <h4 className="text-sm font-semibold tracking-wide text-ink">
-                        {STAGE_LABEL[stage] ?? stage}
-                      </h4>
-                      {groups.filter(isGroup).map((g) => renderGroup(stage, g))}
+            {isAdmin && (
+              <div className="space-y-4 border-t border-line pt-4">
+                <h3 className="text-sm font-semibold tracking-wide text-ink">全局默认</h3>
+                {renderGroup('global', 'llm')}
+                {renderGroup('global', 'image')}
+                {renderGroup('global', 'tts')}
+                {renderGroup('global', 'music')}
+              </div>
+            )}
+
+            {isAdmin && (
+              <div className="border-t border-line pt-4">
+                <button
+                  type="button"
+                  onClick={() => setExpanded((v) => !v)}
+                  className="text-sm font-semibold tracking-wide text-ink-soft transition hover:text-cinnabar"
+                >
+                  {expanded ? '▾' : '▸'} 按环节覆盖
+                </button>
+                {expanded && (
+                  <div className="mt-4 space-y-5">
+                    {Object.entries(cfg.stage_clients).map(([stage, groups]) => (
+                      <div key={stage} className="space-y-3 rounded-lg border border-line p-3">
+                        <h4 className="text-sm font-semibold tracking-wide text-ink">
+                          {STAGE_LABEL[stage] ?? stage}
+                        </h4>
+                        {groups.filter(isGroup).map((g) => renderGroup(stage, g))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 管理员可代改别人的个人配置。只列**已存在**的条目:从零给某人建一条需要先知道
+                有哪些账号,而这里没有账号列表接口——那种情况让本人自己在这个面板里设即可。 */}
+            {isAdmin && Object.keys(cfg.users).filter((u) => u !== user).length > 0 && (
+              <div className="space-y-4 border-t border-line pt-4">
+                <h3 className="text-sm font-semibold tracking-wide text-ink">其他人的模型</h3>
+                {Object.keys(cfg.users)
+                  .filter((u) => u !== user)
+                  .map((u) => (
+                    <div key={u} className="space-y-3 rounded-lg border border-line p-3">
+                      <h4 className="text-sm font-semibold tracking-wide text-ink">{u}</h4>
+                      {renderGroup(userScope(u), 'llm')}
                     </div>
                   ))}
-                </div>
-              )}
-            </div>
+              </div>
+            )}
 
             {err && <p className="rounded-md bg-alarm/8 px-3 py-2 text-sm text-alarm">{err}</p>}
 

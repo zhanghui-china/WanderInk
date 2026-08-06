@@ -107,7 +107,9 @@ export default function App() {
         const d = await api.get(selectedId)
         if (!alive) return
         setDetail(d)
-        if (ACTIVE.has(d.pipeline)) {
+        // 失联的项目磁盘上永远停在 running,不排除它的话这里会 2 秒一轮转到用户关标签页
+        // (原本无重试上限、无超时)。它已经没人在推进,轮询不会等到任何变化。
+        if (ACTIVE.has(d.pipeline) && !d.stalled) {
           timer = window.setTimeout(tick, 2000)
         } else {
           refreshList()
@@ -159,7 +161,9 @@ export default function App() {
     refreshList()
   }
 
-  const activeCount = list.filter((p) => ACTIVE.has(p.pipeline)).length
+  // 排除失联项:这个数字来自列表(读盘),而队列面板来自内存 _JOBS。不排除的话两个数据源
+  // 会打架——顶栏说「1 部生成中」,队列面板却因为没有条目整个不渲染。
+  const activeCount = list.filter((p) => ACTIVE.has(p.pipeline) && !p.stalled).length
 
   if (!authChecked) return null // 登录态未知前先不渲染,避免闪现登录页
   const drifted = isDrifted(__BUILD__, backendBuild)
@@ -210,18 +214,17 @@ export default function App() {
                 {activeCount > 0 ? `${activeCount} 部生成中` : `${list.length} 部作品`}
               </span>
             </div>
-            {/* 配置面板是纯编辑用途,而 PUT /api/config 现在只认管理员(它决定全站上游端点)。
-                入口对非管理员开着的话,人家填完一整张表单才吃 403,不如不给入口。 */}
-            {isAdmin && (
-              <button
-                type="button"
-                onClick={() => setShowSettings(true)}
-                aria-label="配置"
-                className="flex h-8 w-8 items-center justify-center rounded-full border border-gold/25 bg-white/5 text-rice/80 transition hover:text-gold-pale"
-              >
-                ⚙
-              </button>
-            )}
+            {/* 入口现在对所有登录用户开:每个人都能配自己的 LLM(只影响自己名下的作品)。
+                全局默认与按环节覆盖仍是管理员专属,面板内部按 isAdmin 决定渲染哪几块——
+                非管理员看不到那两块,也就不会填完一整张表单才吃 403。 */}
+            <button
+              type="button"
+              onClick={() => setShowSettings(true)}
+              aria-label="配置"
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-gold/25 bg-white/5 text-rice/80 transition hover:text-gold-pale"
+            >
+              ⚙
+            </button>
             <div className="flex items-center gap-2 rounded-full border border-gold/25 bg-white/5 px-3 py-[7px]">
               <span className="text-[13px] text-rice/85">{user}</span>
               <button
@@ -237,7 +240,14 @@ export default function App() {
         <div className="meander relative opacity-90" />
       </header>
 
-      {showSettings && <SettingsPanel meta={meta} onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsPanel
+          meta={meta}
+          user={user}
+          isAdmin={isAdmin}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
 
       <div className="mx-auto max-w-6xl px-6 py-8">
         <div className="grid grid-cols-1 gap-7 lg:grid-cols-[21rem_1fr]">

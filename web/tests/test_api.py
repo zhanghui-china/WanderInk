@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -402,6 +403,58 @@ def test_reconcile_zombie_jobs(tmp_path):
     assert store.load(done.project_id, root=tmp_path).status["pipeline"] == "done"  # 非僵尸不动
 
 
+def test_reconcile_survives_unreadable_project(tmp_path, capsys):
+    """一个读不出来的 project.json 不能阻断对账,而且必须被点名——它会永远卡在生成中,
+    运维得知道是哪个(用户可以在界面上手动重置它)。"""
+    zombie = store.create_project("僵尸", root=tmp_path)
+    zombie.status["pipeline"] = "running"
+    store.save(zombie, root=tmp_path)
+    (tmp_path / "brokenpid").mkdir()
+    (tmp_path / "brokenpid" / "project.json").write_text("{not valid json", encoding="utf-8")
+
+    assert api.reconcile_zombie_jobs(tmp_path) == 1        # 坏文件不影响好项目被修
+    out = capsys.readouterr().out
+    assert "brokenpid" in out and "跳过" in out            # 不再静默
+
+
+def test_reconcile_survives_schema_drift(tmp_path, capsys):
+    """合法 JSON 但非法 Literal 值:这类项目 store.load 永久失败(见 docs/decisions/0003),
+    同样只跳过、不阻断。"""
+    (tmp_path / "driftpid").mkdir()
+    (tmp_path / "driftpid" / "project.json").write_text(
+        json.dumps({"project_id": "driftpid", "scenic_spot": "雷峰塔",
+                    "status": {"pipeline": "running"},
+                    "params": {"audience": "外星人"}}),   # 不在 Literal 枚举里
+        encoding="utf-8")
+    assert api.reconcile_zombie_jobs(tmp_path) == 0
+    assert "driftpid" in capsys.readouterr().out
+
+
+def test_reconcile_survives_save_failure(tmp_path, capsys):
+    """**这条是修复的核心**:此前 store.save 在 try 之外,一个不可写的项目目录就会让异常
+    冒出 main()、端口根本不绑;而 systemd Restart=always 没覆盖 StartLimit*,重启几次后
+    进 failed 态——一个坏目录 = 全站永久下线。"""
+    z = store.create_project("僵尸", root=tmp_path)
+    z.status["pipeline"] = "running"
+    store.save(z, root=tmp_path)
+
+    with patch("shanhai.api.store.save", side_effect=OSError("No space left on device")):
+        n = api.reconcile_zombie_jobs(tmp_path)           # 不抛,不冒到 main()
+    assert n == 0                                          # 没修成就不算数
+    out = capsys.readouterr().out
+    assert z.project_id in out and "写回失败" in out
+
+
+def test_reconcile_root_is_late_bound(tmp_path, monkeypatch):
+    """签名从 root=store.DEFAULT_ROOT 改成 None:早绑定会让 monkeypatch DEFAULT_ROOT 失效,
+    而 store.py 的注释记着早绑定曾导致测试往真实 projects/ 里写脏数据。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    z = store.create_project("僵尸", root=tmp_path)
+    z.status["pipeline"] = "running"
+    store.save(z, root=tmp_path)
+    assert api.reconcile_zombie_jobs() == 1                # 不传参也该扫到 tmp_path
+
+
 def test_list_projects_sorted_by_created_at_desc(tmp_path, monkeypatch):
     # 有 created_at 的项目按新到旧排序;混入无 created_at 的历史项目应排在最后。
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
@@ -453,7 +506,8 @@ def test_list_projects_fields_and_skips_corrupt(tmp_path, monkeypatch):
     items = r.json()
     assert len(items) == 1                    # 损坏项目被跳过
     item = items[0]
-    assert set(item) == {"project_id", "scenic_spot", "owner", "pipeline", "mp4", "multi_panel"}
+    assert set(item) == {"project_id", "scenic_spot", "owner", "pipeline", "mp4",
+                         "multi_panel", "stalled"}
     assert item["project_id"] == p.project_id
     assert item["scenic_spot"] == "雷峰塔"
     assert item["owner"] == "someone"
@@ -523,6 +577,124 @@ def test_cancel_rejects_other_owner(tmp_path, monkeypatch):
     assert client.post(f"/api/projects/{p.project_id}/cancel").status_code == 403
 
 
+# ---------- 失联作业(磁盘写着生成中,内存里已无人推进)与「重置状态」 ----------
+
+def _stalled_project(tmp_path, monkeypatch, owner: str = "testuser", pipeline: str = "running"):
+    """手工制造失联态:磁盘写 running,但**不提交任何作业**——精确复刻用户遇到的现场
+    (重启硬杀、或 _save_error 自身失败之后的样子)。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = owner
+    p.status["pipeline"] = pipeline
+    store.save(p, root=tmp_path)
+    return p
+
+
+def test_stalled_true_when_no_job():
+    assert api._stalled("nojobid", "running") is True
+    assert api._stalled("nojobid", "queued") is True
+
+
+def test_stalled_false_while_job_alive():
+    f = Future()
+    api._JOBS["aliveid"] = f
+    try:
+        assert api._stalled("aliveid", "running") is False
+    finally:
+        f.set_result(None)
+        api._JOBS.pop("aliveid", None)
+
+
+def test_stalled_true_when_job_already_done():
+    """**不需要重启就能卡死**的那条路径:_save_error 自身失败时线程会正常结束,
+    f.done() 立刻为真、条目还滞留在 _JOBS 里(它没有 finally 清理),而磁盘停在 running。"""
+    f = Future()
+    f.set_result(None)
+    api._JOBS["doneid"] = f
+    try:
+        assert api._stalled("doneid", "running") is True
+    finally:
+        api._JOBS.pop("doneid", None)
+
+
+def test_stalled_false_for_terminal_status():
+    for s in ("done", "error: x", "cancelled", "partial: y", "pending"):
+        assert api._stalled("whatever", s) is False
+
+
+def test_detail_and_list_expose_stalled_without_persisting_it(tmp_path, monkeypatch):
+    """stalled 是"此刻内存里有没有作业"的函数,落盘就会变成过期的谎言,故只出现在响应里。"""
+    p = _stalled_project(tmp_path, monkeypatch)
+    assert client.get(f"/api/projects/{p.project_id}").json()["stalled"] is True
+    assert client.get("/api/projects").json()[0]["stalled"] is True
+    on_disk = json.loads((tmp_path / p.project_id / "project.json").read_text(encoding="utf-8"))
+    assert "stalled" not in on_disk and "stalled" not in on_disk.get("status", {})
+
+
+def test_cancel_still_400_when_stalled(tmp_path, monkeypatch):
+    """复现用户撞的那堵墙:取消端点对失联作业一律 400(有意为之,注释与本用例一起锁着)。
+    这正是「重置」必须单独存在的理由——cancel 永远救不了这种状态。"""
+    p = _stalled_project(tmp_path, monkeypatch)
+    r = client.post(f"/api/projects/{p.project_id}/cancel")
+    assert r.status_code == 400
+
+
+def test_reset_recovers_stalled_project(tmp_path, monkeypatch):
+    p = _stalled_project(tmp_path, monkeypatch)
+    r = client.post(f"/api/projects/{p.project_id}/reset")
+    assert r.status_code == 200
+    assert r.json()["stalled"] is False
+    assert store.load(p.project_id, root=tmp_path).status["pipeline"].startswith("error: 已手动重置")
+
+
+def test_reset_rejects_non_owner(tmp_path, monkeypatch):
+    p = _stalled_project(tmp_path, monkeypatch, owner="someone-else")
+    assert client.post(f"/api/projects/{p.project_id}/reset").status_code == 403
+
+
+def test_reset_allows_admin_on_other_owner_project(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    p = _stalled_project(tmp_path, monkeypatch, owner="someone-else")
+    assert client.post(f"/api/projects/{p.project_id}/reset").status_code == 200
+
+
+def test_reset_rejects_terminal_project(tmp_path, monkeypatch):
+    """刻意不做成幂等 200:静默成功会掩盖"前端状态陈旧"这类真问题。"""
+    p = _stalled_project(tmp_path, monkeypatch, pipeline="done")
+    r = client.post(f"/api/projects/{p.project_id}/reset")
+    assert r.status_code == 400
+
+
+def test_reset_refuses_while_job_alive(tmp_path, monkeypatch):
+    """有活作业时指回「取消」。重置一个仍在跑的作业会被它醒来后的 _locked_save 盖回去,
+    做出来就是个时灵时不灵的按钮。"""
+    p = _stalled_project(tmp_path, monkeypatch)
+    f = Future()
+    api._JOBS[p.project_id] = f
+    try:
+        r = client.post(f"/api/projects/{p.project_id}/reset")
+        assert r.status_code == 409
+    finally:
+        f.set_result(None)
+        api._JOBS.pop(p.project_id, None)
+
+
+def test_reset_blocked_in_readonly(tmp_path, monkeypatch):
+    p = _stalled_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(api, "_READONLY", True)
+    assert client.post(f"/api/projects/{p.project_id}/reset").status_code == 403
+
+
+def test_reset_then_step_rerun_works(tmp_path, monkeypatch):
+    """重置之后恢复链路真的通:能重新提交单步生成,作品是活的。"""
+    p = _stalled_project(tmp_path, monkeypatch)
+    assert client.post(f"/api/projects/{p.project_id}/reset").status_code == 200
+    with patch("shanhai.api._run_step"), patch("shanhai.api.Settings"):
+        r = client.post(f"/api/projects/{p.project_id}/steps/s4")
+    assert r.status_code == 202
+    api._JOBS.pop(p.project_id, None)
+
+
 def test_write_config_requires_admin(monkeypatch):
     """配置写入决定全站上游端点:任意登录用户可改的话,把 llm_base_url 指向自己的机器
     就能拿到所有人的剧本与自备故事原文,同时让全站生成瘫痪。必须是管理员闸门。"""
@@ -536,6 +708,63 @@ def test_write_config_allows_admin(monkeypatch, tmp_path):
     monkeypatch.setattr(api, "update_overrides", lambda fn: None)
     r = client.put("/api/config", json={"global": {}})
     assert r.status_code == 200
+
+
+# ---- 按用户配 LLM:分层写权限 + 行级读过滤 ----
+# global/stages 决定全站上游,仍限 admin;users[自己] 只影响自己名下的作品,故本人可改。
+
+def test_write_config_allows_non_admin_to_edit_own_user_layer(monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "cfg.json"))
+    r = client.put("/api/config", json={"users": {"testuser": {"llm_model": "my-model"}}})
+    assert r.status_code == 200
+    assert runtime_config.load_overrides().users["testuser"].llm_model == "my-model"
+
+
+def test_write_config_rejects_non_admin_editing_others_user_layer(monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    r = client.put("/api/config", json={"users": {"someone-else": {"llm_model": "x"}}})
+    assert r.status_code == 403
+
+
+def test_write_config_rejects_non_admin_touching_global_or_stages(monkeypatch):
+    """只发 users 才放行;夹带 global/stages 一律 403,不做"部分执行"。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    assert client.put("/api/config", json={"global": {"llm_model": "x"}}).status_code == 403
+    assert client.put("/api/config", json={"stages": {"s0": {}}}).status_code == 403
+    # 夹带在合法的 users 里也不行
+    r = client.put("/api/config", json={"users": {"testuser": {}}, "global": {"llm_model": "x"}})
+    assert r.status_code == 403
+
+
+def test_write_config_admin_can_edit_any_user_layer(monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "cfg.json"))
+    r = client.put("/api/config", json={"users": {"zhanghui": {"llm_model": "for-zhanghui"}}})
+    assert r.status_code == 200
+    assert runtime_config.load_overrides().users["zhanghui"].llm_model == "for-zhanghui"
+
+
+def test_write_config_rejects_image_field_in_user_layer(monkeypatch, tmp_path):
+    """422 而不是 403:这是 UserOverride 的 extra="forbid" 在拦,连管理员也塞不进去。
+    image 端点按人可配的话,单并发的两处 hostname 判定会静默失效。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "cfg.json"))
+    r = client.put("/api/config",
+                   json={"users": {"testuser": {"image_base_url": "http://192.168.1.9:8099/v1"}}})
+    assert r.status_code == 422
+
+
+def test_read_config_filters_user_layer_for_non_admin(monkeypatch, tmp_path):
+    monkeypatch.setenv("SHANHAI_CONFIG_PATH", str(tmp_path / "cfg.json"))
+    runtime_config.save_overrides(runtime_config.AppConfig(users={
+        "testuser": runtime_config.UserOverride(llm_model="mine"),
+        "someone-else": runtime_config.UserOverride(llm_model="theirs"),
+    }))
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    assert set(client.get("/api/config").json()["users"]) == {"testuser"}
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    assert set(client.get("/api/config").json()["users"]) == {"testuser", "someone-else"}
 
 
 def test_export_rejects_other_owner(tmp_path, monkeypatch):
@@ -953,8 +1182,10 @@ def test_pipeline_use_hermes_agent_false_falls_back_to_global_llm():
     # use_hermes_agent=False:S0/S1 应跳过按环节覆盖(如 hermes-agent),改用仅叠加全局默认
     # 的 Settings/client——即调 resolve_settings(None, cfg),而非 resolve_stage_clients 给的
     # 那份按环节覆盖后的 s0/s1 client。S2 及之后的环节不受影响,仍用 resolve_stage_clients 原样结果。
+    # 注意 owner 层**保留**(只跳环节层):该开关针对的是环节级钉死的 skill 后端,
+    # 而用户自选的 LLM 不是 skill——跳掉它会让 use_hermes_agent=False 顺带没收个人配置。
     from unittest.mock import MagicMock
-    p = Project(project_id="hafid", scenic_spot="雷峰塔")
+    p = Project(project_id="hafid", scenic_spot="雷峰塔", owner="zhanghui")
     p.params.use_hermes_agent = False
     mock_settings = MagicMock()
     mock_settings.image_endpoint = ("https://example.com/v1", "key")
@@ -984,7 +1215,7 @@ def test_pipeline_use_hermes_agent_false_falls_back_to_global_llm():
             m.run.return_value = p
         api._pipeline("hafid", runtime_config.AppConfig(), "自备故事")
 
-    resolve_settings.assert_any_call(None, runtime_config.AppConfig())
+    resolve_settings.assert_any_call(None, runtime_config.AppConfig(), owner="zhanghui")
     assert s0.from_text.call_args[0][1] is fallback_llm    # S0 用了回退 client,不是 hermes
     assert s1.run.call_args[0][1] is fallback_llm          # S1 同上
     assert s2.run.call_args[0][1] is stage_clients["s2"][0]  # S2 不受影响,原样用 resolve_stage_clients 的结果
@@ -1426,6 +1657,57 @@ def test_admin_bypass_does_not_cover_pending_job(monkeypatch):
         f.set_result(None)
         api._JOBS.clear()
         api._JOBS.update(saved)
+
+
+def _spy_clients():
+    """替身 _clients:记下每次拿到的 Settings 的 llm_model,返回四个假 client。
+    断言的是"解析出的模型是谁的",不是 Settings 对象本身。"""
+    from unittest.mock import MagicMock
+
+    class Spy:
+        models: list[str] = []
+
+        def __call__(self, s):
+            self.models.append(s.llm_model)
+            return (MagicMock(), MagicMock(), MagicMock(), MagicMock())
+
+    spy = Spy()
+    spy.models = []
+    return spy
+
+
+def test_run_one_step_resolves_with_project_owner_not_operator(tmp_path, monkeypatch):
+    """**决策 4 的锁**:按作品 owner 解析,不是按当前操作者。
+
+    admin 帮 zhanghui 重跑 S1 时若切成 admin 自己的 LLM,同一部作品的 S1 与 S4 会走两套模型、
+    文风对不上。而且后台线程手里本来就只有 p.owner(提交时 user 就丢了)。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = Project(project_id="ownerresolve", scenic_spot="雷峰塔", owner="zhanghui")
+    cfg = runtime_config.AppConfig(
+        global_=runtime_config.ConfigOverride(llm_model="admin-cloud"),
+        users={"zhanghui": runtime_config.UserOverride(llm_model="zhanghui-local")},
+    )
+    seen = _spy_clients()
+    with patch("shanhai.api._clients", side_effect=seen), \
+         patch("shanhai.api._check_cancelled", return_value=True):   # 解析完立刻短路,不真跑
+        api._run_one_step(p, p.project_id, "s1", cfg, tmp_path)
+    assert seen.models == ["zhanghui-local"]
+
+
+def test_run_one_step_ownerless_project_uses_global(tmp_path, monkeypatch):
+    """历史无主项目(owner="")跳过 users 层——存量数据行为与今天完全一致。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = Project(project_id="ownerlessres", scenic_spot="雷峰塔")
+    assert p.owner == ""
+    cfg = runtime_config.AppConfig(
+        global_=runtime_config.ConfigOverride(llm_model="admin-cloud"),
+        users={"zhanghui": runtime_config.UserOverride(llm_model="zhanghui-local")},
+    )
+    seen = _spy_clients()
+    with patch("shanhai.api._clients", side_effect=seen), \
+         patch("shanhai.api._check_cancelled", return_value=True):
+        api._run_one_step(p, p.project_id, "s1", cfg, tmp_path)
+    assert seen.models == ["admin-cloud"]
 
 
 def test_reorder_rejects_non_permutation():

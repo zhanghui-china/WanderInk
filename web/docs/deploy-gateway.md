@@ -23,6 +23,8 @@
 
 **网关只服务外部调用方。shanhai 继续直连 loopback。** 这也带来一个好处:网关挂了,shanhai 完全不受影响。
 
+> 顺带一提:Web 配置面板的**按用户**那一层(`config.json` 的 `users`)**只开放 LLM 五个字段**,普通用户改不了 image 端点——`runtime_config.UserOverride` 的 `extra="forbid"` 会直接 422。这是刻意做成结构约束而不是纪律要求:上表两条一旦被某个用户从个人配置里绕开,后果和填错 `.env` 完全一样,而且更难查(每个人的配置还不一样)。能改 image 端点的仍然只有管理员的 `global` / `stages` 两层,也就是本节警告覆盖的范围。
+
 ---
 
 ## 1. 架构

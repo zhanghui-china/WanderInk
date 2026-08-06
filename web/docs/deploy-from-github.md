@@ -176,6 +176,8 @@ cd web && npm run dev              # 前端 :5173,已代理 /api 与 /files 到 
 | `SHANHAI_HOST` | `127.0.0.1` | 不改则只有本机能访问 |
 | `SHANHAI_SESSION_HTTPS_ONLY` | 关 | ⚠️ **HTTP 直连时绝不能开**,开了 cookie 完全发不出去,表现为"登录成功又立刻要求登录" |
 | `SHANHAI_IMAGE_TIMEOUT` | `300` 秒 | 只是**单次 HTTP** 超时。上游排队严重时会 504 导致整页生成失败,需调大 |
+| `SHANHAI_FFMPEG_TIMEOUT` | `1800` 秒 | **单条** ffmpeg 命令的墙钟上限,不是整个 S6 的预算。只为防"永久挂住":卡死的 ffmpeg 会占死一个后台作业槽(共 4 个)。实测最贵的一次调用(整片重编码)本机 10 页成片 31s,正常渲染碰不到 |
+| `SHANHAI_FFPROBE_TIMEOUT` | `60` 秒 | ffprobe 读时长的上限。实测 0.02s,纯防呆 |
 | `SHANHAI_READONLY` | 关 | 开启后关闭新建生成、隐藏编辑入口,适合公网展示实例 |
 
 ⚠️ **systemd 场景**:进程环境优先于 `.env`(`load_dotenv(override=False)`)。unit 里必须写 `EnvironmentFile=` 指到 `.env`,不能指望它被自动读取。

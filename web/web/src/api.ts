@@ -121,6 +121,12 @@ export const api = {
       j<{ cancelled?: boolean; cancelling?: boolean }>(r)
     ),
 
+  // 失联作业专用(cancel 对它一律 400)。返回重置后的详情,前端一个来回就能刷新。
+  resetProject: (id: string) =>
+    fetch(`/api/projects/${id}/reset`, { ...CREDS, method: 'POST' }).then((r) =>
+      j<ProjectDetail>(r)
+    ),
+
   updateCell: (id: string, index: number, patch: CellPatch) =>
     fetch(`/api/projects/${id}/cells/${index}`, {
       ...CREDS,

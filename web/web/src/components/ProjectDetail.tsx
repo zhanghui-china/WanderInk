@@ -161,8 +161,27 @@ export function ProjectDetailView({
   const [voicePicked, setVoicePicked] = useState<{ blob: Blob; filename: string } | null>(null)
   const [voiceBusy, setVoiceBusy] = useState(false)
   const voiceUpload = useUpload<VoiceSample>()
+  const [resetting, setResetting] = useState(false)
 
-  const generating = project.pipeline === 'queued' || project.pipeline === 'running'
+  // 失联作业的唯一出口。后端只在真的失联时放行:有活作业 409(该用取消)、已是终态 400。
+  async function doReset() {
+    setResetting(true)
+    try {
+      await api.resetProject(project.project_id)
+      onChanged()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      setResetting(false)
+    }
+  }
+
+  // 排除 stalled 是这次修复的核心一行:磁盘写着生成中、但后台已无作业在推进它时,界面不能
+  // 再假装在跑。它同时解开三处——editable 恢复(页级编辑按钮回来)、下方单步重跑按钮的
+  // disabled={generating} 解除、进度卡停掉动画。后端本来就允许这些操作(_editable 判的是内存
+  // 作业表,不看磁盘状态;run_step 更是全程不看),此前是前端把用户挡在了已经开着的门外。
+  const generating = (project.pipeline === 'queued' || project.pipeline === 'running')
+    && !project.stalled
   // 别人的作品只能看不能改。判据必须与后端 _may_edit 严格一致:owner 为空的历史作品视为
   // 无主、不做归属限制(否则界面把按钮藏了、后端其实允许);owner 非空且不是自己则只读,
   // 管理员除外(admin 可操作任何人的作品,后端 _may_edit 同样放行)。
@@ -396,6 +415,36 @@ export function ProjectDetailView({
             controls
             className="h-9 w-full"
           />
+        </div>
+      )}
+
+      {/* 失联横幅。放在进度卡之前:用户一眼先看到「为什么它一直显示生成中」,再往下才是
+          那张不再转动的进度卡。刻意不隐藏下面任何恢复入口——重置只是把状态改成真话,
+          用户也可以直接单步重跑,两条路都留着。 */}
+      {project.stalled && (
+        <div className={`${card} border-alarm/40`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-serif text-sm text-alarm">此任务已失联</p>
+              <p className="mt-1 text-xs leading-relaxed text-ink-soft">
+                作品记录里还写着「生成中」,但后台已经没有进程在推进它——通常是服务重启或
+                异常中断造成的。它不会自己继续,也无法取消(本来就没有可取消的任务)。
+                {owned
+                  ? '点「重置状态」把它改回可操作状态;已完成的步骤都会保留,之后可以用下面的单步重跑接着往下走。'
+                  : '这是别人的作品,请让作者本人或管理员来重置。'}
+              </p>
+            </div>
+            {owned && (
+              <button
+                type="button"
+                onClick={doReset}
+                disabled={resetting}
+                className={`${primaryBtn} shrink-0`}
+              >
+                {resetting ? '重置中…' : '重置状态'}
+              </button>
+            )}
+          </div>
         </div>
       )}
 

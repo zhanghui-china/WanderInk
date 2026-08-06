@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -16,9 +17,49 @@ _ANULLSRC = f"anullsrc=r={AUDIO_RATE}:cl=stereo"
 _AR_AC = ["-ar", str(AUDIO_RATE), "-ac", str(AUDIO_CH)]
 
 
-def sh(cmd: list[str]) -> None:
+# 单位秒。目的只是"别永远挂着":卡死的 ffmpeg 会让调用它的线程永久阻塞,而阻塞面很宽——
+# _EXECUTOR 只有 4 个作业槽(4 个卡死即全站生成停摆)、S6 页编码池的 shutdown(wait=True) 会让
+# 一页卡死拖住整个 worker、uploads 那条路更是直接跑在 HTTP 请求线程上(客户端永远收不到响应);
+# 连带效应还有:非守护线程 join 不掉,重启必然走成 SIGKILL 硬杀(见 docs/ops-dgx.md)。
+# 而 api._stalled 救不了这种情况——线程还活着,f.done() 恒为 False,前端会一直显示"正在生成…"。
+#
+# 取值宽松是有意的:实测最贵的单次调用是 xfade_concat_cmd(整片重编码),本机 M4 上
+# 10 页/172s 成片 31s、22 页外推 60-70s,DGX 上按 3-5× 保守估 3-6 分钟;其余调用全部 <0.15s。
+# 按本项目既有惯例(config.py 的 image_timeout 注释:实测 ×5)取 1800s。宽松无害(正常渲染
+# 远达不到),无限有害。运维可用环境变量临时放宽,不必重新部署。
+FFMPEG_TIMEOUT_S = float(os.getenv("SHANHAI_FFMPEG_TIMEOUT", "1800"))
+# ffprobe 只读容器头算时长,实测 0.02s,没理由和整片编码共用同一份预算。
+FFPROBE_TIMEOUT_S = float(os.getenv("SHANHAI_FFPROBE_TIMEOUT", "60"))
+
+
+def _timeout_msg(cmd: list[str], timeout: float, stderr: bytes | str | None) -> str:
+    tail = stderr.decode("utf-8", "replace") if isinstance(stderr, bytes) else (stderr or "")
+    tail = tail.strip()[-500:]   # 只要尾部:卡住那一刻的进度行足以定位卡在哪一帧
+    return f"ffmpeg 超时({timeout:g}s,已强杀)({' '.join(cmd[:3])}…):{tail}"
+
+
+def sh(cmd: list[str], timeout: float | None = None) -> None:
+    """执行一条 ffmpeg 命令;非零退出或超时都抛 RuntimeError(附 stderr 尾部)。
+
+    **超时必须包成 RuntimeError,不能让 TimeoutExpired 裸奔**,两个具体理由:
+    ① uploads.to_voice_sample_wav 只 `except RuntimeError` 来把解码失败转成 400,
+       漏出去会退化成 500;
+    ② 裸 TimeoutExpired 的消息是 "Command '[...]' timed out",整条 ffmpeg 命令行(含
+       filter_complex 巨串与绝对路径)会被 _save_error 原样写进 project.json 的 pipeline
+       字段并显示在界面上。
+
+    subprocess.run 在超时后会先 kill() 子进程再收尾 communicate(),所以不会留下一个继续烧
+    CPU 的孤儿 ffmpeg——这是"加超时"真正生效的前提,否则只是 Python 侧不等了、机器仍被占着。
+    收尾那次 communicate 的产物会落在 TimeoutExpired.stderr 上(POSIX 下有值),故错误信息里
+    仍能带上卡住那一刻的进度行。
+
+    ⚠️ 救不了内核态硬卡:kill() 之后 stdlib 会做一次**无超时**的 wait(),若 ffmpeg 卡在不可
+    中断 I/O(D 状态、坏盘、NFS 断连),这里依然会挂住。timeout 能救的是"活着但不出活"。"""
+    budget = FFMPEG_TIMEOUT_S if timeout is None else timeout
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, capture_output=True, timeout=budget)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(_timeout_msg(cmd, budget, e.stderr)) from e
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.decode("utf-8", "replace").strip() if e.stderr else ""
         raise RuntimeError(f"ffmpeg 失败({' '.join(cmd[:3])}…):{stderr}") from e
@@ -46,10 +87,16 @@ def voice_sample_cmd(src: Path, out: Path, in_fmt: str,
 
 
 def probe_duration_ms(path: Path) -> int:
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "csv=p=0", str(path)],
-        check=True, capture_output=True, text=True).stdout.strip()
+    """读时长。超时同样包成 RuntimeError(与 sh 一致):唯一在 try 外调它的地方是
+    uploads,那里不包装就会把整条 ffprobe 命令行漏进 500 响应;s5_audio 的调用点是
+    `except Exception`,两种写法都接得住。"""
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+           "-of", "csv=p=0", str(path)]
+    try:
+        out = subprocess.run(cmd, check=True, capture_output=True, text=True,
+                             timeout=FFPROBE_TIMEOUT_S).stdout.strip()
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(_timeout_msg(cmd, FFPROBE_TIMEOUT_S, e.stderr)) from e
     if not out or out == "N/A":
         raise ValueError(f"ffprobe 无法解析时长(输出为 {out!r}):{path}")
     return int(float(out) * 1000)

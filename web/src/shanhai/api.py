@@ -181,6 +181,29 @@ def _job_of(project_id: str) -> Future | None:
         return _JOBS.get(project_id)
 
 
+def _stalled(project_id: str, pipeline: str) -> bool:
+    """作业失联:磁盘写着生成中,但内存里已经没有还在推进它的作业。
+
+    最常见的成因是重启硬杀——ThreadPoolExecutor 的工作线程是非守护线程,atexit 会 join 它们,
+    而 S4 可能跑几十分钟,systemd 默认 90s 后升级 SIGKILL,所以"重启时正在跑管线"几乎必然
+    走成硬杀(那一类由下次启动的 reconcile_zombie_jobs 对账)。另有一条**不需要重启**就能中招的
+    路径:_save_error 自身失败(项目文件损坏 → 静默 return;或落盘抛异常 → 被 Future 吞掉),
+    线程正常结束、f.done() 立即为真,磁盘却停在 running。
+
+    「有无活作业」的定义与 cancel_project(f is None or f.done())、_editable
+    (f is not None and not f.done())逐字一致,收口在这里,不要在第三处手写。
+
+    不会误报提交窗口:create_project/run_step/run_track 的「写 queued → submit」整段在
+    _JOBS_LOCK 内,而 _job_of 取同一把锁,故并发请求看不到中间态。
+
+    收 pipeline 字符串而不是 Project:list_projects 刻意不做全量反序列化(见其 PERF 注释),
+    只有裸 dict 可用,两处得共用同一个判据。"""
+    if pipeline not in ("running", "queued"):
+        return False
+    f = _job_of(project_id)
+    return f is None or f.done()
+
+
 def _check_cancelled(project_id: str) -> bool:
     """在 _JOBS_LOCK 下查询并消费该项目的取消标记(命中即移除,不重复触发)。"""
     with _JOBS_LOCK:
@@ -350,13 +373,15 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         p = store.load(project_id)
         workdir = store.project_dir(project_id)
         # 逐环节解析生效 Settings 与 client(同一 cfg 快照,作业内配置一致;不同环节可用不同端点/模型)。
-        settings, clients = resolve_stage_clients(cfg)
+        # owner 而非提交者:admin 帮别人重跑时仍用作品主人的 LLM,见 resolve_settings 的说明。
+        settings, clients = resolve_stage_clients(cfg, owner=p.owner)
         if not p.params.use_hermes_agent:
             # 开关关闭的真实语义:S0/S1 跳过按环节覆盖(用 resolve_settings(None) 只叠全局层),
             # 回退到全局默认 LLM——保留"原始通过 LLM 生成剧本/分镜"的路径,不依赖任何特定 skill。
             # 注意与字段名 use_hermes_agent 的字面义解耦:仅当 hermes 恰配成 s0/s1 stage 覆盖时两者等价。
+            # owner 层保留:该开关针对的是环节级钉死的 skill 后端,用户自选的 LLM 不是 skill。
             for st in ("s0", "s1"):
-                settings[st] = resolve_settings(None, cfg)
+                settings[st] = resolve_settings(None, cfg, owner=p.owner)
                 clients[st] = _clients(settings[st])
         p.status["pipeline"] = "running"
         p.status["pipeline_started_at"] = _now_iso()
@@ -497,6 +522,9 @@ def _serialize(p: Project) -> dict:
         "params": p.params.model_dump(),
         "status": p.status,
         "pipeline": p.status.get("pipeline", "pending"),
+        # 计算字段,**不落盘**:它是"此刻内存里有没有作业"的函数,写进 project.json 就会变成
+        # 过期的谎言。前端靠它区分「真在生成」与「磁盘写着生成中但没人在推」,后者要给出口。
+        "stalled": _stalled(p.project_id, p.status.get("pipeline", "pending")),
         "legend": p.legend.model_dump() if p.legend else None,
         # 只给布尔位,原文走 /api/projects/{id}/story 按需拉。原文上限 20000 字,
         # 而详情端点在管线跑动时被前端每 2 秒轮询一次(App.tsx 的 tick),
@@ -712,6 +740,44 @@ def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
     return {"cancelling": True}
 
 
+@app.post("/api/projects/{project_id}/reset")
+def reset_project(project_id: str, user: str = Depends(current_user)) -> dict:
+    """把**失联**作业的状态改回终态,让作品从"永远显示生成中"的死局里出来。
+
+    与 cancel 是一对:cancel 管还活着的作业(协作式,在下一个环节切换点生效),
+    reset 管已经没人推进、cancel 会返回 400 的那种。
+
+    **刻意不能打断真在跑的作业**:Python 杀不掉线程,重置一个仍在运行的作业,只会被它醒来后的
+    _locked_save 盖回去——按钮会变成"时灵时不灵",比没有更坏。故有活作业时一律 409 指回 cancel。
+
+    写成 error 态而不是回滚到某一步:与 reconcile_zombie_jobs 的 "error: 服务重启,生成中断"
+    同形,复用现成的展示与重跑路径,且保留"这次生成出过问题"这个事实供事后排查。
+    已完成的步骤全部保留,用户重置后可以直接单步重跑接着往下走。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止重置")
+    # 全程持 project 锁并在锁内重载:与后台线程的 _locked_save 互斥,避免丢更新。
+    # 锁序恒为 project→jobs(_stalled 内的 _job_of 再取 _JOBS_LOCK),与其它端点一致。
+    with _project_lock(project_id):
+        try:
+            p = store.load(project_id)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(404, f"项目不存在: {project_id}") from e
+        if not _may_edit(p, user):
+            raise HTTPException(403, "只能重置自己的项目")
+        if not _stalled(project_id, p.status.get("pipeline", "pending")):
+            # 两种"不该重置"分开回,不合并成一句:用户要知道自己撞的是哪一堵墙。
+            f = _job_of(project_id)
+            if f is not None and not f.done():
+                raise HTTPException(409, "该项目有生成作业正在进行,请用「取消」")
+            raise HTTPException(400, "该项目当前不是生成中状态,无需重置")
+        p.status["pipeline"] = "error: 已手动重置(生成已中断)"
+        p.status["pipeline_finished_at"] = _now_iso()
+        store.save(p)
+    with _JOBS_LOCK:  # 与三处提交路径同样的卫生动作:清掉可能残留的陈旧取消标记
+        _CANCELLED.discard(project_id)
+    return _serialize(p)
+
+
 @app.get("/api/projects")
 def list_projects(user: str = Depends(current_user)) -> list[dict]:
     # PERF:列表端点每次登录/管线跑完都触发,项目多时逐个 store.load(Pydantic 全量校验)会成最慢端点。
@@ -725,10 +791,16 @@ def list_projects(user: str = Depends(current_user)) -> list[dict]:
             continue
         if not isinstance(d, dict):  # 合法 JSON 但非对象(null/[]/42/字符串):下面 d.get 会抛,同样跳过
             continue
+        pid = d.get("project_id") or meta.parent.name
+        pipeline = (d.get("status") or {}).get("pipeline", "pending")
         item = {
-            "project_id": d.get("project_id") or meta.parent.name,
+            "project_id": pid,
             "scenic_spot": d.get("scenic_spot", ""), "owner": d.get("owner", ""),
-            "pipeline": (d.get("status") or {}).get("pipeline", "pending"),
+            "pipeline": pipeline,
+            # 顶栏「N 部生成中」从这份列表算,而队列面板读的是内存 _JOBS。不带上 stalled 的话
+            # 两个数据源会打架:顶栏说「1 部生成中」、队列面板却整个不渲染。_job_of 只是一次
+            # 加锁的字典查找,逐项调用的开销相对上面这段 json.loads 可忽略。
+            "stalled": _stalled(pid, pipeline),
             "mp4": _mp4_url((d.get("output") or {}).get("mp4", "")),
             # 建作品时勾没勾分格排版。d 本来就是已解析的 dict,多取一个键零额外成本,
             # 不必为它退回 store.load 全量反序列化(那正是上面这段注释在避免的事)。
@@ -1135,7 +1207,7 @@ def _run_one_step(p: Project, project_id: str, name: str, cfg: AppConfig,
     在函数内重绑局部名的话调用方手里还是旧的那个,级联跑第二步时就会拿着上一步之前的
     快照去跑——这类"看着能跑、结果全错"的 bug 最难查。
     异常照常向上抛给 _run_step 的兜底(不在这里吞)。"""
-    s = resolve_settings(name, cfg)  # 该环节生效 Settings + client
+    s = resolve_settings(name, cfg, owner=p.owner)  # 该环节生效 Settings + client
     llm, image, tts, music = _clients(s)
     if _check_cancelled(project_id):  # 协作式取消:环节开始执行前检查
         p.status["pipeline"] = "cancelled"
@@ -1291,12 +1363,14 @@ def _run_track(project_id: str, lang: str, cfg: AppConfig) -> None:
         p.status.pop(f"track_{lang}", None)
         _locked_save(p)
 
-        s_llm = resolve_settings("s2", cfg)      # 译文属文本环节,沿用 S2 的 LLM 配置
+        # 译文属文本环节,沿用 S2 的 LLM 配置;owner 层同样生效(译文也是"这个人的模型"产出的)
+        s_llm = resolve_settings("s2", cfg, owner=p.owner)
         llm, _image, _tts, _music = _clients(s_llm)
         p = s5t_translate.run(p, llm, lang=lang)
         _locked_save(p)
 
-        s_tts = resolve_settings("s5", cfg)
+        # owner 传上保持一致;users 层没有 tts 字段,故对配音实际无影响
+        s_tts = resolve_settings("s5", cfg, owner=p.owner)
         _l, _i, tts, _m = _clients(s_tts)
         # 自定义音色跨语种继承:同一部作品的中文与英文视频该是同一个人的声音
         # (判据与逃生口见 runtime_config.default_track_voice)
@@ -1420,26 +1494,34 @@ def meta(user: str = Depends(current_user)) -> dict:
 
 @app.get("/api/config")
 def read_config(user: str = Depends(current_user)) -> dict:
-    return config_view(_READONLY)
+    """users 层做行级过滤:管理员看全部,其他人只看自己那条(别人配了什么模型不该互相可见)。
+    global/stages 维持对所有登录用户可见——既有行为,且前端要靠它显示继承值。"""
+    return config_view(_READONLY, viewer=user, viewer_is_admin=is_admin(user))
 
 
 @app.put("/api/config")
 def write_config(body: AppConfig, user: str = Depends(current_user)) -> dict:
     """写入端点/模型覆盖。校验(Literal/extra=forbid)由 AppConfig 解析完成:非法 provider/越权字段→422;
     只读→403;未知 stage→400。读-合并-写在 update_overrides 写锁内原子完成(避免并发 PUT 丢更新),
-    合并语义(部分更新/密钥哨兵/环节保留与剪枝)见 runtime_config.apply_put。"""
+    合并语义(部分更新/密钥哨兵/条目保留与剪枝)见 runtime_config.apply_put。"""
     if _READONLY:
         raise HTTPException(403, "公开演示为只读,禁止修改配置")
-    # 管理员闸门:这个端点决定全站所有环节的上游地址与密钥。任意登录用户可写的话,
-    # 把 llm_base_url 指向自己的机器就能收走所有人的剧本与自备故事原文,顺带让全站
-    # 生成瘫痪。与 delete_project 同标准——影响面超出单个作品的操作只认 is_admin。
+    # 按层分权,不再一刀切。global/stages 决定全站所有环节的上游地址与密钥:任意登录用户可写
+    # 的话,把 llm_base_url 指向自己的机器就能收走所有人的剧本与自备故事原文,顺带让全站生成
+    # 瘫痪——与 delete_project 同标准,影响面超出单个作品的操作只认 is_admin。
+    # users[自己] 只影响自己名下的作品,故本人可改;admin 可代改任何人(与 _may_edit 同一归属模型)。
+    # 必须用 model_fields_set 而非真值判断:三个字段都有 default_factory,body.stages 永远存在。
+    sent = body.model_fields_set
     if not is_admin(user):
-        raise HTTPException(403, "仅管理员可修改端点配置")
+        if {"global", "global_", "stages"} & sent:
+            raise HTTPException(403, "仅管理员可修改全站与环节配置")
+        if set(body.users) - {user}:
+            raise HTTPException(403, "只能修改自己的模型配置")
     unknown = [st for st in body.stages if st not in STAGE_CLIENTS]
     if unknown:
         raise HTTPException(400, f"未知环节: {unknown}(合法环节 {list(STAGE_CLIENTS)})")
     update_overrides(lambda existing: apply_put(existing, body))
-    return config_view(_READONLY)
+    return config_view(_READONLY, viewer=user, viewer_is_admin=is_admin(user))
 
 
 # 音色样本目录在挂载根下,但整个命名空间不经 /files 对外:见 _ArtifactStatic 说明。
@@ -1494,27 +1576,51 @@ if _WEB_DIST.exists():
     app.mount("/", StaticFiles(directory=str(_WEB_DIST), html=True), name="web")
 
 
-def reconcile_zombie_jobs(root: Path = store.DEFAULT_ROOT) -> int:
+def reconcile_zombie_jobs(root: Path | None = None) -> int:
     """重启对账:_JOBS 是纯内存态,进程重启后必为空,故磁盘上任何 running/queued 都是
-    再无线程推进的僵尸,否则前端将永久轮询。把它们改写为 error 落盘,返回处理条数。
+    再无线程推进的僵尸,否则前端将永久轮询。把它们改写为 error 落盘,返回**修复条数**。
     仅在 main() 启动时调用一次(不挂模块级/startup 事件——否则 pytest import 或 TestClient
-    会扫写真实 projects/ 目录造成污染)。"""
+    会扫写真实 projects/ 目录造成污染)。
+
+    **单个项目出问题绝不能拖垮启动**。此前 store.save 在 try 之外,一个不可写的项目目录
+    (磁盘满/只读 FS/权限)就会让异常冒出 main()、端口根本不绑;而 systemd 是 Restart=always
+    且没覆盖 StartLimit*,按默认会重启几次后进 failed 态——不是热循环,是永久宕机,还得人去
+    reset-failed。故 load 与 save 各自独立 try,任何一个失败都只跳过它自己。
+
+    跳过的一律**点名打印**,不再静默:读不出来的项目(project.json 损坏,或非法值绕过
+    Literal 枚举写进去导致永久不可加载,见 docs/decisions/0003)会永远卡在 running,
+    运维得知道是哪几个——它们现在可以由作者在界面上手动「重置状态」。"""
+    root = root or store.DEFAULT_ROOT   # late-bind:早绑定会让 monkeypatch DEFAULT_ROOT 失效
     n = 0
+    skipped: list[str] = []
     for meta in sorted(root.glob("*/project.json")):
+        pid = meta.parent.name
         try:
-            p = store.load(meta.parent.name, root=root)
-        except Exception:  # noqa: BLE001 — 跳过损坏/半写项目,不阻断对账
+            p = store.load(pid, root=root)
+        except Exception as e:  # noqa: BLE001 — 损坏/半写/schema 漂移都在此,不阻断对账
+            skipped.append(pid)
+            print(f"[reconcile] 跳过 {pid}(读取失败,该项目若停在生成中将无法自动对账):{e}")
             continue
         if p.status.get("pipeline") in ("running", "queued"):
             p.status["pipeline"] = "error: 服务重启,生成中断"
-            store.save(p, root=root)
+            p.status["pipeline_finished_at"] = _now_iso()
+            try:
+                store.save(p, root=root)
+            except Exception as e:  # noqa: BLE001 — 写不进去也只跳过它自己,绝不拖垮启动
+                skipped.append(pid)
+                print(f"[reconcile] 跳过 {pid}(写回失败,它会继续显示生成中):{e}")
+                continue
             n += 1
+    if skipped:
+        print(f"[reconcile] 共 {len(skipped)} 个项目未能对账:{', '.join(skipped)}")
     return n
 
 
 def main() -> None:
     import uvicorn
-    reconcile_zombie_jobs()  # uvicorn.run 之前对账一次,清理上次崩溃/重启残留的僵尸作业
+    # uvicorn.run 之前对账一次,清理上次崩溃/重启残留的僵尸作业。结果要打出来:
+    # 这是运维在 journalctl 里唯一能看到"这次重启打断了几个作业"的地方。
+    print(f"[reconcile] 已把 {reconcile_zombie_jobs()} 个残留作业标记为中断")
     host = os.getenv("SHANHAI_HOST", "127.0.0.1")  # 内网部署(如 DGX)设 0.0.0.0
     port = int(os.getenv("SHANHAI_PORT", "8080"))
     uvicorn.run("shanhai.api:app", host=host, port=port, reload=False)

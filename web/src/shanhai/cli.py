@@ -66,12 +66,16 @@ def _client_key(s: Settings) -> tuple:
 
 def resolve_stage_clients(
     cfg: AppConfig | None = None,
+    owner: str = "",
 ) -> tuple[dict[str, Settings], dict[str, tuple[LLMClient, ImageClient, TTSClient, MusicClient]]]:
     """为每个用到 client 的环节(STAGE_CLIENTS 键,S0–S5)解析生效 Settings 与 (llm,image,tts)。
     api._pipeline 与 cli.run 共用,避免两处硬编码环节列表与解析样板(环节列表以 STAGE_CLIENTS 为单一真源)。
     按构造要素在本次调用内去重:配置相同的环节复用同一组 client,避免每作业泄漏 24 个连接池;
-    每次调用各自建缓存(作业级隔离),config 变更下次 resolve 自然拿到新 client,不跨作业串味。"""
-    settings = {st: resolve_settings(st, cfg) for st in STAGE_CLIENTS}
+    每次调用各自建缓存(作业级隔离),config 变更下次 resolve 自然拿到新 client,不跨作业串味。
+
+    owner 传作品归属者,叠加 config.json 的 users[owner] 层(仅 LLM)。CLI 侧不传:它是运维
+    工具、没有登录态,一律走全局配置——所以 CLI 重跑与 Web 重跑用的 LLM 可能不同,这是有意的。"""
+    settings = {st: resolve_settings(st, cfg, owner=owner) for st in STAGE_CLIENTS}
     cache: dict[tuple, tuple[LLMClient, ImageClient, TTSClient, MusicClient]] = {}
     clients = {}
     for st in settings:
