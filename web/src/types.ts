@@ -80,6 +80,8 @@ export interface Character {
   image: string | null
   // 上传的参考图;后端 _file_url 为空串时归一为 null
   reference_image: string | null
+  // 三视图生成耗时(毫秒)。老作品没这个字段、生成失败时为 0,前端一律 > 0 才渲染
+  turnaround_gen_ms: number
 }
 
 export interface ProjectDetail {

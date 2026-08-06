@@ -513,6 +513,7 @@ def _serialize(p: Project) -> dict:
         "name": c.name, "role": c.role,
         "image": _file_url(p.project_id, c.turnaround_image, workdir),
         "reference_image": _file_url(p.project_id, c.reference_image, workdir),
+        "turnaround_gen_ms": c.turnaround_gen_ms,
     } for c in (p.script.characters if p.script else [])]
     return {
         "project_id": p.project_id,

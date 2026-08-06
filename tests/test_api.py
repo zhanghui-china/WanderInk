@@ -2391,6 +2391,24 @@ def test_serialize_page_exposes_every_field_the_web_uses(tmp_path: Path):
     assert set(page) == _PAGE_FIELDS_USED_BY_WEB
 
 
+# 角色字典同样是逐字段挑选的,同样会静默漏——上面 pages 那道锁是 image_gen_ms 漏了一个版本
+# 之后补的,角色侧此前一直没有。加 turnaround_gen_ms 时一并建起来。
+# 这份清单与 web/src/types.ts 的 Character 接口一一对应,改一边必须改另一边。
+_CHARACTER_FIELDS_USED_BY_WEB = {"name", "role", "image", "reference_image", "turnaround_gen_ms"}
+
+
+def test_serialize_character_exposes_every_field_the_web_uses(tmp_path: Path):
+    p = Project(project_id="charFieldsId", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[],
+                      characters=[CharacterCard(name="白娘子", role="主角", personality="坚韧",
+                                                appearance="白衣", turnaround_image="characters/白娘子.png",
+                                                turnaround_gen_ms=4200)])
+    with patch("shanhai.api.store.project_dir", return_value=tmp_path):
+        character = api._serialize(p)["characters"][0]
+    assert set(character) == _CHARACTER_FIELDS_USED_BY_WEB
+    assert character["turnaround_gen_ms"] == 4200
+
+
 # ---- 自备故事原文持久化 ----
 
 def test_create_persists_story_verbatim(tmp_path, monkeypatch):

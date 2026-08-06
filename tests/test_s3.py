@@ -446,3 +446,81 @@ def test_s3_is_not_killed_by_the_page_frame_check(tmp_path: Path):
     assert c.turnaround_image == "characters/牧羊少年.png"
     assert c.locked is True
     assert (tmp_path / "characters" / "牧羊少年.png").exists()
+
+
+# ---------- 三视图生成耗时(照 S4 页耗时那套做法)----------
+
+def _one_char_project(**kw) -> Project:
+    p = Project(project_id="x", scenic_spot="雷峰塔")
+    p.script = Script(title="t", theme="th", acts=[],
+                      characters=[CharacterCard(name="角色0", role="r", personality="p",
+                                                appearance="白衣", **kw)])
+    return p
+
+
+def test_s3_records_turnaround_gen_ms_on_success(tmp_path: Path):
+    p = _one_char_project()
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock()
+    image.generate.side_effect = lambda *a, **k: (time.sleep(0.02), b"png")[1]
+    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    assert p.script.characters[0].turnaround_gen_ms >= 20
+
+
+def test_s3_turnaround_gen_ms_zero_when_generation_fails(tmp_path: Path):
+    """失败时跟着 turnaround_image 一起清零——留着上一次成功的读数就是条假信息。"""
+    p = _one_char_project(turnaround_image="characters/角色0.png", turnaround_gen_ms=9999)
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+    image = MagicMock(); image.generate.side_effect = RuntimeError("生图失败")
+    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    c = p.script.characters[0]
+    assert c.turnaround_image == "" and c.turnaround_gen_ms == 0
+
+
+def test_s3_turnaround_gen_ms_includes_the_failed_reference_attempt(tmp_path: Path):
+    """参考图编辑失败后回退文生图,耗时**包含**失败那次——那两次是两条不同路径各一次,
+    用户实打实等了两遍。只记后一次会出现"显示生成 3s、实际等了 40s"。"""
+    ref_dir = tmp_path / "characters" / "refs"
+    ref_dir.mkdir(parents=True)
+    (ref_dir / "ref_0.png").write_bytes(b"ref")
+    p = _one_char_project(reference_image="characters/refs/ref_0.png")
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+
+    def _slow_then_ok(*a, **k):
+        time.sleep(0.02)
+        if "references" in k:
+            raise RuntimeError("编辑失败")
+        return b"png"
+
+    image = MagicMock(); image.generate.side_effect = _slow_then_ok
+    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 2
+    assert p.script.characters[0].turnaround_gen_ms >= 40   # 两次都算进去了
+
+
+def test_s3_turnaround_gen_ms_overwritten_not_accumulated(tmp_path: Path):
+    """重跑覆盖不累计,与 StoryboardCell.image_gen_ms 同语义。"""
+    llm = MagicMock(); llm.chat.return_value = "白衣女子"
+
+    p = _one_char_project()
+    slow = MagicMock(); slow.generate.side_effect = lambda *a, **k: (time.sleep(0.05), b"png")[1]
+    p = s3_characters.run(p, llm, slow, tmp_path, "1536x1024")
+    first = p.script.characters[0].turnaround_gen_ms
+
+    p.script.characters[0].locked = False          # 模拟重绘(mark_character_redraw 只解锁)
+    fast = MagicMock(); fast.generate.side_effect = lambda *a, **k: (time.sleep(0.005), b"png")[1]
+    p = s3_characters.run(p, llm, fast, tmp_path, "1536x1024")
+    second = p.script.characters[0].turnaround_gen_ms
+    assert 0 < second < first                      # 覆盖成新值,不是相加
+
+
+def test_s3_locked_character_keeps_its_recorded_time(tmp_path: Path):
+    """已定稿角色被 _already_done 跳过,耗时不该被清掉或改写。"""
+    (tmp_path / "characters").mkdir()
+    (tmp_path / "characters" / "角色0.png").write_bytes(b"png")
+    p = _one_char_project(turnaround_image="characters/角色0.png",
+                          turnaround_gen_ms=1234, locked=True)
+    llm = MagicMock(); image = MagicMock()
+    p = s3_characters.run(p, llm, image, tmp_path, "1536x1024")
+    assert image.generate.call_count == 0
+    assert p.script.characters[0].turnaround_gen_ms == 1234

@@ -1034,7 +1034,18 @@ function CharacterCard({
       </div>
       <figcaption className="px-3 py-2.5">
         <div className="font-serif text-sm font-semibold tracking-wide text-ink">{c.name}</div>
-        <div className="text-[11px] text-muted">{c.role}</div>
+        {/* 生成耗时跟在角色定位后面,格式与漫画页卡片那枚读数一致(见 PageCard 的
+            `生成 {(pg.image_gen_ms / 1000).toFixed(1)}s`)。
+            ⚠️ 不能放进下面那个按钮行——那行两颗各 flex-1 占一半,挤成三等分后
+            「按参考图重绘」会溢出卡片(见上方 charBtn 注释)。
+            也不做成 justify-between 推到右端:那要给 c.role 加 truncate,而角色定位是
+            可能长到换行的自由文本,截断它是拿信息换对齐。
+            `> 0` 同时兜住三种情况:老作品没这个字段(undefined > 0 为 false)、生成失败
+            (已归零)、还没生成。与 PageCard 一样不显示占位。 */}
+        <div className="text-[11px] text-muted">
+          {c.role}
+          {c.turnaround_gen_ms > 0 && <> · 生成 {(c.turnaround_gen_ms / 1000).toFixed(1)}s</>}
+        </div>
         <div className="mt-2 flex gap-1.5">
           {artSrc && (
             <button
