@@ -122,13 +122,15 @@ cd web && npm install && npm run build && cd ..
 
 ### 2.5 建第一个账号
 
-**没有自助注册端点**。没有 `users.json` 谁也登不进去:
+**没有自助注册端点**,而且没有 `users.json` 谁也登不进去——所以**第一个管理员账号必须用 CLI 建**:
 
 ```bash
 uv run shanhai adduser --admin
 ```
 
 交互式输入用户名与密码,bcrypt 哈希后写入 `users.json`。`--admin` 才能删作品、改全局配置。
+
+之后**后续账号不用再 SSH**:管理员在 Web 的「设置 → 账号」里就能新增用户、重置密码、停用/启用、改管理员标记。CLI 的 `adduser` 仍然可用(适合脚本化),但有个坑:它永远显式传 `--admin` 的真假值,所以拿不带 `--admin` 的 `adduser` 给一个管理员重置密码**会把他降级**;Web 界面上的「重置密码」不会。
 
 ### 2.6 启动
 

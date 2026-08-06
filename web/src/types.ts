@@ -210,6 +210,14 @@ export interface ConfigDefaults {
   music_model: string
 }
 
+// 账号(users.json)。⚠️ 别与 AppConfigView.users 混淆——那个是「按用户的模型端点覆盖」,
+// 存在 config.json 里,与账号无关。故这里叫 UserAccount 而不是 User。
+export interface UserAccount {
+  username: string
+  is_admin: boolean
+  disabled: boolean
+}
+
 // 按用户覆盖只有 LLM 五个字段(后端 UserOverride 刻意不开图像/配音/配乐,见其 docstring)
 export type UserOverrideView = Pick<
   ConfigOverrideView,

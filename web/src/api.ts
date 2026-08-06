@@ -9,6 +9,7 @@ import type {
   ProjectDetail,
   ProjectSummary,
   QueueItem,
+  UserAccount,
 } from './types'
 import { xhrUpload, type UploadTarget } from './upload'
 
@@ -81,6 +82,35 @@ export const api = {
   logout: () => fetch('/api/logout', { ...CREDS, method: 'POST' }).then((r) => j<unknown>(r)),
 
   me: () => fetch('/api/me', CREDS).then((r) => j<{ username: string; is_admin: boolean }>(r)),
+
+  // ---- 账号管理。错误文案由后端 HTTPException 的 detail 原样带出(见 j<T> 与 apiErrorFrom),
+  //      前端直接 setErr(e.message) 即可,不需要翻译表。 ----
+  listUsers: () => fetch('/api/users', CREDS).then((r) => j<UserAccount[]>(r)),
+
+  createUser: (username: string, password: string, is_admin: boolean) =>
+    fetch('/api/users', {
+      ...CREDS,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, is_admin }),
+    }).then((r) => j<UserAccount>(r)),
+
+  // old_password 只有「改自己的」才需要;管理员重置别人的传 null。
+  setPassword: (username: string, new_password: string, old_password: string | null) =>
+    fetch(`/api/users/${encodeURIComponent(username)}/password`, {
+      ...CREDS,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_password, old_password }),
+    }).then((r) => j<{ username: string }>(r)),
+
+  patchUser: (username: string, patch: { is_admin?: boolean; disabled?: boolean }) =>
+    fetch(`/api/users/${encodeURIComponent(username)}`, {
+      ...CREDS,
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).then((r) => j<UserAccount>(r)),
 
   meta: () => fetch('/api/meta', CREDS).then((r) => j<Meta>(r)),
 

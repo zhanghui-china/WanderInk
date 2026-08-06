@@ -2623,3 +2623,156 @@ def test_voice_sample_endpoint_404_when_no_custom_voice(tmp_path, monkeypatch):
 def test_voice_sample_endpoint_404_for_missing_project(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     assert client.get("/api/projects/nosuch/voice-sample").status_code == 404
+
+
+# ---------- 账号管理端点 ----------
+# 用真 cookie 客户端(_cookie_client)而不是依赖覆盖:本组要验的正是「改密后旧 cookie 失效」,
+# 而 _login_override 把 current_user 整个换掉了,校验逻辑根本不会执行。
+
+def _real_client() -> TestClient:
+    """让开本文件的 autouse 依赖覆盖。那个 fixture 把 current_user 恒定成 "testuser",
+    而本组要验的恰恰是真实 current_user 的行为(is_admin 判据、pwd_ver 比对、disabled 拦截),
+    不清掉的话每个断言测的都是替身。"""
+    api.app.dependency_overrides.clear()
+    return TestClient(api.app)
+
+
+def _login_as(name: str, password: str) -> TestClient:
+    c = _real_client()
+    assert c.post("/api/login", json={"username": name, "password": password}).status_code == 200
+    return c
+
+
+def _admin_client(tmp_path, monkeypatch, name="boss"):
+    monkeypatch.setattr(auth, "USERS_PATH", tmp_path / "users.json")
+    auth.add_user(name, "pw-" + name, admin=True)
+    return _login_as(name, "pw-" + name)
+
+
+def test_users_endpoints_reject_non_admin(tmp_path, monkeypatch):
+    monkeypatch.setattr(auth, "USERS_PATH", tmp_path / "users.json")
+    auth.add_user("plain", "pw-plain")
+    c = _real_client()
+    c.post("/api/login", json={"username": "plain", "password": "pw-plain"})
+    assert c.get("/api/users").status_code == 403
+    assert c.post("/api/users", json={"username": "x1", "password": "goodpassword"}).status_code == 403
+    assert c.patch("/api/users/plain", json={"is_admin": True}).status_code == 403
+
+
+def test_admin_creates_user_who_can_then_log_in(tmp_path, monkeypatch):
+    c = _admin_client(tmp_path, monkeypatch)
+    r = c.post("/api/users", json={"username": "newbie", "password": "goodpassword"})
+    assert r.status_code == 200
+    assert {u["username"] for u in c.get("/api/users").json()} == {"boss", "newbie"}
+    fresh = _real_client()
+    assert fresh.post("/api/login",
+                      json={"username": "newbie", "password": "goodpassword"}).status_code == 200
+
+
+def test_create_user_duplicate_is_409(tmp_path, monkeypatch):
+    """409 而不是 400:这是冲突不是参数错。更要紧的是它**没有**静默覆盖 boss 的密码。"""
+    c = _admin_client(tmp_path, monkeypatch)
+    assert c.post("/api/users", json={"username": "boss", "password": "goodpassword"}).status_code == 409
+    assert auth.verify_login("boss", "pw-boss")          # 原密码完好
+
+
+def test_list_users_never_returns_password_hash(tmp_path, monkeypatch):
+    c = _admin_client(tmp_path, monkeypatch)
+    for row in c.get("/api/users").json():
+        assert set(row) == {"username", "is_admin", "disabled"}
+
+
+def test_self_password_change_requires_old_password(tmp_path, monkeypatch):
+    c = _admin_client(tmp_path, monkeypatch)
+    assert c.post("/api/users/boss/password",
+                  json={"new_password": "newpassword1"}).status_code == 400      # 没带原密码
+    assert c.post("/api/users/boss/password",
+                  json={"old_password": "wrong", "new_password": "newpassword1"}
+                  ).status_code == 400                                            # 原密码错
+
+
+def test_changing_own_password_invalidates_the_old_cookie(tmp_path, monkeypatch):
+    """**决策「改密后旧会话失效」的执法点。** 签名 cookie 无服务端存储、默认 14 天有效,
+    不比对 pwd_ver 的话改完密码旧 cookie 还能再用两周。"""
+    monkeypatch.setattr(auth, "USERS_PATH", tmp_path / "users.json")
+    auth.add_user("wuzi", "oldpassword")
+    c = _real_client()
+    c.post("/api/login", json={"username": "wuzi", "password": "oldpassword"})
+    assert c.get("/api/me").status_code == 200
+    r = c.post("/api/users/wuzi/password",
+               json={"old_password": "oldpassword", "new_password": "newpassword1"})
+    assert r.status_code == 200
+    assert c.get("/api/me").status_code == 401           # 同一个 cookie 立刻失效
+    fresh = _real_client()
+    assert fresh.post("/api/login",
+                      json={"username": "wuzi", "password": "newpassword1"}).status_code == 200
+
+
+def test_admin_reset_invalidates_the_targets_session(tmp_path, monkeypatch):
+    """管理员重置别人密码不需要原密码,且对方所有设备立刻掉线——重置往往正是因为号可能被盗。"""
+    admin = _admin_client(tmp_path, monkeypatch)
+    admin.post("/api/users", json={"username": "victim", "password": "goodpassword"})
+    victim = _real_client()
+    victim.post("/api/login", json={"username": "victim", "password": "goodpassword"})
+    assert victim.get("/api/me").status_code == 200
+    assert admin.post("/api/users/victim/password",
+                      json={"new_password": "resetpassword"}).status_code == 200
+    assert victim.get("/api/me").status_code == 401
+
+
+def test_disabling_a_user_kills_session_and_login(tmp_path, monkeypatch):
+    admin = _admin_client(tmp_path, monkeypatch)
+    admin.post("/api/users", json={"username": "leaver", "password": "goodpassword"})
+    leaver = _real_client()
+    leaver.post("/api/login", json={"username": "leaver", "password": "goodpassword"})
+    assert leaver.get("/api/me").status_code == 200
+    assert admin.patch("/api/users/leaver", json={"disabled": True}).status_code == 200
+    assert leaver.get("/api/me").status_code == 401                    # 现有会话断掉
+    fresh = _real_client()
+    assert fresh.post("/api/login",
+                      json={"username": "leaver", "password": "goodpassword"}).status_code == 401
+
+
+def test_admin_cannot_change_own_flags(tmp_path, monkeypatch):
+    """防止把自己锁在门外:要降级/停用自己,让另一个管理员来做。"""
+    c = _admin_client(tmp_path, monkeypatch)
+    assert c.patch("/api/users/boss", json={"is_admin": False}).status_code == 400
+    assert c.patch("/api/users/boss", json={"disabled": True}).status_code == 400
+
+
+def test_cannot_demote_the_last_admin_via_http(tmp_path, monkeypatch):
+    c = _admin_client(tmp_path, monkeypatch)
+    c.post("/api/users", json={"username": "boss2", "password": "goodpassword", "is_admin": True})
+    assert c.patch("/api/users/boss2", json={"is_admin": False}).status_code == 200   # 还剩 boss
+    # 现在只剩 boss 一个管理员,而 boss 不能改自己 → 最后一个管理员在任何路径下都降不掉
+    assert c.patch("/api/users/boss", json={"is_admin": False}).status_code == 400
+
+
+def test_patch_user_only_touches_sent_fields(tmp_path, monkeypatch):
+    """model_fields_set:只发 disabled 时不该把 is_admin 静默重置。"""
+    c = _admin_client(tmp_path, monkeypatch)
+    c.post("/api/users", json={"username": "u2", "password": "goodpassword", "is_admin": True})
+    r = c.patch("/api/users/u2", json={"disabled": True})
+    assert r.status_code == 200 and r.json() == {"username": "u2", "is_admin": True, "disabled": True}
+
+
+def test_user_endpoints_blocked_in_readonly(tmp_path, monkeypatch):
+    c = _admin_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(api, "_READONLY", True)
+    assert c.post("/api/users", json={"username": "x", "password": "goodpassword"}).status_code == 403
+    assert c.post("/api/users/boss/password",
+                  json={"old_password": "pw-boss", "new_password": "newpassword1"}).status_code == 403
+    assert c.patch("/api/users/boss", json={"disabled": True}).status_code == 403
+    assert c.get("/api/users").status_code == 200        # 只读不挡读
+
+
+def test_legacy_cookie_without_pwd_ver_still_works(tmp_path, monkeypatch):
+    """上线不该把现有登录的人踢下线:老 session 无 pwd_ver、老账号记录也无,两边都取 0 相等。"""
+    users = tmp_path / "users.json"
+    monkeypatch.setattr(auth, "USERS_PATH", users)
+    users.write_text(json.dumps({"users": [
+        {"username": "old", "password_hash": auth.hash_password("goodpassword")}]}),
+        encoding="utf-8")
+    c = _real_client()
+    assert c.post("/api/login", json={"username": "old", "password": "goodpassword"}).status_code == 200
+    assert c.get("/api/me").status_code == 200
