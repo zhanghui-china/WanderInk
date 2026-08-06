@@ -9,9 +9,11 @@ import type { QueueItem } from '../types'
 // 队列为空时不占版面。
 export function QueuePanel({
   user,
+  isAdmin,
   onSelect,
 }: {
   user: string
+  isAdmin: boolean
   onSelect: (id: string) => void
 }) {
   const [items, setItems] = useState<QueueItem[]>([])
@@ -74,7 +76,11 @@ export function QueuePanel({
                 </span>
               </span>
             </span>
-            {it.owner === user && (it.pipeline === 'queued' || it.pipeline === 'running') && (
+            {/* 判据必须与后端 _may_edit 一致:自己的 / 无主的(历史作品 owner 为空)/ 管理员。
+                此前这里写的是严格相等 `it.owner === user`,无主作品后端允许取消、界面却不画
+                按钮——正是后端 cancel_project 那个 bug 在前端的镜像。 */}
+            {(!it.owner || it.owner === user || isAdmin) &&
+              (it.pipeline === 'queued' || it.pipeline === 'running') && (
               cancellingIds.has(it.project_id) ? (
                 <button
                   type="button"

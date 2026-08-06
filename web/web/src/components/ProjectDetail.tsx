@@ -138,11 +138,13 @@ export function ProjectDetailView({
   project,
   meta,
   user,
+  isAdmin,
   onChanged,
 }: {
   project: Detail
   meta: Meta | null
   user: string | null
+  isAdmin: boolean
   onChanged: () => void
 }) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
@@ -161,12 +163,16 @@ export function ProjectDetailView({
   const voiceUpload = useUpload<VoiceSample>()
 
   const generating = project.pipeline === 'queued' || project.pipeline === 'running'
-  // 别人的作品只能看不能改。判据必须与后端 _editable 严格一致:owner 为空的历史作品视为
-  // 无主、不做归属限制(否则界面把按钮藏了、后端其实允许);owner 非空且不是自己就一律
-  // 只读。**不给 is_admin 开旁路**——后端的 _editable 也没有,管理员旁路只存在于删除作品
-  // 和改全局配置那两处。前端多放行一颗按钮的下场是点了报 403,而不是真能改。
-  const owned = !project.owner || project.owner === user
+  // 别人的作品只能看不能改。判据必须与后端 _may_edit 严格一致:owner 为空的历史作品视为
+  // 无主、不做归属限制(否则界面把按钮藏了、后端其实允许);owner 非空且不是自己则只读,
+  // 管理员除外(admin 可操作任何人的作品,后端 _may_edit 同样放行)。
+  // ⚠️ 管理员旁路**只覆盖归属这一层**:下面 editable 里的 !readonly 与 !generating 对管理员
+  // 照样生效,后端那两道也一样——它们是数据安全屏障,不是权限。前端与后端任一侧多放行一颗
+  // 按钮,下场都是点了报 403/409,而不是真能改。
+  const owned = !project.owner || project.owner === user || isAdmin
   const editable = !meta?.readonly && !generating && owned
+  // 「这是别人的作品」——纯事实,与能不能改无关(管理员能改,但仍要被告知不是自己的)。
+  const foreign = !!project.owner && project.owner !== user
   const pendingCount = project.pages.filter(
     (p) => p.status === 'draft' || p.status === 'failed' || !p.audio,
   ).length
@@ -179,7 +185,8 @@ export function ProjectDetailView({
       return
     }
     setSourcesOpen(true)
-    if (!project.has_story || storyText !== null) return
+    // !owned 时不发这一枪:原文只有作者与管理员能读,后端会 403。展开区改显一行说明。
+    if (!project.has_story || !owned || storyText !== null) return
     try {
       const r = await api.story(project.project_id)
       setStoryText(r.story ?? '')
@@ -323,9 +330,15 @@ export function ProjectDetailView({
                 <> · 音色 {project.params.voice.startsWith('clone:') ? '自定义' : project.params.voice}</>
               )}
               {/* 按钮直接消失而不给理由,用户会以为功能坏了(上一轮「只有英文旁白支持校对」
-                  就是这么来的)。别人的作品说清楚是谁的、为什么只能看。 */}
-              {!owned && (
-                <> · <span className="text-alarm">{project.owner} 的作品,仅可查看</span></>
+                  就是这么来的)。别人的作品说清楚是谁的、为什么只能看。
+                  管理员这边反过来:按钮都在,更要点明"这不是你的作品",否则会当成自己的改。 */}
+              {foreign && (
+                <>
+                  {' · '}
+                  <span className="text-alarm">
+                    {project.owner} 的作品{isAdmin ? ' · 管理员可编辑' : ',仅可查看'}
+                  </span>
+                </>
               )}
             </p>
             {/* 剧本/分镜这两步实际用的引擎(模型 + 是否走大师 skill)。勾了大师开关但该环节
@@ -344,9 +357,11 @@ export function ProjectDetailView({
         <div className="flex shrink-0 items-center gap-2">
           {/* 放在「换音色」左边(用户要求)。刻意**不**受 !meta?.readonly 限制:换音色要改数据
               才需要,回听是只读动作,只读演示模式下也该能听自己录的那段。
+              但受 owned 限制:那是**真人声音**,不是生成出来的作品,只有作者本人和管理员能听
+              (后端 get_project_voice_sample 同一判据)。别人的作品上这颗按钮点了必然 403。
               判据用 has_voice_sample 而不是 voice.startsWith('clone:')——那个前缀是上游 TTS
               返回的约定,后端从未强制过;索引命中才是权威。 */}
-          {project.has_voice_sample && (
+          {project.has_voice_sample && owned && (
             <button
               type="button"
               onClick={() => setVoiceSampleOpen((v) => !v)}
@@ -489,7 +504,9 @@ export function ProjectDetailView({
           {/* 配乐状态原先在这里,但它挂在 `{project.mp4 && ...}` 里面 —— 没出片的作品完全
               看不到,包括最该被看到的 failed(S5 跑完、S6 还没跑的那段)。已挪到「生成进度」
               卡的「配音」那一行(配乐本来就是在 S5 里跑的),那里常驻可见。 */}
-          <ExportButtons project={project} />
+          {/* 用 owned 而不是 editable:导出刻意不受只读拦截(后端 export_project 同理),
+              只受归属约束。 */}
+          <ExportButtons project={project} canExport={owned} />
         </div>
       )}
 
@@ -611,6 +628,13 @@ export function ProjectDetailView({
               </button>
               {sourcesOpen &&
                 (project.has_story ? (
+                  // 按钮刻意保留而不是直接消失:传说来源本就人人可看,且「按钮消失不给理由」
+                  // 会让人以为功能坏了(f4d165f 的教训)。别人的作品这里说清楚为什么看不到。
+                  !owned ? (
+                    <p className="mt-2 text-sm leading-loose text-muted">
+                      自备故事原文仅作者与管理员可见。
+                    </p>
+                  ) : (
                   // 原文最长两万字,就地展开必须限高滚动,否则把整页撑成一条长廊
                   <div className="mt-2 max-h-[60vh] space-y-3 overflow-y-auto text-sm leading-loose text-ink-soft">
                     {storyText === null ? (
@@ -623,6 +647,7 @@ export function ProjectDetailView({
                       ))
                     )}
                   </div>
+                  )
                 ) : (
                   <ul className="mt-2 space-y-1 text-sm leading-loose text-ink-soft">
                     {project.legend?.sources.map((s) => (
@@ -737,7 +762,9 @@ export function ProjectDetailView({
   )
 }
 
-function ExportButtons({ project }: { project: Detail }) {
+// canExport 只挡「打包」这个写动作(POST /api/projects/{id}/export,后端对非归属者 403)。
+// 已经打包好的产物和成片是纯读,谁都能下——所以下面只有那两颗 <button> 受它约束,<a download> 不受。
+function ExportButtons({ project, canExport }: { project: Detail; canExport: boolean }) {
   const [pdf, setPdf] = useState(project.pdf)
   const [zip, setZip] = useState(project.zip)
   const [busy, setBusy] = useState(false)
@@ -770,18 +797,22 @@ function ExportButtons({ project }: { project: Detail }) {
           下载 PDF
         </a>
       ) : (
-        <button type="button" onClick={() => handleClick('pdf')} disabled={busy} className={btn}>
-          {busy ? '打包中…' : '下载 PDF'}
-        </button>
+        canExport && (
+          <button type="button" onClick={() => handleClick('pdf')} disabled={busy} className={btn}>
+            {busy ? '打包中…' : '下载 PDF'}
+          </button>
+        )
       )}
       {zip ? (
         <a href={zip} download className={btn}>
           下载图片包
         </a>
       ) : (
-        <button type="button" onClick={() => handleClick('zip')} disabled={busy} className={btn}>
-          {busy ? '打包中…' : '下载图片包'}
-        </button>
+        canExport && (
+          <button type="button" onClick={() => handleClick('zip')} disabled={busy} className={btn}>
+            {busy ? '打包中…' : '下载图片包'}
+          </button>
+        )
       )}
     </div>
   )

@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from shanhai import api, runtime_config, store
+from shanhai import api, auth, runtime_config, store
 from shanhai.schema import (CharacterCard, Legend, LocalizedTrack, Project, Script,
                             StoryboardCell)
 
@@ -24,6 +24,20 @@ def _login_override():
     api.app.dependency_overrides[api.current_user] = lambda: "testuser"
     yield
     api.app.dependency_overrides.clear()
+
+
+def _cookie_client(tmp_path, monkeypatch, username: str = "testuser") -> TestClient:
+    """带**真实 session cookie** 的客户端。
+
+    /files 挂载不是 FastAPI 路由,拿不到 Depends(current_user),它直接读 scope["session"],
+    因此上面那个 _login_override(依赖覆盖)对它完全不可见——测 /files 的登录闸只能真登录。
+    不为此在实现里加测试专用的间接层。"""
+    monkeypatch.setattr(auth, "USERS_PATH", tmp_path / "users.json")
+    auth.add_user(username, "pw-" + username)
+    c = TestClient(api.app)
+    r = c.post("/api/login", json={"username": username, "password": "pw-" + username})
+    assert r.status_code == 200, f"测试自身的登录夹具失效: {r.status_code} {r.text}"
+    return c
 
 
 def test_meta_lists_enums():
@@ -490,8 +504,8 @@ def test_list_projects_skips_non_object_json(tmp_path, monkeypatch):
 def test_cancel_matches_editable_ownership_rule(tmp_path, monkeypatch):
     """取消权限必须与编辑权限同判据。此前用的是 `p.owner != user`,而 _editable 用的是
     `p.owner and p.owner != user`——历史项目 owner 为空时人人可编辑,却**没有人**能取消
-    它的作业(此处也没有 is_admin 旁路),那个作业只能靠重启进程停下,期间一直占着
-    执行槽。两个判据的差异没有任何理由,对齐即可。"""
+    它的作业,那个作业只能靠重启进程停下,期间一直占着执行槽。两个判据的差异没有任何
+    理由,现已共用 _may_edit,不再靠人肉保持一致。"""
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     p = store.create_project("雷峰塔", root=tmp_path)
     p.owner = ""                              # 无主的历史项目
@@ -1342,6 +1356,78 @@ def test_patch_cell_allows_legacy_project_without_owner():
     assert r.status_code == 200
 
 
+# ---- 管理员归属旁路(_may_edit)。前四条锁"能",后两条锁"能到哪为止"。----
+
+def test_patch_cell_allows_admin_on_other_owner_project(monkeypatch):
+    """管理员可编辑任何人的作品。这是产品要求(「admin 用户可以执行任何用户的命令」),
+    此前 _editable 里没有这条旁路,管理员改别人的作品一样吃 403。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    p = Project(project_id="adminpatchid", scenic_spot="雷峰塔", owner="someoneelse")
+    p.storyboard = [StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
+                                   caption="c1", emotion="宁静")]
+    with patch("shanhai.api.store.load", return_value=p), patch("shanhai.api.store.save"):
+        r = client.patch("/api/projects/adminpatchid/cells/1", json={"caption": "新"})
+    assert r.status_code == 200
+
+
+def test_delete_cell_allows_admin_on_other_owner_project(monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    p = Project(project_id="admindelcellid", scenic_spot="雷峰塔", owner="someoneelse")
+    p.storyboard = [StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
+                                   caption="c1", emotion="宁静")]
+    with patch("shanhai.api.store.load", return_value=p), patch("shanhai.api.store.save"):
+        r = client.delete("/api/projects/admindelcellid/cells/1")
+    assert r.status_code == 200
+
+
+def test_cancel_allows_admin_on_other_owner_project(tmp_path, monkeypatch):
+    """cancel 有自己的一份归属判据(不走 _editable),必须同样认管理员——否则管理员
+    看得到别人卡住的作业却停不掉,只能重启进程。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = "someone-else"
+    store.save(p, root=tmp_path)
+    r = client.post(f"/api/projects/{p.project_id}/cancel")
+    assert r.status_code == 400   # 归属放行 → 落到"当前没有可取消的作业",而不是 403
+
+
+def test_export_allows_admin_on_other_owner_project(tmp_path, monkeypatch):
+    """export 也有自己的一份判据(刻意不走 _editable,因为导出不受只读拦截)。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = "someone-else"
+    store.save(p, root=tmp_path)
+    with patch("shanhai.api.export.build_exports", side_effect=lambda proj, _d: proj):
+        assert client.post(f"/api/projects/{p.project_id}/export").status_code == 200
+
+
+def test_admin_bypass_does_not_cover_readonly(monkeypatch):
+    """旁路只覆盖「归属」。只读是部署模式(公开演示),不是权限档位——管理员照样被拦,
+    否则演示站上一个管理员会话就能改数据。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    monkeypatch.setattr(api, "_READONLY", True)
+    r = client.patch("/api/projects/anyid/cells/1", json={"caption": "x"})
+    assert r.status_code == 403
+
+
+def test_admin_bypass_does_not_cover_pending_job(monkeypatch):
+    """同上:「有未完成作业」拦的是并发写导致的丢更新,与身份无关,管理员一样 409。"""
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    saved = dict(api._JOBS)
+    api._JOBS.clear()
+    f = Future()
+    api._JOBS["adminpendingid"] = f
+    try:
+        r = client.patch("/api/projects/adminpendingid/cells/1", json={"caption": "x"})
+        assert r.status_code == 409
+    finally:
+        f.set_result(None)
+        api._JOBS.clear()
+        api._JOBS.update(saved)
+
+
 def test_reorder_rejects_non_permutation():
     p = Project(project_id="reorderid", scenic_spot="雷峰塔")
     p.storyboard = [
@@ -1449,21 +1535,77 @@ def test_create_cell_rejects_too_many_characters():
 
 # ---------- 静态文件 ----------
 
-def test_files_hides_project_json():
+def test_files_hides_project_json(tmp_path, monkeypatch):
     # FP8:project.json(含用户 story、legend sources、角色 feature_prompt 等内部态)不经
     # /files 暴露。在 StaticFiles 规范化 path 之后按 basename 拦截,故各绕过变体都应 404,
     # 而其它产物正常托管。写真实 projects/ 目录再验证(否则文件不存在测不出"拦截 vs 未命中")。
+    # 用真 cookie 客户端:/files 现在还有一道登录闸,依赖覆盖对它无效(见 _cookie_client)。
     import shutil
+    c = _cookie_client(tmp_path, monkeypatch)
     d = store.DEFAULT_ROOT / "fp8test"
     d.mkdir(parents=True, exist_ok=True)
     (d / "project.json").write_text('{"secret": "内部 prompt"}', encoding="utf-8")
     (d / "art.txt").write_text("ok", encoding="utf-8")     # 对照:非 project.json 正常托管
     try:
-        assert client.get("/files/fp8test/project.json").status_code == 404       # 规范路径
-        assert client.get("/files/fp8test/project.json/").status_code == 404      # 尾随斜杠绕过
-        assert client.get("/files/fp8test/PROJECT.JSON").status_code == 404        # 大小写绕过
-        assert client.head("/files/fp8test/project.json").status_code == 404       # HEAD 绕过
-        assert client.get("/files/fp8test/art.txt").status_code == 200             # 其它产物不受影响
+        assert c.get("/files/fp8test/project.json").status_code == 404       # 规范路径
+        assert c.get("/files/fp8test/project.json/").status_code == 404      # 尾随斜杠绕过
+        assert c.get("/files/fp8test/PROJECT.JSON").status_code == 404        # 大小写绕过
+        assert c.head("/files/fp8test/project.json").status_code == 404       # HEAD 绕过
+        assert c.get("/files/fp8test/art.txt").status_code == 200             # 其它产物不受影响
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_files_requires_login(tmp_path, monkeypatch):
+    """/files 托管的是用户产物(成片/页图/配音/真人参考照),不是 SPA 构建资源。
+    此前完全免鉴权,URL 一旦外泄(转发、日志、Referer)文件即永久公开,而 DGX 单实例
+    同时对 cpolar 公网开放。未登录一律 404 而非 401:不区分「没登录」与「文件不存在」,
+    否则匿名者可拿 URL 探测某个作品是否存在。"""
+    import shutil
+    d = store.DEFAULT_ROOT / "gatetest"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "art.txt").write_text("ok", encoding="utf-8")
+    try:
+        anon = TestClient(api.app)                     # 全新客户端,无 cookie
+        assert anon.get("/files/gatetest/art.txt").status_code == 404
+        c = _cookie_client(tmp_path, monkeypatch)
+        assert c.get("/files/gatetest/art.txt").status_code == 200
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_files_gate_is_login_only_not_ownership(tmp_path, monkeypatch):
+    """闸门只认「登录」,**不认归属**——「所有人看到全部作品」是写进 2026-07-14 设计文档的
+    产品目标(:55),静态资源不该比 API 本身更严,否则用户在列表里点开别人的作品会是
+    「文案渲染正常、图/音/视频全 404」。这条锁住这个决定,防止以后被误收紧。"""
+    import shutil
+    p = Project(project_id="othersproj", scenic_spot="雷峰塔", owner="someoneelse")
+    d = store.DEFAULT_ROOT / p.project_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "art.txt").write_text("ok", encoding="utf-8")
+    try:
+        c = _cookie_client(tmp_path, monkeypatch)      # 登录名是 testuser,不是 owner
+        assert c.get(f"/files/{p.project_id}/art.txt").status_code == 200
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_files_hides_whole_voice_sample_namespace(tmp_path, monkeypatch):
+    """真人录音只能经带鉴权的 GET /api/projects/{id}/voice-sample 拿。
+
+    此前 index.json(音色句柄 → 随机盐文件名的全表)不在 protected 里、可匿名下载,
+    读一次就击穿了 vs_<token>.wav 依赖的「靠随机 token 保密」——那也让「录音收到本人+admin」
+    形同虚设(绕开端点直接下文件)。故整个前缀摘掉,而不是单补拦 index.json。"""
+    import shutil
+    d = store.voice_sample_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "index.json").write_text('{"clone:x": "vs_tok.wav"}', encoding="utf-8")
+    (d / "vs_tok.wav").write_bytes(b"RIFF....WAVE")
+    try:
+        c = _cookie_client(tmp_path, monkeypatch)      # 即便已登录也拿不到
+        base = f"/files/{store.VOICE_SAMPLE_DIRNAME}"
+        assert c.get(f"{base}/index.json").status_code == 404
+        assert c.get(f"{base}/vs_tok.wav").status_code == 404
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -2036,6 +2178,59 @@ def test_story_endpoint_null_when_absent(tmp_path, monkeypatch):
 def test_story_endpoint_404_for_missing_project(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     assert client.get("/api/projects/nosuchid/story").status_code == 404
+
+
+# ---- 私人素材(自备故事原文 / 真人录音)只给作者与管理员。----
+# 与「作品团队内全员可见」并存:这两样是用户**输入**的素材,不是生成出来的作品。
+
+def test_story_rejects_non_owner(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner, p.story = "someone-else", "别人贴的私人文本"
+    store.save(p, root=tmp_path)
+    assert client.get(f"/api/projects/{p.project_id}/story").status_code == 403
+
+
+def test_story_allows_admin(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner, p.story = "someone-else", "别人贴的私人文本"
+    store.save(p, root=tmp_path)
+    r = client.get(f"/api/projects/{p.project_id}/story")
+    assert r.status_code == 200 and r.json()["story"] == "别人贴的私人文本"
+
+
+def test_story_allows_ownerless_legacy_project(tmp_path, monkeypatch):
+    """判据与写侧 _may_edit 共用,故「owner 为空的历史项目视为无主」在读侧同样成立——
+    线上历史项目多数 owner 为空,收紧不能把存量数据锁死。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner, p.story = "", "无主项目的原文"
+    store.save(p, root=tmp_path)
+    r = client.get(f"/api/projects/{p.project_id}/story")
+    assert r.status_code == 200 and r.json()["story"] == "无主项目的原文"
+
+
+def test_voice_sample_rejects_non_owner(tmp_path, monkeypatch):
+    """录音是声音生物特征,比自备故事更该收。403 要早于「有没有音色」的 404,
+    否则非归属者能拿状态码探出别人有没有传过录音。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = "someone-else"
+    p.params.voice = "clone:whatever.wav"
+    store.save(p, root=tmp_path)
+    assert client.get(f"/api/projects/{p.project_id}/voice-sample").status_code == 403
+
+
+def test_voice_sample_allows_admin(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = "someone-else"
+    store.save(p, root=tmp_path)
+    # 归属放行后落到「该作品没有可回听的自定义音色」那条 404,而不是 403
+    assert client.get(f"/api/projects/{p.project_id}/voice-sample").status_code == 404
 
 
 def test_list_projects_omits_story(tmp_path, monkeypatch):

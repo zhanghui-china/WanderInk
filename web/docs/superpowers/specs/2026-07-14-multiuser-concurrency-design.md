@@ -44,6 +44,8 @@
 
 **鉴权依赖**:新增 `src/shanhai/auth.py` 的 `current_user(request: Request) -> str`(FastAPI `Depends`),未登录抛 `HTTPException(401)`。**除 `POST /api/login`、`POST /api/logout` 和静态资源(`/`、`/files/*`)外,其余全部端点(含 `GET /api/meta`)都要求登录**——整个 SPA 进门先登录,不做"匿名可看列表"的折中。前端 `App.tsx` 顶层先 `GET /api/me` 判断登录态,未登录直接渲染 `LoginPage`,不发起其它任何 API 请求。
 
+> **2026-08-06 修订(原文保留,以上是当时的决策记录)**:上面把 `/files/*` 与 SPA 并列为免登录"静态资源",这一条已经改了——`/files` 现在**要求登录**(仍不看归属)。理由:`/` 托管的是构建产物,而 `/files` 托管的是用户产物(成片、页图、配音、用户上传的真人参考照),URL 一旦外泄即永久公开,而本文档"背景"一节自己也写了 DGX 单实例同时对 cpolar 公网开放。同期把 `_voice_samples/` 整个命名空间从 `/files` 摘除(其 `index.json` 是"音色句柄 → 随机盐文件名"的全表,可匿名下载,一读即击穿随机盐),真人录音改为只能经 `GET /api/projects/{id}/voice-sample`,且该端点与 `/story` 一并收到**仅作者与管理员**。"所有人看到全部作品"(项 2)不受影响,作品本身仍团队内全员可见。
+
 **前端**:新增 `web/src/components/LoginPage.tsx`(用户名密码表单,复用 `NewProjectForm.tsx` 的卡片/field/label 样式);`App.tsx` 顶层先 `GET /api/me` 判断登录态,未登录渲染 `LoginPage`;header 加"当前用户 + 退出"按钮。
 
 **测试**:`tests/test_auth.py`(新建)——bcrypt 校验成功/失败、session cookie 下发后带 cookie 请求受保护端点通过、不带 cookie 返回 401、logout 后原 cookie 失效。

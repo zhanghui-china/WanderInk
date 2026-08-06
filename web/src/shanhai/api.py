@@ -568,11 +568,23 @@ def me(user: str = Depends(current_user)) -> dict:
 
 # ---------- 接口 ----------
 
+def _may_edit(p: Project, user: str) -> bool:
+    """项目级写操作的统一归属判据:自己的、无主的(历史项目 owner 为空)、或管理员。
+
+    此前这条规则在 _editable/cancel_project/export_project 里各抄了一遍,已经翻过一次车
+    (cancel 少写了 `p.owner and`,见 cancel_project 内注释),故收敛到这里,三处共用。
+
+    **管理员旁路只覆盖「归属」这一层**:_READONLY(部署模式,不是权限)与「有未完成作业→409」
+    (并发写会丢更新,与身份无关)对管理员同样生效——那两道是数据安全屏障,别往这里搬。
+    is_admin 要读 users.json,故放在最后短路:常规路径(改自己的项目)不产生文件 IO。"""
+    return not p.owner or p.owner == user or is_admin(user)
+
+
 def _editable(project_id: str, user: str) -> Project:
     """编辑端点公共校验+载入,须在持有 _project_lock(project_id) 时调用:此时 job-check 成为
     真正的屏障(锁内确认无未完成作业才改),并载入最新快照,杜绝 check→加锁 的 TOCTOU 与丢更新。
-    只读模式拒绝写入;有未完成后台作业拒绝并发编辑;项目须存在;非所有者不可编辑
-    (历史项目 owner 为空,视为无主,不做归属限制)。锁序 project→jobs(此处再取 _JOBS_LOCK)。"""
+    只读模式拒绝写入;有未完成后台作业拒绝并发编辑;项目须存在;归属按 _may_edit 判定
+    (自己的/无主的/管理员)。锁序 project→jobs(此处再取 _JOBS_LOCK)。"""
     if _READONLY:
         raise HTTPException(403, "公开演示为只读,禁止编辑")
     f = _job_of(project_id)  # 调用方已持 project 锁,此处再取 _JOBS_LOCK 一致快照(project→jobs)
@@ -582,7 +594,7 @@ def _editable(project_id: str, user: str) -> Project:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
-    if p.owner and p.owner != user:
+    if not _may_edit(p, user):
         raise HTTPException(403, "只能编辑自己的项目")
     return p
 
@@ -672,10 +684,10 @@ def cancel_project(project_id: str, user: str = Depends(current_user)) -> dict:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
-    # 判据必须与 _editable 逐字一致:历史项目 owner 为空视为无主。此前写的是
-    # `p.owner != user`,于是那些项目人人可编辑、却**没有人**能取消它们的作业
-    # (这里也没有 is_admin 旁路),作业只能靠重启进程停下,期间一直占着执行槽。
-    if p.owner and p.owner != user:
+    # 判据与 _editable 共用 _may_edit,不再手抄——此前这里写的是 `p.owner != user`
+    # (漏了 `p.owner and`),于是无主项目人人可编辑、却**没有人**能取消它们的作业,
+    # 只能靠重启进程停下,期间一直占着执行槽。同一条规则抄第二遍就出过这个事故。
+    if not _may_edit(p, user):
         raise HTTPException(403, "只能取消自己的生成任务")
     # 「取 f→判定 done/cancel→标记 _CANCELLED」整段收进 _JOBS_LOCK,与 _pipeline/_run_step finally
     # 里同锁的 _CANCELLED.discard 互斥:否则作业恰在此窗口跑完时,discard 先执行、随后此处 add 让
@@ -761,19 +773,26 @@ def get_project(project_id: str, user: str = Depends(current_user)) -> dict:
 
 @app.get("/api/projects/{project_id}/story")
 def get_project_story(project_id: str, user: str = Depends(current_user)) -> dict:
-    """自备故事原文,单独一个端点:用户点开按钮时才拉一次(见 _serialize 里 has_story 的注释)。"""
+    """自备故事原文,单独一个端点:用户点开按钮时才拉一次(见 _serialize 里 has_story 的注释)。
+
+    仅作者与管理员可读(_may_edit,与写侧同一判据)。这是用户**输入**的私人素材、逐字返回、
+    上限 2 万字,和生成出来的作品不是一回事——后者(成片/分镜/漫画页)按 2026-07-14 设计
+    文档「所有人看到全部作品」继续团队内全员可见。注意 has_story 那个布尔位仍然人人可见,
+    它是性能拆分不是权限分层,别的用户知道"这部作品是自备故事"没有问题。"""
     try:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
+    if not _may_edit(p, user):
+        raise HTTPException(403, "自备故事原文仅作者与管理员可见")
     return {"story": p.story}
 
 
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: str, user: str = Depends(current_user)) -> dict:
     """管理员专用:彻底删除作品目录(project.json + 全部生成产物),不可恢复。
-    与其它编辑端点不同,不复用 _editable 的"owner 为空即可编辑"规则——删除权限只看
-    is_admin,与作品归属无关(避免无主项目被任意登录用户删除)。"""
+    与其它编辑端点不同,不走 _may_edit——那条规则放行"无主项目",而删除不可恢复,
+    放行无主项目等于任意登录用户可删。故删除只认 is_admin,owner 本人也不例外。"""
     if not is_admin(user):
         raise HTTPException(403, "仅管理员可删除作品")
     if _READONLY:
@@ -803,10 +822,9 @@ def export_project(project_id: str, user: str = Depends(current_user)) -> dict:
             p = store.load(project_id)
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(404, f"项目不存在: {project_id}") from e
-        # 归属校验必须单独写一遍,不能改调 _editable:导出刻意不受只读拦截(见上方 docstring),
-        # 而 _editable 头一件事就是拦只读。判据与 _editable 逐字一致——历史项目 owner 为空
-        # 视为无主,否则那些项目会连自己都导不出。
-        if p.owner and p.owner != user:
+        # 归属校验单独写,不能改调 _editable:导出刻意不受只读拦截(见上方 docstring),而
+        # _editable 头一件事就是拦只读。但判据本身与它共用 _may_edit,不手抄。
+        if not _may_edit(p, user):
             raise HTTPException(403, "只能导出自己的项目")
         p = export.build_exports(p, store.project_dir(project_id))
         store.save(p)
@@ -1010,21 +1028,26 @@ async def upload_voice_sample(file: UploadFile = File(...),
     # 记下"这个句柄对应这份录音"。句柄由上游生成、文件名是本地随机盐,不存这一步就再也
     # 对不上号——用户想回听自己给某部作品选的音色都做不到(GET /voice-sample 靠它查)。
     store.remember_voice_sample(voice, rel)
-    return {"voice": voice, "sample_url": f"/files/{store.VOICE_SAMPLE_DIRNAME}/{rel}",
-            "duration_ms": ffmpeg.probe_duration_ms(out)}
+    # 不再返回 sample_url:_voice_samples/ 整个命名空间已从 /files 摘掉(见 _ArtifactStatic),
+    # 那条 URL 现在恒 404,留着就是给调用方一个永远打不开的链接。回听走
+    # GET /api/projects/{id}/voice-sample。前端从来没读过这个字段。
+    return {"voice": voice, "duration_ms": ffmpeg.probe_duration_ms(out)}
 
 
 @app.get("/api/projects/{project_id}/voice-sample")
 def get_project_voice_sample(project_id: str, user: str = Depends(current_user)) -> FileResponse:
     """回听该作品正在用的自定义音色(用户自己录的那段)。
 
-    刻意**不**把 /files 下的样本 URL 放进详情响应:那个挂载没有任何身份校验、靠随机盐保密
-    (uploads.voice_sample_rel_path 的说明),而这是**真人声音**。走这个端点至少能让它和作品
-    本身同一个可见性级别(Depends(current_user)),不至于泄漏一个永久有效的公开链接。"""
+    这是**真人声音**,不是生成出来的作品,故可见性比作品本身更严:仅作者与管理员
+    (_may_edit,与写侧同一判据)。/files 下 _voice_samples/ 整个命名空间已摘除,
+    这里是拿到录音的唯一入口——两者缺一不可,只收这里的话任何登录用户读一次
+    _voice_samples/index.json 就能顺着随机盐文件名把所有人的录音直接下走。"""
     try:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
+    if not _may_edit(p, user):
+        raise HTTPException(403, "录音仅作者与管理员可回听")
     path = _voice_sample_path(p)
     if path is None:
         raise HTTPException(404, "该作品没有可回听的自定义音色")
@@ -1419,15 +1442,41 @@ def write_config(body: AppConfig, user: str = Depends(current_user)) -> dict:
     return config_view(_READONLY)
 
 
+# 音色样本目录在挂载根下,但整个命名空间不经 /files 对外:见 _ArtifactStatic 说明。
+_VOICE_SAMPLE_PREFIX = store.VOICE_SAMPLE_DIRNAME + "/"
+
+
 class _ArtifactStatic(StaticFiles):
-    """产物静态托管,但禁下载任何 project.json(含用户 story、legend sources、角色 feature_prompt
-    等内部态)与运行时配置文件(含明文密钥)。在 StaticFiles 已把 URL 规范化(折叠 ../ 双斜杠尾斜杠)成
-    path 之后按 basename 拦截,故尾随斜杠/双斜杠/x/../project.json/大小写/HEAD 等在具体路由层可绕过的
-    变体在此统一 404。受保护的配置文件名取运行时实际值 runtime_config._config_path()(每次读 SHANHAI_CONFIG_PATH、
+    """产物静态托管,三道闸:①要求登录 ②整个 _voice_samples/ 命名空间不外露 ③禁下载任何
+    project.json(含用户 story、legend sources、角色 feature_prompt 等内部态)与运行时配置文件
+    (含明文密钥)。
+
+    ①**要求登录,但不看归属**——「所有人看到全部作品」是写进 2026-07-14 设计文档的产品目标,
+    静态资源不该比 API 本身更严(否则用户在列表里点开别人的作品,文案渲染正常而图/音/视频全 404)。
+    挂载不走 FastAPI 依赖(拿不到 Depends(current_user)),但 SessionMiddleware 是全局中间件,
+    scope 里已有 session,直接读即可。一律 404 而非 401:不区分「没登录」与「文件不存在」,
+    否则匿名者可拿 URL 探测某个作品是否存在。副作用是 session 过期后页面上的图变成裂图而非跳登录页,
+    可接受——前端 /api/me 轮询会先一步把人踢回 LoginPage。
+    ⚠️ 这道闸只在**同源部署**下成立(后端自己托管 SPA,见下方 mount)。前后端分域时
+    <img>/<video> 会变成不带 cookie 的跨源请求,加上 _CORS_ORIGINS 默认 "*" 且未开
+    allow_credentials,产物会全线 404。
+
+    ②真人录音只能经带鉴权的 GET /api/projects/{id}/voice-sample 拿。此前 index.json
+    (音色句柄 → 随机盐文件名的全表)不在 protected 里、可匿名下载,一读就击穿了 vs_<token>.wav
+    所依赖的「靠随机 token 保密」——单独补拦它治标,整个前缀摘掉才治本。前端从不读 sample_url。
+
+    ③在 StaticFiles 已把 URL 规范化(折叠 ../ 双斜杠尾斜杠)成 path 之后按 basename 拦截,故
+    尾随斜杠/双斜杠/x/../project.json/大小写/HEAD 等在具体路由层可绕过的变体在此统一 404。
+    ②的前缀判据依赖同一个前提(path 已规范化),故不会被 x/.._voice_samples/ 之类绕过。
+    受保护的配置文件名取运行时实际值 runtime_config._config_path()(每次读 SHANHAI_CONFIG_PATH、
     随之变化、可被测试改环境变量),而非 import 期冻结的常量。config.json 默认在 cwd 根、本不在挂载目录内,
     此拦截是运维误把它指进 projects/ 时的防御纵深(真正的护栏仍是把 config.json 留在被托管目录之外)。"""
 
     async def get_response(self, path: str, scope):  # noqa: ANN001 — 与父类签名一致
+        if not (scope.get("session") or {}).get("user"):
+            raise HTTPException(404)
+        if path.lower().startswith(_VOICE_SAMPLE_PREFIX):
+            raise HTTPException(404)
         protected = {"project.json", runtime_config._config_path().name.lower()}
         if Path(path).name.lower() in protected:
             raise HTTPException(404)
@@ -1438,6 +1487,8 @@ class _ArtifactStatic(StaticFiles):
 store.DEFAULT_ROOT.mkdir(exist_ok=True)
 app.mount("/files", _ArtifactStatic(directory=str(store.DEFAULT_ROOT)), name="files")
 
+# ⚠️ SPA 这一挂载**不能**套 _ArtifactStatic 的登录闸:登录页本身就在这份 dist 里,
+# 加了门就没人能登进来。它托管的是构建产物,不含任何用户数据。
 _WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 if _WEB_DIST.exists():
     app.mount("/", StaticFiles(directory=str(_WEB_DIST), html=True), name="web")

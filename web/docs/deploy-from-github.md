@@ -157,6 +157,12 @@ cd web && npm run dev              # 前端 :5173,已代理 /api 与 /files 到 
 
 打开 http://localhost:5173 。详见 [../web/README.md](../web/README.md)。
 
+> ⚠️ **必须保持同源部署,不要把前端拆到另一个域名下。** `/files`(成片/页图/配音等产物)
+> 要求登录,靠的是浏览器给同源子资源自动带上 session cookie——`<img>`/`<video>`/`<a download>`
+> 都是这么过闸的。一旦前后端分域,这些就变成跨源请求:`SHANHAI_CORS_ORIGINS` 默认 `*` 且
+> 服务端没有开 `allow_credentials`,cookie 发不出去,**产物会全线 404、页面只剩文字**。
+> 开发模式不受影响——Vite 把 `/api` 和 `/files` 一起代理到后端,浏览器视为同源。
+
 ---
 
 ## 4. 环境变量:几条容易踩的
