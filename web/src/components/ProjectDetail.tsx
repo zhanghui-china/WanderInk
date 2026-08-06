@@ -185,7 +185,8 @@ export function ProjectDetailView({
       return
     }
     setSourcesOpen(true)
-    if (!project.has_story || storyText !== null) return
+    // !owned 时不发这一枪:原文只有作者与管理员能读,后端会 403。展开区改显一行说明。
+    if (!project.has_story || !owned || storyText !== null) return
     try {
       const r = await api.story(project.project_id)
       setStoryText(r.story ?? '')
@@ -356,9 +357,11 @@ export function ProjectDetailView({
         <div className="flex shrink-0 items-center gap-2">
           {/* 放在「换音色」左边(用户要求)。刻意**不**受 !meta?.readonly 限制:换音色要改数据
               才需要,回听是只读动作,只读演示模式下也该能听自己录的那段。
+              但受 owned 限制:那是**真人声音**,不是生成出来的作品,只有作者本人和管理员能听
+              (后端 get_project_voice_sample 同一判据)。别人的作品上这颗按钮点了必然 403。
               判据用 has_voice_sample 而不是 voice.startsWith('clone:')——那个前缀是上游 TTS
               返回的约定,后端从未强制过;索引命中才是权威。 */}
-          {project.has_voice_sample && (
+          {project.has_voice_sample && owned && (
             <button
               type="button"
               onClick={() => setVoiceSampleOpen((v) => !v)}
@@ -625,6 +628,13 @@ export function ProjectDetailView({
               </button>
               {sourcesOpen &&
                 (project.has_story ? (
+                  // 按钮刻意保留而不是直接消失:传说来源本就人人可看,且「按钮消失不给理由」
+                  // 会让人以为功能坏了(f4d165f 的教训)。别人的作品这里说清楚为什么看不到。
+                  !owned ? (
+                    <p className="mt-2 text-sm leading-loose text-muted">
+                      自备故事原文仅作者与管理员可见。
+                    </p>
+                  ) : (
                   // 原文最长两万字,就地展开必须限高滚动,否则把整页撑成一条长廊
                   <div className="mt-2 max-h-[60vh] space-y-3 overflow-y-auto text-sm leading-loose text-ink-soft">
                     {storyText === null ? (
@@ -637,6 +647,7 @@ export function ProjectDetailView({
                       ))
                     )}
                   </div>
+                  )
                 ) : (
                   <ul className="mt-2 space-y-1 text-sm leading-loose text-ink-soft">
                     {project.legend?.sources.map((s) => (

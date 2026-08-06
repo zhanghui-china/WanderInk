@@ -773,11 +773,18 @@ def get_project(project_id: str, user: str = Depends(current_user)) -> dict:
 
 @app.get("/api/projects/{project_id}/story")
 def get_project_story(project_id: str, user: str = Depends(current_user)) -> dict:
-    """自备故事原文,单独一个端点:用户点开按钮时才拉一次(见 _serialize 里 has_story 的注释)。"""
+    """自备故事原文,单独一个端点:用户点开按钮时才拉一次(见 _serialize 里 has_story 的注释)。
+
+    仅作者与管理员可读(_may_edit,与写侧同一判据)。这是用户**输入**的私人素材、逐字返回、
+    上限 2 万字,和生成出来的作品不是一回事——后者(成片/分镜/漫画页)按 2026-07-14 设计
+    文档「所有人看到全部作品」继续团队内全员可见。注意 has_story 那个布尔位仍然人人可见,
+    它是性能拆分不是权限分层,别的用户知道"这部作品是自备故事"没有问题。"""
     try:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
+    if not _may_edit(p, user):
+        raise HTTPException(403, "自备故事原文仅作者与管理员可见")
     return {"story": p.story}
 
 
@@ -1021,21 +1028,26 @@ async def upload_voice_sample(file: UploadFile = File(...),
     # 记下"这个句柄对应这份录音"。句柄由上游生成、文件名是本地随机盐,不存这一步就再也
     # 对不上号——用户想回听自己给某部作品选的音色都做不到(GET /voice-sample 靠它查)。
     store.remember_voice_sample(voice, rel)
-    return {"voice": voice, "sample_url": f"/files/{store.VOICE_SAMPLE_DIRNAME}/{rel}",
-            "duration_ms": ffmpeg.probe_duration_ms(out)}
+    # 不再返回 sample_url:_voice_samples/ 整个命名空间已从 /files 摘掉(见 _ArtifactStatic),
+    # 那条 URL 现在恒 404,留着就是给调用方一个永远打不开的链接。回听走
+    # GET /api/projects/{id}/voice-sample。前端从来没读过这个字段。
+    return {"voice": voice, "duration_ms": ffmpeg.probe_duration_ms(out)}
 
 
 @app.get("/api/projects/{project_id}/voice-sample")
 def get_project_voice_sample(project_id: str, user: str = Depends(current_user)) -> FileResponse:
     """回听该作品正在用的自定义音色(用户自己录的那段)。
 
-    刻意**不**把 /files 下的样本 URL 放进详情响应:那个挂载没有任何身份校验、靠随机盐保密
-    (uploads.voice_sample_rel_path 的说明),而这是**真人声音**。走这个端点至少能让它和作品
-    本身同一个可见性级别(Depends(current_user)),不至于泄漏一个永久有效的公开链接。"""
+    这是**真人声音**,不是生成出来的作品,故可见性比作品本身更严:仅作者与管理员
+    (_may_edit,与写侧同一判据)。/files 下 _voice_samples/ 整个命名空间已摘除,
+    这里是拿到录音的唯一入口——两者缺一不可,只收这里的话任何登录用户读一次
+    _voice_samples/index.json 就能顺着随机盐文件名把所有人的录音直接下走。"""
     try:
         p = store.load(project_id)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(404, f"项目不存在: {project_id}") from e
+    if not _may_edit(p, user):
+        raise HTTPException(403, "录音仅作者与管理员可回听")
     path = _voice_sample_path(p)
     if path is None:
         raise HTTPException(404, "该作品没有可回听的自定义音色")
@@ -1430,15 +1442,41 @@ def write_config(body: AppConfig, user: str = Depends(current_user)) -> dict:
     return config_view(_READONLY)
 
 
+# 音色样本目录在挂载根下,但整个命名空间不经 /files 对外:见 _ArtifactStatic 说明。
+_VOICE_SAMPLE_PREFIX = store.VOICE_SAMPLE_DIRNAME + "/"
+
+
 class _ArtifactStatic(StaticFiles):
-    """产物静态托管,但禁下载任何 project.json(含用户 story、legend sources、角色 feature_prompt
-    等内部态)与运行时配置文件(含明文密钥)。在 StaticFiles 已把 URL 规范化(折叠 ../ 双斜杠尾斜杠)成
-    path 之后按 basename 拦截,故尾随斜杠/双斜杠/x/../project.json/大小写/HEAD 等在具体路由层可绕过的
-    变体在此统一 404。受保护的配置文件名取运行时实际值 runtime_config._config_path()(每次读 SHANHAI_CONFIG_PATH、
+    """产物静态托管,三道闸:①要求登录 ②整个 _voice_samples/ 命名空间不外露 ③禁下载任何
+    project.json(含用户 story、legend sources、角色 feature_prompt 等内部态)与运行时配置文件
+    (含明文密钥)。
+
+    ①**要求登录,但不看归属**——「所有人看到全部作品」是写进 2026-07-14 设计文档的产品目标,
+    静态资源不该比 API 本身更严(否则用户在列表里点开别人的作品,文案渲染正常而图/音/视频全 404)。
+    挂载不走 FastAPI 依赖(拿不到 Depends(current_user)),但 SessionMiddleware 是全局中间件,
+    scope 里已有 session,直接读即可。一律 404 而非 401:不区分「没登录」与「文件不存在」,
+    否则匿名者可拿 URL 探测某个作品是否存在。副作用是 session 过期后页面上的图变成裂图而非跳登录页,
+    可接受——前端 /api/me 轮询会先一步把人踢回 LoginPage。
+    ⚠️ 这道闸只在**同源部署**下成立(后端自己托管 SPA,见下方 mount)。前后端分域时
+    <img>/<video> 会变成不带 cookie 的跨源请求,加上 _CORS_ORIGINS 默认 "*" 且未开
+    allow_credentials,产物会全线 404。
+
+    ②真人录音只能经带鉴权的 GET /api/projects/{id}/voice-sample 拿。此前 index.json
+    (音色句柄 → 随机盐文件名的全表)不在 protected 里、可匿名下载,一读就击穿了 vs_<token>.wav
+    所依赖的「靠随机 token 保密」——单独补拦它治标,整个前缀摘掉才治本。前端从不读 sample_url。
+
+    ③在 StaticFiles 已把 URL 规范化(折叠 ../ 双斜杠尾斜杠)成 path 之后按 basename 拦截,故
+    尾随斜杠/双斜杠/x/../project.json/大小写/HEAD 等在具体路由层可绕过的变体在此统一 404。
+    ②的前缀判据依赖同一个前提(path 已规范化),故不会被 x/.._voice_samples/ 之类绕过。
+    受保护的配置文件名取运行时实际值 runtime_config._config_path()(每次读 SHANHAI_CONFIG_PATH、
     随之变化、可被测试改环境变量),而非 import 期冻结的常量。config.json 默认在 cwd 根、本不在挂载目录内,
     此拦截是运维误把它指进 projects/ 时的防御纵深(真正的护栏仍是把 config.json 留在被托管目录之外)。"""
 
     async def get_response(self, path: str, scope):  # noqa: ANN001 — 与父类签名一致
+        if not (scope.get("session") or {}).get("user"):
+            raise HTTPException(404)
+        if path.lower().startswith(_VOICE_SAMPLE_PREFIX):
+            raise HTTPException(404)
         protected = {"project.json", runtime_config._config_path().name.lower()}
         if Path(path).name.lower() in protected:
             raise HTTPException(404)
@@ -1449,6 +1487,8 @@ class _ArtifactStatic(StaticFiles):
 store.DEFAULT_ROOT.mkdir(exist_ok=True)
 app.mount("/files", _ArtifactStatic(directory=str(store.DEFAULT_ROOT)), name="files")
 
+# ⚠️ SPA 这一挂载**不能**套 _ArtifactStatic 的登录闸:登录页本身就在这份 dist 里,
+# 加了门就没人能登进来。它托管的是构建产物,不含任何用户数据。
 _WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 if _WEB_DIST.exists():
     app.mount("/", StaticFiles(directory=str(_WEB_DIST), html=True), name="web")
