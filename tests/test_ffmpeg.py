@@ -164,3 +164,58 @@ def test_probe_duration_ms_rejects_na():
     with patch("shanhai.ffmpeg.subprocess.run", return_value=SimpleNamespace(stdout="N/A\n")), \
          pytest.raises(ValueError, match="无法解析时长"):
         ffmpeg.probe_duration_ms(Path("bad.mp3"))
+
+
+# ---------- 超时:卡死的 ffmpeg 会永久占住线程池的槽,必须有上限 ----------
+
+def test_sh_passes_a_timeout_by_default():
+    """核心断言:调用真的带了 timeout。没有它,一次卡死就是永久阻塞。"""
+    with patch("shanhai.ffmpeg.subprocess.run") as run:
+        ffmpeg.sh(["ffmpeg", "-i", "x", "o.mp4"])
+    assert run.call_args.kwargs["timeout"] == ffmpeg.FFMPEG_TIMEOUT_S
+
+
+def test_sh_explicit_timeout_wins():
+    with patch("shanhai.ffmpeg.subprocess.run") as run:
+        ffmpeg.sh(["ffmpeg", "-i", "x", "o.mp4"], timeout=7)
+    assert run.call_args.kwargs["timeout"] == 7
+
+
+def test_sh_wraps_timeout_as_runtime_error():
+    """必须包成 RuntimeError:uploads.to_voice_sample_wav 只 `except RuntimeError` 来转 400,
+    裸 TimeoutExpired 漏出去会退化成 500;而且它的消息会把整条 ffmpeg 命令行(含
+    filter_complex 巨串)经 _save_error 写进 project.json 并显示给用户。"""
+    err = subprocess.TimeoutExpired(["ffmpeg"], 1800, stderr=b"frame= 120 fps=0.0")
+    with patch("shanhai.ffmpeg.subprocess.run", side_effect=err), \
+         pytest.raises(RuntimeError, match="超时") as ei:
+        ffmpeg.sh(["ffmpeg", "-i", "x", "o.mp4"])
+    assert "1800" in str(ei.value)              # 带上预算,好区分"卡住"与"真慢"
+    assert "frame= 120" in str(ei.value)        # 带上卡住那一刻的进度行
+
+
+def test_sh_timeout_message_survives_missing_stderr():
+    """TimeoutExpired.stderr 在 POSIX 下有值,但不能假定——拼装要兜住 None。"""
+    err = subprocess.TimeoutExpired(["ffmpeg"], 5, stderr=None)
+    with patch("shanhai.ffmpeg.subprocess.run", side_effect=err), \
+         pytest.raises(RuntimeError, match="超时"):
+        ffmpeg.sh(["ffmpeg", "-i", "x", "o.mp4"])
+
+
+def test_probe_duration_ms_wraps_timeout():
+    err = subprocess.TimeoutExpired(["ffprobe"], 60, stderr="")
+    with patch("shanhai.ffmpeg.subprocess.run", side_effect=err), \
+         pytest.raises(RuntimeError, match="超时"):
+        ffmpeg.probe_duration_ms(Path("hang.mp3"))
+
+
+def test_sh_really_kills_the_child_on_timeout():
+    """不 mock 的端到端:sh 收的就是一条命令,用 sleep 能真跑通「超时 → 强杀 → 抛错」。
+
+    子进程真的被杀掉是这次修复的关键——否则超时只是 Python 侧不再等,机器上那个 ffmpeg
+    仍在烧 CPU。subprocess.run 在超时后会 kill() 再 communicate(),这条用例验证的就是它。"""
+    import time
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="超时"):
+        ffmpeg.sh(["sleep", "30"], timeout=1)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 10, f"没有在超时后立刻返回(耗时 {elapsed:.1f}s),子进程可能没被杀掉"
