@@ -189,16 +189,21 @@ export function ProjectDetailView({
   // 作业表,不看磁盘状态;run_step 更是全程不看),此前是前端把用户挡在了已经开着的门外。
   const generating = (project.pipeline === 'queued' || project.pipeline === 'running')
     && !project.stalled
-  // 别人的作品只能看不能改。判据必须与后端 _may_edit 严格一致:owner 为空的历史作品视为
-  // 无主、不做归属限制(否则界面把按钮藏了、后端其实允许);owner 非空且不是自己则只读,
-  // 管理员除外(admin 可操作任何人的作品,后端 _may_edit 同样放行)。
+  // 别人的作品只能看不能改。判据必须与后端 _may_edit 严格一致:不是自己的就只读,管理员除外
+  // (admin 可操作任何人的作品,后端 _may_edit 同样放行)。
+  // owner 为空的作品同样归入"改不了"——2026-08-06 与后端一起去掉了"无主则谁都能改"那条,
+  // 详见后端 _may_edit 的 docstring。前后端必须同时改,否则一侧藏按钮、另一侧仍放行。
   // ⚠️ 管理员旁路**只覆盖归属这一层**:下面 editable 里的 !readonly 与 !generating 对管理员
   // 照样生效,后端那两道也一样——它们是数据安全屏障,不是权限。前端与后端任一侧多放行一颗
   // 按钮,下场都是点了报 403/409,而不是真能改。
-  const owned = !project.owner || project.owner === user || isAdmin
+  const owned = project.owner === user || isAdmin
   const editable = !meta?.readonly && !generating && owned
   // 「这是别人的作品」——纯事实,与能不能改无关(管理员能改,但仍要被告知不是自己的)。
+  // owner 为空时不摆这条:横幅要渲染 owner 名,空串会显示成「 的作品」。改不了的理由由下面
+  // 那条无主提示单独给,否则按钮凭空消失、用户会以为功能坏了。
   const foreign = !!project.owner && project.owner !== user
+  // owner 为空的历史作品:现在只有管理员能改(见后端 _may_edit)。非管理员要有个说法。
+  const orphan = !project.owner
   const pendingCount = project.pages.filter(
     (p) => p.status === 'draft' || p.status === 'failed' || !p.audio,
   ).length
@@ -363,6 +368,14 @@ export function ProjectDetailView({
                   {' · '}
                   <span className="text-alarm">
                     {project.owner} 的作品{isAdmin ? ' · 管理员可编辑' : ',仅可查看'}
+                  </span>
+                </>
+              )}
+              {orphan && (
+                <>
+                  {' · '}
+                  <span className="text-alarm">
+                    无归属作品{isAdmin ? ' · 管理员可编辑' : ',仅管理员可编辑'}
                   </span>
                 </>
               )}

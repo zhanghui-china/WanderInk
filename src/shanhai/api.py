@@ -702,15 +702,23 @@ def patch_user(name: str, body: UserPatchBody, user: str = Depends(current_user)
 # ---------- 接口 ----------
 
 def _may_edit(p: Project, user: str) -> bool:
-    """项目级写操作的统一归属判据:自己的、无主的(历史项目 owner 为空)、或管理员。
+    """项目级写操作的统一归属判据:自己的、或管理员。
 
     此前这条规则在 _editable/cancel_project/export_project 里各抄了一遍,已经翻过一次车
     (cancel 少写了 `p.owner and`,见 cancel_project 内注释),故收敛到这里,三处共用。
 
+    ⚠️ **曾经还有第三条「owner 为空视为无主、谁都能改」**,2026-08-06 去掉了。那条是归属机制
+    落地时为存量数据留的口子——当时线上确有 owner 为空的历史作品,一刀收紧会把它们变成谁都
+    改不了的孤儿。后来实测发现口子的实际效果是:任何普通用户都能编辑那些作品,与「只能改自己
+    的」这个承诺相抵触。已把线上仅剩的 2 个无主作品归到 admin 名下(owner 字段直接改),无主
+    数据清零,这条分支再无存量要照顾,故删除。
+    删掉它意味着 owner 为空的作品**只有管理员能改**——若以后又冒出无主数据(例如做用户硬删除
+    时没有转移作品),表现是普通用户一律 403,而不是悄悄放行。这是刻意选的方向。
+
     **管理员旁路只覆盖「归属」这一层**:_READONLY(部署模式,不是权限)与「有未完成作业→409」
     (并发写会丢更新,与身份无关)对管理员同样生效——那两道是数据安全屏障,别往这里搬。
     is_admin 要读 users.json,故放在最后短路:常规路径(改自己的项目)不产生文件 IO。"""
-    return not p.owner or p.owner == user or is_admin(user)
+    return p.owner == user or is_admin(user)
 
 
 def _editable(project_id: str, user: str) -> Project:
