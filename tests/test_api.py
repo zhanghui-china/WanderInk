@@ -403,6 +403,58 @@ def test_reconcile_zombie_jobs(tmp_path):
     assert store.load(done.project_id, root=tmp_path).status["pipeline"] == "done"  # 非僵尸不动
 
 
+def test_reconcile_survives_unreadable_project(tmp_path, capsys):
+    """一个读不出来的 project.json 不能阻断对账,而且必须被点名——它会永远卡在生成中,
+    运维得知道是哪个(用户可以在界面上手动重置它)。"""
+    zombie = store.create_project("僵尸", root=tmp_path)
+    zombie.status["pipeline"] = "running"
+    store.save(zombie, root=tmp_path)
+    (tmp_path / "brokenpid").mkdir()
+    (tmp_path / "brokenpid" / "project.json").write_text("{not valid json", encoding="utf-8")
+
+    assert api.reconcile_zombie_jobs(tmp_path) == 1        # 坏文件不影响好项目被修
+    out = capsys.readouterr().out
+    assert "brokenpid" in out and "跳过" in out            # 不再静默
+
+
+def test_reconcile_survives_schema_drift(tmp_path, capsys):
+    """合法 JSON 但非法 Literal 值:这类项目 store.load 永久失败(见 docs/decisions/0003),
+    同样只跳过、不阻断。"""
+    (tmp_path / "driftpid").mkdir()
+    (tmp_path / "driftpid" / "project.json").write_text(
+        json.dumps({"project_id": "driftpid", "scenic_spot": "雷峰塔",
+                    "status": {"pipeline": "running"},
+                    "params": {"audience": "外星人"}}),   # 不在 Literal 枚举里
+        encoding="utf-8")
+    assert api.reconcile_zombie_jobs(tmp_path) == 0
+    assert "driftpid" in capsys.readouterr().out
+
+
+def test_reconcile_survives_save_failure(tmp_path, capsys):
+    """**这条是修复的核心**:此前 store.save 在 try 之外,一个不可写的项目目录就会让异常
+    冒出 main()、端口根本不绑;而 systemd Restart=always 没覆盖 StartLimit*,重启几次后
+    进 failed 态——一个坏目录 = 全站永久下线。"""
+    z = store.create_project("僵尸", root=tmp_path)
+    z.status["pipeline"] = "running"
+    store.save(z, root=tmp_path)
+
+    with patch("shanhai.api.store.save", side_effect=OSError("No space left on device")):
+        n = api.reconcile_zombie_jobs(tmp_path)           # 不抛,不冒到 main()
+    assert n == 0                                          # 没修成就不算数
+    out = capsys.readouterr().out
+    assert z.project_id in out and "写回失败" in out
+
+
+def test_reconcile_root_is_late_bound(tmp_path, monkeypatch):
+    """签名从 root=store.DEFAULT_ROOT 改成 None:早绑定会让 monkeypatch DEFAULT_ROOT 失效,
+    而 store.py 的注释记着早绑定曾导致测试往真实 projects/ 里写脏数据。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    z = store.create_project("僵尸", root=tmp_path)
+    z.status["pipeline"] = "running"
+    store.save(z, root=tmp_path)
+    assert api.reconcile_zombie_jobs() == 1                # 不传参也该扫到 tmp_path
+
+
 def test_list_projects_sorted_by_created_at_desc(tmp_path, monkeypatch):
     # 有 created_at 的项目按新到旧排序;混入无 created_at 的历史项目应排在最后。
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)

@@ -1576,27 +1576,51 @@ if _WEB_DIST.exists():
     app.mount("/", StaticFiles(directory=str(_WEB_DIST), html=True), name="web")
 
 
-def reconcile_zombie_jobs(root: Path = store.DEFAULT_ROOT) -> int:
+def reconcile_zombie_jobs(root: Path | None = None) -> int:
     """重启对账:_JOBS 是纯内存态,进程重启后必为空,故磁盘上任何 running/queued 都是
-    再无线程推进的僵尸,否则前端将永久轮询。把它们改写为 error 落盘,返回处理条数。
+    再无线程推进的僵尸,否则前端将永久轮询。把它们改写为 error 落盘,返回**修复条数**。
     仅在 main() 启动时调用一次(不挂模块级/startup 事件——否则 pytest import 或 TestClient
-    会扫写真实 projects/ 目录造成污染)。"""
+    会扫写真实 projects/ 目录造成污染)。
+
+    **单个项目出问题绝不能拖垮启动**。此前 store.save 在 try 之外,一个不可写的项目目录
+    (磁盘满/只读 FS/权限)就会让异常冒出 main()、端口根本不绑;而 systemd 是 Restart=always
+    且没覆盖 StartLimit*,按默认会重启几次后进 failed 态——不是热循环,是永久宕机,还得人去
+    reset-failed。故 load 与 save 各自独立 try,任何一个失败都只跳过它自己。
+
+    跳过的一律**点名打印**,不再静默:读不出来的项目(project.json 损坏,或非法值绕过
+    Literal 枚举写进去导致永久不可加载,见 docs/decisions/0003)会永远卡在 running,
+    运维得知道是哪几个——它们现在可以由作者在界面上手动「重置状态」。"""
+    root = root or store.DEFAULT_ROOT   # late-bind:早绑定会让 monkeypatch DEFAULT_ROOT 失效
     n = 0
+    skipped: list[str] = []
     for meta in sorted(root.glob("*/project.json")):
+        pid = meta.parent.name
         try:
-            p = store.load(meta.parent.name, root=root)
-        except Exception:  # noqa: BLE001 — 跳过损坏/半写项目,不阻断对账
+            p = store.load(pid, root=root)
+        except Exception as e:  # noqa: BLE001 — 损坏/半写/schema 漂移都在此,不阻断对账
+            skipped.append(pid)
+            print(f"[reconcile] 跳过 {pid}(读取失败,该项目若停在生成中将无法自动对账):{e}")
             continue
         if p.status.get("pipeline") in ("running", "queued"):
             p.status["pipeline"] = "error: 服务重启,生成中断"
-            store.save(p, root=root)
+            p.status["pipeline_finished_at"] = _now_iso()
+            try:
+                store.save(p, root=root)
+            except Exception as e:  # noqa: BLE001 — 写不进去也只跳过它自己,绝不拖垮启动
+                skipped.append(pid)
+                print(f"[reconcile] 跳过 {pid}(写回失败,它会继续显示生成中):{e}")
+                continue
             n += 1
+    if skipped:
+        print(f"[reconcile] 共 {len(skipped)} 个项目未能对账:{', '.join(skipped)}")
     return n
 
 
 def main() -> None:
     import uvicorn
-    reconcile_zombie_jobs()  # uvicorn.run 之前对账一次,清理上次崩溃/重启残留的僵尸作业
+    # uvicorn.run 之前对账一次,清理上次崩溃/重启残留的僵尸作业。结果要打出来:
+    # 这是运维在 journalctl 里唯一能看到"这次重启打断了几个作业"的地方。
+    print(f"[reconcile] 已把 {reconcile_zombie_jobs()} 个残留作业标记为中断")
     host = os.getenv("SHANHAI_HOST", "127.0.0.1")  # 内网部署(如 DGX)设 0.0.0.0
     port = int(os.getenv("SHANHAI_PORT", "8080"))
     uvicorn.run("shanhai.api:app", host=host, port=port, reload=False)
