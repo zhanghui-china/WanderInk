@@ -296,3 +296,50 @@ def test_uploaded_long_audio_is_hard_truncated():
         p = Path(td) / "o.wav"
         p.write_bytes(wav)
         assert abs(ffmpeg.probe_duration_ms(p) - 20_000) < 300
+
+
+# ---------- BGM 上传净化 ----------
+
+def _probe_audio(data: bytes, suffix: str) -> str:
+    import subprocess, tempfile
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / f"o{suffix}"
+        p.write_bytes(data)
+        return subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+             "stream=sample_rate,channels,codec_name", "-of", "csv=p=0", str(p)],
+            check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_bgm_transcodes_to_44k_stereo_mp3_not_voice_sample_wav():
+    """**防止有人图省事复用 voice_sample_cmd。** 那条路输出 16k 单声道 pcm(喂 TTS 做声纹
+    提取的规格),拿来处理音乐等于毁掉它;而混音链依赖"所有音频分支统一 44.1k 立体声"。"""
+    mp3 = uploads.to_bgm_mp3(_webm_bytes(25.0), "audio/webm")
+    assert mp3[:3] == b"ID3" or mp3[:1] == b"\xff"       # mp3 而不是 RIFF/wav
+    codec, rate, ch = _probe_audio(mp3, ".mp3").split(",")
+    assert codec == "mp3" and rate == "44100" and ch == "2", (codec, rate, ch)
+
+
+def test_bgm_rejects_too_short():
+    """20 秒下限挡的是循环接缝:afade 只在整条流开头淡入一次,-stream_loop 的接缝是硬切,
+    10 秒的片段放进 5 分钟片子就是三十次硬切。"""
+    with pytest.raises(HTTPException) as ei:
+        uploads.to_bgm_mp3(_webm_bytes(8.0), "audio/webm")
+    assert ei.value.status_code == 400 and "太短" in ei.value.detail
+
+
+def test_bgm_rejects_non_audio():
+    with pytest.raises(HTTPException) as ei:
+        uploads.to_bgm_mp3(b"\x89PNG\r\n\x1a\n" + b"x" * 100, "image/png")
+    assert ei.value.status_code == 400
+
+
+def test_bgm_format_decided_by_content_not_content_type():
+    """魔数优先、不信客户端声明——与音色那条路同一套立场。"""
+    mp3 = uploads.to_bgm_mp3(_webm_bytes(25.0), "audio/wav")   # 声明撒谎,内容是 webm
+    assert _probe_audio(mp3, ".mp3").startswith("mp3,")
+
+
+def test_bgm_rel_path_is_salted():
+    a, b = uploads.bgm_rel_path(), uploads.bgm_rel_path()
+    assert a != b and a.startswith("bgm_") and a.endswith(".mp3")

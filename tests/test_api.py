@@ -2776,3 +2776,122 @@ def test_legacy_cookie_without_pwd_ver_still_works(tmp_path, monkeypatch):
     c = _real_client()
     assert c.post("/api/login", json={"username": "old", "password": "goodpassword"}).status_code == 200
     assert c.get("/api/me").status_code == 200
+
+
+# ---------- 用户 BGM 库 ----------
+
+def _seed_bgm(tmp_path, monkeypatch, owner="alice", item_id="b1"):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    (tmp_path / store.BGM_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (tmp_path / store.BGM_DIRNAME / f"{item_id}.mp3").write_bytes(b"ID3fake")
+    item = {"id": item_id, "owner": owner, "name": "存好的", "source": "upload",
+            "file": f"{item_id}.mp3", "duration_ms": 30000}
+    store.update_bgm_items(lambda items: items.append(item))
+    return item
+
+
+def test_bgm_list_is_per_user(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="alice", item_id="a1")
+    _seed_bgm(tmp_path, monkeypatch, owner="someone-else", item_id="o1")
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    # _login_override 恒为 testuser,所以两条都不是他的
+    assert client.get("/api/bgm").json() == []
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    assert [r["id"] for r in client.get("/api/bgm").json()] == ["t1"]
+
+
+def test_bgm_list_admin_sees_all(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="alice", item_id="a1")
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    assert [r["id"] for r in client.get("/api/bgm").json()] == ["a1"]
+
+
+def test_bgm_row_never_leaks_the_salted_filename(tmp_path, monkeypatch):
+    """file 是盘上的随机盐文件名,没有任何理由让客户端看到——它是"靠不可推导保密"的一环。"""
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    row = client.get("/api/bgm").json()[0]
+    assert set(row) == {"id", "name", "source", "owner", "duration_ms"}
+
+
+def test_bgm_audio_rejects_other_owner(tmp_path, monkeypatch):
+    """404 而不是 403:不区分"不存在"与"不是你的",不给探测面。"""
+    _seed_bgm(tmp_path, monkeypatch, owner="someone-else", item_id="o1")
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    assert client.get("/api/bgm/o1/audio").status_code == 404
+
+
+def test_bgm_audio_streams_for_owner(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    r = client.get("/api/bgm/t1/audio")
+    assert r.status_code == 200 and r.content == b"ID3fake"
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_bgm_delete_removes_entry_and_file(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    assert client.delete("/api/bgm/t1").status_code == 200
+    assert store.load_bgm_items() == []
+    assert not (tmp_path / store.BGM_DIRNAME / "t1.mp3").exists()
+
+
+def test_bgm_delete_rejects_other_owner(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="someone-else", item_id="o1")
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    assert client.delete("/api/bgm/o1").status_code == 404
+    assert len(store.load_bgm_items()) == 1               # 没被删掉
+
+
+def test_patch_project_bgm_sets_ref_and_implies_switch(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.params.bgm = False
+    store.save(p, root=tmp_path)
+    r = client.patch(f"/api/projects/{p.project_id}/params/bgm", json={"bgm_ref": "t1"})
+    assert r.status_code == 200
+    saved = store.load(p.project_id, root=tmp_path)
+    assert saved.params.bgm_ref == "t1"
+    assert saved.params.bgm is True            # 选了具体某首就隐含"要配乐"
+
+
+def test_patch_project_bgm_rejects_other_owners_item(tmp_path, monkeypatch):
+    """归属校验在端点做(这里知道是谁在操作),不在 S5 里做。"""
+    _seed_bgm(tmp_path, monkeypatch, owner="someone-else", item_id="o1")
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    store.save(p, root=tmp_path)
+    assert client.patch(f"/api/projects/{p.project_id}/params/bgm",
+                        json={"bgm_ref": "o1"}).status_code == 404
+
+
+def test_patch_project_bgm_empty_ref_returns_to_ai(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.params.bgm_ref = "t1"
+    store.save(p, root=tmp_path)
+    assert client.patch(f"/api/projects/{p.project_id}/params/bgm",
+                        json={"bgm_ref": ""}).status_code == 200
+    assert store.load(p.project_id, root=tmp_path).params.bgm_ref == ""
+
+
+def test_bgm_write_endpoints_blocked_in_readonly(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    monkeypatch.setattr(api, "_READONLY", True)
+    assert client.delete("/api/bgm/t1").status_code == 403
+    assert client.get("/api/bgm").status_code == 200       # 只读不挡读
+
+
+def test_files_hides_whole_bgm_namespace(tmp_path, monkeypatch):
+    """与 _voice_samples 同一道闸:库按用户隔离,不该经一个只认"登录了没"的静态挂载漏出去
+    ——否则任何登录用户读一次 _bgm/index.json 就能顺着文件名把别人的库整个下走。"""
+    import shutil as _sh
+    c = _cookie_client(tmp_path, monkeypatch)
+    d = store.DEFAULT_ROOT / store.BGM_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "index.json").write_text('{"items": []}', encoding="utf-8")
+    (d / "bgm_x.mp3").write_bytes(b"ID3fake")
+    try:
+        base = f"/files/{store.BGM_DIRNAME}"
+        assert c.get(f"{base}/index.json").status_code == 404
+        assert c.get(f"{base}/bgm_x.mp3").status_code == 404
+    finally:
+        _sh.rmtree(d, ignore_errors=True)

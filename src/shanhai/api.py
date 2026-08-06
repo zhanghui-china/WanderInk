@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -1234,6 +1234,137 @@ def get_project_voice_sample(project_id: str, user: str = Depends(current_user))
     return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
+# ---------- 用户 BGM 库 ----------
+# 与音色样本同构:共享目录、随机盐文件名、整个前缀从 /files 摘除、试听走带归属校验的端点。
+# 差别是这里的索引存**结构化条目**而不是一张扁平映射表——库要按用户过滤、要列出来给人挑。
+
+def _bgm_visible(item: dict, user: str) -> bool:
+    """库按用户隔离;管理员可见全部(与 _may_edit 同一套归属模型)。"""
+    return item.get("owner") == user or is_admin(user)
+
+
+def _bgm_row(item: dict) -> dict:
+    """吐给前端的行。逐字段挑选,不把索引条目整个 model_dump 出去——
+    file 是盘上的随机盐文件名,没有任何理由让客户端看到。"""
+    return {"id": item.get("id", ""), "name": item.get("name", ""),
+            "source": item.get("source", ""), "owner": item.get("owner", ""),
+            "duration_ms": int(item.get("duration_ms", 0))}
+
+
+def _new_bgm_item(owner: str, name: str, source: str, filename: str, duration_ms: int) -> dict:
+    return {"id": secrets.token_urlsafe(8), "owner": owner, "name": name[:60] or "未命名",
+            "source": source, "file": filename, "duration_ms": duration_ms,
+            "created_at": _now_iso()}
+
+
+@app.get("/api/bgm")
+def list_bgm(user: str = Depends(current_user)) -> list[dict]:
+    return [_bgm_row(it) for it in store.load_bgm_items() if _bgm_visible(it, user)]
+
+
+@app.post("/api/bgm")
+async def upload_bgm(file: UploadFile = File(...), name: str = Form(default=""),
+                     user: str = Depends(current_user)) -> dict:
+    """上传自备音频存进自己的库。净化走 uploads.to_bgm_mp3——魔数优先的格式判定、
+    白名单双层校验、一律经 ffmpeg 重编码,与音色那条路同一套安全基线;但输出是
+    44.1k 立体声 mp3 而不是 16k 单声道(那是喂 TTS 的规格,拿来处理音乐等于毁掉它)。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止上传")
+    raw = await uploads.read_limited_audio(file)
+    mp3 = uploads.to_bgm_mp3(raw, file.content_type or "")
+    rel = uploads.bgm_rel_path()
+    out = store.bgm_dir() / rel
+    uploads.atomic_write(out, mp3)
+    item = _new_bgm_item(user, name or Path(file.filename or "").stem, "upload", rel,
+                         ffmpeg.probe_duration_ms(out))
+    store.update_bgm_items(lambda items: items.append(item))
+    return _bgm_row(item)
+
+
+class BgmSaveBody(BaseModel):
+    name: str = Field(default="", max_length=60)
+
+
+@app.post("/api/projects/{project_id}/bgm/save")
+def save_project_bgm(project_id: str, body: BgmSaveBody,
+                     user: str = Depends(current_user)) -> dict:
+    """把该作品当前的配乐存进自己的库。存的是**拷贝**,之后重跑/换配乐都不影响库里这一份。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止保存配乐")
+    try:
+        p = store.load(project_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(404, f"项目不存在: {project_id}") from e
+    if not _may_edit(p, user):
+        raise HTTPException(403, "只能保存自己项目的配乐")
+    src = Path(p.bgm) if p.bgm else None
+    if src is None or not src.is_file():
+        raise HTTPException(404, "该作品当前没有配乐可保存")
+    rel = uploads.bgm_rel_path()
+    out = store.bgm_dir() / rel
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, out)
+    item = _new_bgm_item(user, body.name or p.scenic_spot, "ai", rel,
+                         ffmpeg.probe_duration_ms(out))
+    store.update_bgm_items(lambda items: items.append(item))
+    return _bgm_row(item)
+
+
+@app.get("/api/bgm/{item_id}/audio")
+def get_bgm_audio(item_id: str, user: str = Depends(current_user)) -> FileResponse:
+    """试听。/files 下 _bgm/ 整个命名空间已摘除,这里是拿到音频的唯一入口——
+    否则任何登录用户读一次 _bgm/index.json 就能顺着文件名把别人的库整个下走。"""
+    item = store.bgm_item(item_id)
+    if item is None or not _bgm_visible(item, user):
+        raise HTTPException(404, "配乐不存在")   # 不区分"不存在"与"不是你的",不给探测面
+    path = store.bgm_dir() / item["file"]
+    if not path.is_file():
+        raise HTTPException(404, "配乐文件已丢失")
+    return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.delete("/api/bgm/{item_id}")
+def delete_bgm(item_id: str, user: str = Depends(current_user)) -> dict:
+    """删库条目。**已经用它生成过的作品不受影响**——S5 那步把文件拷进了作品目录。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止删除")
+    item = store.bgm_item(item_id)
+    if item is None or not _bgm_visible(item, user):
+        raise HTTPException(404, "配乐不存在")
+    store.update_bgm_items(
+        lambda items: items.__setitem__(slice(None),
+                                        [it for it in items if it.get("id") != item_id]))
+    (store.bgm_dir() / item["file"]).unlink(missing_ok=True)
+    return {"deleted": True}
+
+
+class BgmParams(BaseModel):
+    # 空串 = 回到 AI 生成(与建作品时不选的行为一致)
+    bgm_ref: str = Field(default="", max_length=64)
+
+
+@app.patch("/api/projects/{project_id}/params/bgm")
+def update_project_bgm(project_id: str, body: BgmParams,
+                       user: str = Depends(current_user)) -> dict:
+    """换作品的配乐。形制照 update_project_voice——只放一个字段,不做通用 params 编辑。
+
+    **归属校验在这里做,不在 S5 里做**:授权只有在"知道是谁在操作"的地方才判得准,
+    管线里再判一次会让"管理员替别人选自己库里的曲子"这种合法操作静默失效。
+
+    换配乐**不清任何页的音轨**(与换音色相反):BGM 与逐页配音无关,只有 S6 合成会读它。
+    所以改完重跑 s6 即可,不必重烧一遍 TTS。"""
+    with _project_lock(project_id):
+        p = _editable(project_id, user)
+        if body.bgm_ref:
+            item = store.bgm_item(body.bgm_ref)
+            if item is None or not _bgm_visible(item, user):
+                raise HTTPException(404, "配乐不存在")
+            p.params.bgm = True          # 选了具体某首就隐含"要配乐"
+        p.params.bgm_ref = body.bgm_ref
+        store.save(p)
+    return _serialize(p)
+
+
 class VoiceParams(BaseModel):
     voice: str = Field(default="", max_length=200)
 
@@ -1630,7 +1761,10 @@ def write_config(body: AppConfig, user: str = Depends(current_user)) -> dict:
 
 
 # 音色样本目录在挂载根下,但整个命名空间不经 /files 对外:见 _ArtifactStatic 说明。
-_VOICE_SAMPLE_PREFIX = store.VOICE_SAMPLE_DIRNAME + "/"
+# 保留命名空间:这两个共享目录都在 projects/ 下,但都**不经 /files 对外**。
+# _voice_samples 是真人录音;_bgm 是按用户隔离的素材库——都不该走一个只认"登录了没"
+# 的静态挂载,各自有带归属校验的端点。
+_RESERVED_PREFIXES = (store.VOICE_SAMPLE_DIRNAME + "/", store.BGM_DIRNAME + "/")
 
 
 class _ArtifactStatic(StaticFiles):
@@ -1662,7 +1796,7 @@ class _ArtifactStatic(StaticFiles):
     async def get_response(self, path: str, scope):  # noqa: ANN001 — 与父类签名一致
         if not (scope.get("session") or {}).get("user"):
             raise HTTPException(404)
-        if path.lower().startswith(_VOICE_SAMPLE_PREFIX):
+        if path.lower().startswith(_RESERVED_PREFIXES):
             raise HTTPException(404)
         protected = {"project.json", runtime_config._config_path().name.lower()}
         if Path(path).name.lower() in protected:

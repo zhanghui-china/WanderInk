@@ -86,6 +86,24 @@ def voice_sample_cmd(src: Path, out: Path, in_fmt: str,
             "-ar", str(VOICE_SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le", str(out)]
 
 
+# 用户上传的 BGM 上限。比录音的 20 秒宽得多——BGM 是要垫满整片的素材,但也不能无上限:
+# 混音时它会被 -stream_loop 循环,存一首 10 分钟的曲子除了占盘没有任何额外收益。
+BGM_MAX_S = 300
+
+
+def bgm_upload_cmd(src: Path, out: Path, in_fmt: str, max_s: float = BGM_MAX_S) -> list[str]:
+    """把上传的音频转成规范的 BGM mp3。与 voice_sample_cmd 同一套安全立场——
+    `-f {in_fmt}` 显式指定 demuxer 而不是让 ffmpeg 自动探测,重编码本身即净化
+    (干掉伪装成音频的 polyglot 字节与容器元数据)。
+
+    但**参数刻意与 voice_sample_cmd 不同**:那边是 16k 单声道 pcm(喂 TTS 做声纹提取),
+    拿来处理音乐等于毁掉它。这里必须落在 AUDIO_RATE/AUDIO_CH(44.1k 立体声)——
+    本文件顶部那条"所有音频分支统一 44.1kHz/立体声"的约束正是为混音链定的,
+    finalize_cmd 的 amix 依赖它。"""
+    return ["ffmpeg", "-y", "-f", in_fmt, "-i", str(src), "-t", f"{max_s:g}",
+            *_AR_AC, "-c:a", "libmp3lame", "-b:a", "192k", str(out)]
+
+
 def probe_duration_ms(path: Path) -> int:
     """读时长。超时同样包成 RuntimeError(与 sh 一致):唯一在 try 外调它的地方是
     uploads,那里不包装就会把整条 ffprobe 命令行漏进 500 响应;s5_audio 的调用点是
@@ -132,8 +150,14 @@ def measure_lufs(path: Path) -> float:
 
 def bgm_gain_db(bgm_lufs: float) -> float:
     """把实测响度换算成要施加的增益,使配乐恒定落在"比人声低 BGM_BELOW_VOICE_DB"。
-    例:实测 -9.4 → -24.6 dB;实测 -21.4 → -12.6 dB。目标恒为 -34 LUFS。"""
-    return VOICE_TARGET_LUFS - BGM_BELOW_VOICE_DB - bgm_lufs
+    例:实测 -9.4 → -24.6 dB;实测 -21.4 → -12.6 dB。目标恒为 -34 LUFS。
+
+    **上限钳到 0:配乐永远不放大。** 这条不是多余的保险——公式本身没有上界,一段很轻的
+    素材(环境录音,或前面大段静音把 integrated 值拉低的曲子,实测能到 -50 LUFS)会算出
+    +16 dB 的放大,把底噪连同音乐一起抬起来。AI 路径碰不到这个口子(ACE-Step 输出实测恒在
+    -21 LUFS 以上),**是"用户自己保存 BGM"这个功能第一次打开它**。
+    需要放大才够响的素材,本来就不适合垫在人声底下。"""
+    return min(VOICE_TARGET_LUFS - BGM_BELOW_VOICE_DB - bgm_lufs, 0.0)
 
 
 def clip_duration_s(duration_ms: int, has_audio: bool) -> float:

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, voiceSampleTarget, type VoiceSample } from '../api'
 import { useUpload } from '../useUpload'
 import { CardHead } from './decor'
@@ -6,7 +6,7 @@ import { ScenicSpotPicker } from './ScenicSpotPicker'
 import { UploadDialog } from './UploadDialog'
 import { VoiceRecorder } from './VoiceRecorder'
 import { STYLE_LABEL } from '../styles'
-import type { Meta } from '../types'
+import type { BgmItem, Meta } from '../types'
 
 const CUSTOM_VOICE = '__custom__'   // 下拉框里的哨兵值,不会与任何真实音色 key 相撞
 
@@ -33,11 +33,21 @@ export function NewProjectForm({
   const [speed, setSpeed] = useState(1.0)
   const [multiPanel, setMultiPanel] = useState(false)
   const [bgm, setBgm] = useState(true)
+  // 已保存的 BGM 库。与音色不同,这里是**服务端持久化**的列表——音色那边用户录的
+  // 那份只活在组件本地 state 里、刷新即失,而配乐的需求本身就是「下次还能选到」。
+  const [bgmItems, setBgmItems] = useState<BgmItem[]>([])
+  const [bgmRef, setBgmRef] = useState('')
   const [burnSubtitles, setBurnSubtitles] = useState(true)
   const [masterSkill, setMasterSkill] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const ro = !!meta?.readonly   // 公开演示只读:禁用生成
+
+  // 拉库列表。失败静默:配乐是增强功能,拉不到就只剩「AI 生成」一项,
+  // 不该因此拦住建作品或弹一个用户无从处理的错误。
+  useEffect(() => {
+    api.listBgm().then(setBgmItems).catch(() => setBgmItems([]))
+  }, [])
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -55,6 +65,7 @@ export function NewProjectForm({
         speed,
         multi_panel: multiPanel,
         bgm,
+        bgm_ref: bgmRef,
         burn_subtitles: burnSubtitles,
         master_skill: masterSkill,
       })
@@ -208,17 +219,44 @@ export function NewProjectForm({
         </label>
       </div>
 
-      <div className="flex items-center gap-2">
-        <input
-          id="bgm"
-          type="checkbox"
-          checked={bgm}
-          onChange={(e) => setBgm(e.target.checked)}
-          className="h-4 w-4 rounded border-line accent-cinnabar"
-        />
-        <label htmlFor="bgm" className="text-xs text-ink-soft">
-          生成背景音乐(与配音并行,不额外拉长总时间)
-        </label>
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <input
+            id="bgm"
+            type="checkbox"
+            checked={bgm}
+            onChange={(e) => {
+              setBgm(e.target.checked)
+              if (!e.target.checked) setBgmRef('')   // 不要配乐时把选中的曲子一并清掉
+            }}
+            className="h-4 w-4 rounded border-line accent-cinnabar"
+          />
+          <label htmlFor="bgm" className="text-xs text-ink-soft">
+            生成背景音乐(与配音并行,不额外拉长总时间)
+          </label>
+        </div>
+        {bgm && bgmItems.length > 0 && (
+          <div>
+            <label className={label}>配乐来源</label>
+            <select
+              className={field}
+              value={bgmRef}
+              onChange={(e) => setBgmRef(e.target.value)}
+              disabled={ro}
+            >
+              <option value="">AI 生成(每次都不一样)</option>
+              {bgmItems.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}({Math.round(b.duration_ms / 1000)}s)
+                </option>
+              ))}
+            </select>
+            {/* 选已保存的不只是省等待:AI 生成一首最长 180 秒,还与生图抢同一块 GPU */}
+            {bgmRef && (
+              <p className="mt-1 text-[11px] text-muted">用已保存的配乐,跳过 AI 生成这一步</p>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2">

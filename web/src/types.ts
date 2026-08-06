@@ -95,6 +95,8 @@ export interface ProjectDetail {
     tone: string
     voice?: string
     multi_panel?: boolean
+    // 选定的已保存 BGM 条目 id;空/缺失 = AI 生成。老作品的 project.json 没这个键。
+    bgm_ref?: string
   }
   status: Record<string, string>
   pipeline: string
@@ -149,6 +151,8 @@ export interface NewProjectInput {
   speed?: number
   multi_panel?: boolean
   bgm?: boolean
+  // 选定的已保存 BGM 条目 id;空 = AI 生成(现有行为)
+  bgm_ref?: string
   burn_subtitles?: boolean
   use_hermes_agent?: boolean
   master_skill?: boolean
@@ -208,6 +212,16 @@ export interface ConfigDefaults {
   music_base_url: string | null
   music_api_key: boolean
   music_model: string
+}
+
+// 用户保存的 BGM 库条目。source: 'ai' = 从作品里存下来的,'upload' = 自备音频。
+// 后端逐字段挑选后返回,不含盘上的随机盐文件名。
+export interface BgmItem {
+  id: string
+  name: string
+  source: string
+  owner: string
+  duration_ms: number
 }
 
 // 账号(users.json)。⚠️ 别与 AppConfigView.users 混淆——那个是「按用户的模型端点覆盖」,

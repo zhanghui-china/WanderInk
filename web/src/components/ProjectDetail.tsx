@@ -1,9 +1,15 @@
-import { Fragment, useEffect, useState } from 'react'
-import { api, characterReferenceTarget, voiceSampleTarget, type VoiceSample } from '../api'
+import { Fragment, useCallback, useEffect, useState } from 'react'
+import {
+  api,
+  bgmUploadTarget,
+  characterReferenceTarget,
+  voiceSampleTarget,
+  type VoiceSample,
+} from '../api'
 import { STYLE_LABEL } from '../styles'
 import { useUpload } from '../useUpload'
-import type { Meta, ProjectDetail as Detail, Character, Page } from '../types'
-import { CardHead, Seal, mountFrame } from './decor'
+import type { BgmItem, Meta, ProjectDetail as Detail, Character, Page } from '../types'
+import { CardHead, CardHeadInline, Seal, mountFrame } from './decor'
 import { CharacterRedrawDialog } from './CharacterRedrawDialog'
 import { ImageLightbox } from './ImageLightbox'
 import { ImagePicker } from './ImagePicker'
@@ -162,6 +168,7 @@ export function ProjectDetailView({
   const [voiceBusy, setVoiceBusy] = useState(false)
   const voiceUpload = useUpload<VoiceSample>()
   const [resetting, setResetting] = useState(false)
+  const [bgmOpen, setBgmOpen] = useState(false)
 
   // 失联作业的唯一出口。后端只在真的失联时放行:有活作业 409(该用取消)、已是终态 400。
   async function doReset() {
@@ -392,6 +399,11 @@ export function ProjectDetailView({
           {!meta?.readonly && owned && (
             <button type="button" onClick={() => setVoiceOpen(true)} className={ghostBtn}>
               换音色
+            </button>
+          )}
+          {!meta?.readonly && owned && (
+            <button type="button" onClick={() => setBgmOpen(true)} className={ghostBtn}>
+              配乐
             </button>
           )}
           <button type="button" onClick={copyLink} className={ghostBtn}>
@@ -758,6 +770,14 @@ export function ProjectDetailView({
           </div>
         </div>
       )}
+      {bgmOpen && (
+        <BgmDialog
+          project={project}
+          onClose={() => setBgmOpen(false)}
+          onChanged={onChanged}
+        />
+      )}
+
       {voiceOpen && (
         <UploadDialog
           title="更换配音音色"
@@ -1801,6 +1821,183 @@ function PageCard({
       )}
       {lightboxOpen && pg.image && (
         <ImageLightbox src={pg.image} alt={`第 ${pg.index} 页`} onClose={() => setLightboxOpen(false)} />
+      )}
+    </div>
+  )
+}
+
+// ---------- 配乐 ----------
+// 一个弹窗管三件事:选库里的曲子、试听、把本作品当前的配乐存进库。上传自备音频复用
+// UploadDialog 那条路,不在这里重造。
+// ⚠️ 试听走 /api/bgm/{id}/audio 而不是拼 /files:_bgm/ 整个命名空间已从静态挂载摘除
+// (否则任何登录用户读一次 index.json 就能顺着文件名把别人的库整个下走)。
+function BgmDialog({
+  project,
+  onClose,
+  onChanged,
+}: {
+  project: Detail
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const [items, setItems] = useState<BgmItem[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [picked, setPicked] = useState<{ blob: Blob; filename: string } | null>(null)
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const bgmUpload = useUpload<BgmItem>()
+
+  const current = project.params.bgm_ref ?? ''
+  const hasBgm = (project.status['bgm'] ?? '') !== 'skipped' && !!project.status['bgm']
+
+  const refresh = useCallback(() => {
+    api.listBgm().then(setItems).catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+  }, [])
+  useEffect(refresh, [refresh])
+
+  async function run(fn: () => Promise<unknown>, ok: string) {
+    setBusy(true)
+    setErr(null)
+    setNotice(null)
+    try {
+      await fn()
+      setNotice(ok)
+      refresh()
+      onChanged()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const row = 'flex flex-wrap items-center gap-2 rounded-lg border border-line px-3 py-2'
+  const smallBtn =
+    'rounded-md border border-line bg-white/50 px-2 py-1 text-[11px] text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4" onClick={onClose}>
+      <div
+        className="max-h-[85vh] w-full max-w-lg space-y-4 overflow-y-auto rounded-2xl border border-band bg-paper p-5 shadow-paper-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <CardHeadInline glyph="乐" title="配乐" />
+          <button type="button" onClick={onClose} aria-label="关闭"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-ink-soft transition hover:text-cinnabar">
+            ×
+          </button>
+        </div>
+
+        <p className="text-[11px] leading-relaxed text-muted">
+          换配乐后<b>只需重跑「合成」这一步</b>,不用重新配音。配乐会自动循环到成片长度,
+          所以不必存满长的曲子;音量也会自动压到解说之下。
+        </p>
+
+        {hasBgm && (
+          <button type="button" disabled={busy} className={smallBtn}
+            onClick={() => {
+              const name = window.prompt('给这首配乐起个名字:', project.scenic_spot)
+              if (name === null) return
+              run(() => api.saveProjectBgm(project.project_id, name), '已存进你的配乐库')
+            }}>
+            把本片当前的配乐存进我的库
+          </button>
+        )}
+
+        <div className="space-y-2">
+          <div className={row}>
+            <span className="text-sm text-ink">AI 生成</span>
+            <span className="text-[11px] text-muted">每次都不一样</span>
+            <span className="ml-auto">
+              {current === '' ? (
+                <span className="text-[11px] text-jade">当前</span>
+              ) : (
+                <button type="button" className={smallBtn} disabled={busy}
+                  onClick={() => run(() => api.updateProjectBgm(project.project_id, ''),
+                                     '已改为 AI 生成,重跑「合成」后生效')}>
+                  用这个
+                </button>
+              )}
+            </span>
+          </div>
+          {items.map((b) => (
+            <div key={b.id} className={row}>
+              <span className="truncate text-sm text-ink">{b.name}</span>
+              <span className="text-[11px] text-muted">
+                {b.source === 'ai' ? '来自作品' : '自备'} · {Math.round(b.duration_ms / 1000)}s
+              </span>
+              <span className="ml-auto flex items-center gap-1.5">
+                <audio src={`/api/bgm/${encodeURIComponent(b.id)}/audio`} controls className="h-8 w-40" />
+                {current === b.id ? (
+                  <span className="text-[11px] text-jade">当前</span>
+                ) : (
+                  <button type="button" className={smallBtn} disabled={busy}
+                    onClick={() => run(() => api.updateProjectBgm(project.project_id, b.id),
+                                       '已换配乐,重跑「合成」后生效')}>
+                    用这个
+                  </button>
+                )}
+                <button type="button" className={smallBtn} disabled={busy}
+                  onClick={() => {
+                    if (!window.confirm(
+                      `确定从库里删除「${b.name}」?已经用它生成过的作品不受影响` +
+                      `(那份已拷进作品目录)。此操作不可撤销。`)) return
+                    run(() => api.deleteBgm(b.id), '已删除')
+                  }}>
+                  删除
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <button type="button" className={smallBtn} disabled={busy}
+                onClick={() => setUploadOpen(true)}>
+          上传自备音频
+        </button>
+
+        {notice && <p className="rounded-md bg-jade/10 px-3 py-2 text-sm text-jade">{notice}</p>}
+        {err && <p className="rounded-md bg-alarm/8 px-3 py-2 text-sm text-alarm">{err}</p>}
+      </div>
+
+      {uploadOpen && (
+        <UploadDialog
+          title="上传配乐"
+          glyph="乐"
+          hint="wav / mp3 / m4a,至少 20 秒、不超过 8 MiB。请用纯器乐——带人声的曲子会和解说撞在一起"
+          picker={
+            <VoiceRecorder
+              onPicked={(b, f) => setPicked({ blob: b, filename: f })}
+              disabled={bgmUpload.phase === 'uploading' || bgmUpload.phase === 'processing'}
+            />
+          }
+          ready={!!picked}
+          phase={bgmUpload.phase}
+          progress={bgmUpload.progress}
+          indeterminate={bgmUpload.indeterminate}
+          error={bgmUpload.error}
+          confirmLabel="存进我的库"
+          phaseLabels={{ processing: '转码中…', done: '已存入' }}
+          onConfirm={() => {
+            if (!picked) return
+            const name = picked.filename.replace(/\.[^.]+$/, '')
+            void bgmUpload.start(bgmUploadTarget(name), picked.blob, picked.filename).then((r) => {
+              if (!r) return   // 失败信息已落在 bgmUpload.error 里,弹窗自己会显示
+              setUploadOpen(false)
+              setPicked(null)
+              bgmUpload.reset()
+              refresh()
+            })
+          }}
+          onCancel={() => {
+            bgmUpload.cancel()
+            bgmUpload.reset()
+            setUploadOpen(false)
+            setPicked(null)
+          }}
+        />
       )}
     </div>
   )

@@ -13,10 +13,18 @@ DEFAULT_ROOT = Path("projects")
 # 用户录制的音色样本目录。刻意**不**放进某个 project 目录:录音入口同时存在于「新建作品
 # 表单」(那一刻还没有 project_id、没有目录)和「作品详情页」,放用户级才能让两个入口共用
 # 同一个上传端点与同一份存储,只在上传完成后分叉成"建作品"或"改 params"。
-# 但它放在 projects/ **内部**——为的是复用现成的 /files 静态挂载,用户才能回听自己录的样本;
-# 下划线前缀 + 真实 project_id 恒为 uuid4 hex[:8],不会撞名。
+# 它放在 projects/ **内部**只是为了省一个顶层目录;下划线前缀 + 真实 project_id 恒为
+# uuid4 hex[:8],不会撞名。
+# (原注释说"为的是复用 /files 静态挂载让用户回听"——这条已不成立:2026-08-06 起整个
+#  _voice_samples/ 前缀被 _ArtifactStatic 拦掉了,回听只走带鉴权的 API 端点。)
 # 已知欠账:删作品不会连带清掉样本(20 秒 16k 单声道约 640KB,量级可忽略)。
 VOICE_SAMPLE_DIRNAME = "_voice_samples"
+
+# 用户保存的 BGM 库。与音色样本同构、同理由:选配乐的入口同样横跨「新建作品表单」
+# (还没有 project_id)与「作品详情页」,只能放用户级。
+# 与音色的差别是这里要存**结构化条目**(归属/名称/来源/时长),不是一张扁平映射表,
+# 因为库要按用户过滤、要在界面上列出来,而音色那份索引只回答"句柄对应哪个文件"。
+BGM_DIRNAME = "_bgm"
 
 
 # ⚠️ 以下几个函数的 root 一律写成 `None` 再在函数体里取 DEFAULT_ROOT,**不能**写成
@@ -67,6 +75,56 @@ def voice_sample_for(voice: str, root: Path | None = None) -> str | None:
     if not isinstance(name, str) or not name or name != Path(name).name:
         return None
     return name
+
+
+# ---------- 用户 BGM 库 ----------
+
+_BGM_INDEX_NAME = "index.json"
+_BGM_INDEX_LOCK = threading.Lock()
+
+
+def bgm_dir(root: Path | None = None) -> Path:
+    return (root or DEFAULT_ROOT) / BGM_DIRNAME
+
+
+def _bgm_index_path(root: Path | None = None) -> Path:
+    return bgm_dir(root) / _BGM_INDEX_NAME
+
+
+def load_bgm_items(root: Path | None = None) -> list[dict]:
+    """全部库条目。文件缺失/写坏一律当空库——BGM 是非关键增强,不该因为索引坏了就 500。"""
+    try:
+        data = json.loads(_bgm_index_path(root).read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return []
+    items = data.get("items") if isinstance(data, dict) else None
+    return [it for it in items if isinstance(it, dict)] if isinstance(items, list) else []
+
+
+def update_bgm_items(mutate, root: Path | None = None) -> None:
+    """锁内原子地 读→变换→写。所有写操作都走这里,不要各自读了再写——
+    那正是丢更新的来源(auth.py 踩过同一个坑,只因当时唯一写路径是人工 CLI 才没暴露)。
+    mutate 就地改传入的 list;它抛异常则不落盘。"""
+    with _BGM_INDEX_LOCK:
+        items = load_bgm_items(root)
+        mutate(items)
+        atomic_write_text(_bgm_index_path(root),
+                          json.dumps({"items": items}, ensure_ascii=False, indent=1))
+
+
+def bgm_item(item_id: str, root: Path | None = None) -> dict | None:
+    """按 id 取条目;顺带做文件名可信性校验。
+
+    只认 basename:索引里的 file 万一被写成 `../../x`,也不能让试听端点顺着它读出
+    BGM 目录之外的东西(与 voice_sample_for 同一道防线)。"""
+    for it in load_bgm_items(root):
+        if it.get("id") != item_id:
+            continue
+        name = it.get("file")
+        if not isinstance(name, str) or not name or name != Path(name).name:
+            return None
+        return it
+    return None
 
 # project_id 形状校验:仅允许字母数字下划线短横线,堵住路径遍历(../、/、空白等)。
 # 首字符另外排除下划线:那是共享目录的保留命名空间(VOICE_SAMPLE_DIRNAME = "_voice_samples"),
