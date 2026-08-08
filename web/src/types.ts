@@ -8,6 +8,10 @@ export interface Meta {
   voices?: string[]
   loras?: string[]
   track_langs?: string[]
+  // 每一步重跑会连带跑完的下游(后端 _INVALIDATES 的镜像,值是环节 key 如 ['s4','s5','s6'])。
+  // 「补全重生成」的弹窗据此拼文案,前端不另抄一份表。老后端没这个键 → 可选,
+  // 取不到时全部退回单出口确认框,即本功能上线前的行为。
+  step_cascade?: Record<string, string[]>
   readonly?: boolean
 }
 

@@ -65,6 +65,24 @@ def test_meta_includes_loras():
     assert set(j["loras"]) == {"Real_ani_qwen", "figurine_qwen", "bjd.7ARL"}
 
 
+def test_meta_exposes_step_cascade_table():
+    """「补全重生成」的弹窗要如实告诉用户点下去会跑哪几步,名单必须来自后端这张表。
+
+    ⚠️ 断言直接对着 _INVALIDATES 本身,而不是在这里抄一份期望值——抄一份就和"前端自己
+    硬编码一份"是同一个毛病:表改了测试照样绿,界面却在向用户描述一个不存在的行为。"""
+    j = client.get("/api/meta").json()
+    assert j["step_cascade"] == {k: list(v) for k, v in api._INVALIDATES.items()}
+
+
+def test_meta_step_cascade_covers_every_runnable_step():
+    """级联表的键集合必须与可单步重跑的步骤完全一致。
+
+    少了 → 前端 cascadeOf 取不到,那一步静默退回单出口确认框(功能悄悄没了);
+    多了 → 弹窗会列出一个 run_step 根本不接受的步骤,点下去 400。"""
+    j = client.get("/api/meta").json()
+    assert set(j["step_cascade"]) == set(api._STEP_NAMES)
+
+
 def test_meta_voices_follow_s5_override(_isolated_config_path):
     """meta 音色列表须跟随 S5 实际生效的 TTS 后端(resolve_settings("s5")),而非仅全局层——
     否则用户把 s5 覆盖成别的 TTS 端点后,表单仍列全局音色、选中即令 S5 请求全失败降级静音。"""

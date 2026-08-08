@@ -1729,6 +1729,10 @@ def meta(user: str = Depends(current_user)) -> dict:
         "loras": list(LORA_PRESETS),
         # 可产出的附加语种轨,如 ["en"];前端据此渲染"生成英文版"这类入口,不硬编码语种
         "track_langs": list(TRACK_LANGS),
+        # 每一步重跑会连带作废、cascade=true 时会一并跑完的下游(即 _INVALIDATES)。
+        # 前端「补全重生成」的弹窗要如实告诉用户"点下去会跑哪几步",这份名单必须来自后端:
+        # 前端自己抄一份就会漂,漂了界面就在向用户描述一个不存在的行为。
+        "step_cascade": {k: list(v) for k, v in _INVALIDATES.items()},
         "readonly": _READONLY,
     }
 

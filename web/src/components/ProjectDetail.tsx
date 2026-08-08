@@ -6,6 +6,7 @@ import {
   voiceSampleTarget,
   type VoiceSample,
 } from '../api'
+import { STAGE_LABEL } from '../stages'
 import { STYLE_LABEL } from '../styles'
 import { useUpload } from '../useUpload'
 import type { BgmItem, Meta, ProjectDetail as Detail, Character, Page } from '../types'
@@ -14,6 +15,7 @@ import { CharacterRedrawDialog } from './CharacterRedrawDialog'
 import { ImageLightbox } from './ImageLightbox'
 import { ImagePicker } from './ImagePicker'
 import { ProgressSteps } from './ProgressSteps'
+import { StepRunDialog } from './StepRunDialog'
 import { VoiceRecorder } from './VoiceRecorder'
 import { UploadDialog } from './UploadDialog'
 
@@ -78,13 +80,21 @@ function SubTracks({ subtitles, defaultLang }: {
   )
 }
 
+// 标签取 stages.ts 的 STAGE_LABEL(它自称是环节 key→中文标签的单一真源)。此前这里
+// 各写一份,而重跑弹窗要按环节名单拼文案,不统一就会出现"按钮写 A、弹窗写 B"。
 const STEP_ACTIONS: { name: string; label: string; destructive?: boolean }[] = [
-  { name: 's2', label: '分镜', destructive: true },
-  { name: 's3', label: '角色' },
-  { name: 's4', label: '漫画页' },
-  { name: 's5', label: '配音' },
-  { name: 's6', label: '合成' },
+  { name: 's2', label: STAGE_LABEL.s2, destructive: true },
+  { name: 's3', label: STAGE_LABEL.s3 },
+  { name: 's4', label: STAGE_LABEL.s4 },
+  { name: 's5', label: STAGE_LABEL.s5 },
+  { name: 's6', label: STAGE_LABEL.s6 },
 ]
+
+// 分镜换掉的是 storyboard,而角色三视图依赖剧本——这一条反直觉(用户容易以为角色也会重画),
+// 所以单独给它一句说明。其余步骤的级联都符合直觉,不加注。
+const STEP_NOTE: Record<string, string> = {
+  s2: '角色三视图不受影响——它依赖剧本,而这一步只换分镜。',
+}
 
 // 各单步重跑按钮的真实前置条件,对应各 step 模块自己的守卫(s2/s3 需先完成 S1,
 // s4/s5/s6 需先有分镜)。按钮不检查这个会让用户点了必然失败的操作——
@@ -158,7 +168,7 @@ export function ProjectDetailView({
   const [stepBusy, setStepBusy] = useState<string | null>(null)
   const [trackBusy, setTrackBusy] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const [s2Open, setS2Open] = useState(false)
+  const [stepDialog, setStepDialog] = useState<string | null>(null)
   const [sourcesOpen, setSourcesOpen] = useState(false)
   // 原文不随详情下发(详情每 2 秒轮询一次),点开时才拉一次;null = 还没拿到
   const [storyText, setStoryText] = useState<string | null>(null)
@@ -189,6 +199,10 @@ export function ProjectDetailView({
   // 作业表,不看磁盘状态;run_step 更是全程不看),此前是前端把用户挡在了已经开着的门外。
   const generating = (project.pipeline === 'queued' || project.pipeline === 'running')
     && !project.stalled
+  // 这一步重跑会连带跑完的下游中文名。后端 meta.step_cascade 给的是环节 key,在这里翻成
+  // 标签;未知 key 直接丢掉而不是显示原始 key——宁可少列一项,不在弹窗里蹦出"s7"这种东西。
+  const cascadeOf = (name: string): string[] =>
+    (meta?.step_cascade?.[name] ?? []).map((k) => STAGE_LABEL[k]).filter(Boolean)
   // 别人的作品只能看不能改。判据必须与后端 _may_edit 严格一致:不是自己的就只读,管理员除外
   // (admin 可操作任何人的作品,后端 _may_edit 同样放行)。
   // owner 为空的作品同样归入"改不了"——2026-08-06 与后端一起去掉了"无主则谁都能改"那条,
@@ -306,11 +320,14 @@ export function ProjectDetailView({
     }
   }
 
-  // 「分镜」重跑会作废漫画页/配音/合成(角色三视图不受影响——它依赖剧本不依赖分镜),
-  // 所以单独给它一个三出口弹窗,而不是让用户点完再自己去点三次。其余步骤沿用原确认框。
+  // 有下游的步骤一律给三出口弹窗(取消/只跑这一步/连下游一起跑完)。理由是后端只要这一步
+  // 真的重生成了就会清掉下游产物——无论 cascade 真假,见 api._run_one_step——所以"只跑这一步"
+  // 必然把作品留在半成品状态,得让用户能一次跑完。名单来自后端 meta.step_cascade,不硬编码。
+  // 「合成」(s6)没有下游,两个出口完全等价,给它弹窗是假选择,继续用原确认框;
+  // 老后端没有 step_cascade 时所有步骤都走这条兜底,即本功能上线前的行为。
   async function handleStep(name: string, label: string) {
-    if (name === 's2') {
-      setS2Open(true)
+    if (cascadeOf(name).length > 0) {
+      setStepDialog(name)
       return
     }
     if (!window.confirm(`确定重新执行「${label}」?这会清空之后各步骤的产物。`)) return
@@ -318,7 +335,7 @@ export function ProjectDetailView({
   }
 
   async function doStep(name: string, cascade: boolean) {
-    setS2Open(false)
+    setStepDialog(null)
     setStepBusy(name)
     try {
       await api.runStep(project.project_id, name, cascade)
@@ -736,52 +753,15 @@ export function ProjectDetailView({
           )}
         </div>
       )}
-      {s2Open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-6"
-          onClick={() => setS2Open(false)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md rounded-2xl border border-band bg-paper p-5 shadow-paper-lg"
-          >
-            <h3 className="font-serif text-sm font-semibold tracking-wide text-ink">
-              重新生成分镜
-            </h3>
-            <p className="mt-2 text-xs text-ink-soft">
-              分镜会被整体重写,已生成的<b>漫画页、配音、成片</b>(含英文版)随之作废,
-              旧的图片与音频文件会被清理。
-              <br />
-              角色三视图<b>不受影响</b>——它依赖剧本,而这一步只换分镜。
-            </p>
-            <div className="mt-4 flex flex-wrap justify-end gap-2">
-              <button type="button" onClick={() => setS2Open(false)} className={ghostBtn}>
-                取消
-              </button>
-              <button
-                type="button"
-                onClick={() => void doStep('s2', false)}
-                disabled={stepBusy !== null}
-                className={ghostBtn}
-              >
-                只重跑分镜
-              </button>
-              <button
-                type="button"
-                onClick={() => void doStep('s2', true)}
-                disabled={stepBusy !== null}
-                className={primaryBtn}
-              >
-                分镜 + 漫画页 + 配音 + 合成
-              </button>
-            </div>
-            <p className="mt-2 text-right text-[11px] text-muted">
-              选「只重跑分镜」的话,之后需自己依次点「漫画页」「配音」「合成」
-            </p>
-          </div>
-        </div>
+      {stepDialog && (
+        <StepRunDialog
+          stepLabel={STAGE_LABEL[stepDialog] ?? stepDialog}
+          cascadeLabels={cascadeOf(stepDialog)}
+          note={STEP_NOTE[stepDialog]}
+          busy={stepBusy !== null}
+          onConfirm={(cascade) => void doStep(stepDialog, cascade)}
+          onCancel={() => setStepDialog(null)}
+        />
       )}
       {bgmOpen && (
         <BgmDialog
