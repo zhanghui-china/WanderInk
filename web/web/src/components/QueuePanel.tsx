@@ -76,10 +76,10 @@ export function QueuePanel({
                 </span>
               </span>
             </span>
-            {/* 判据必须与后端 _may_edit 一致:自己的 / 无主的(历史作品 owner 为空)/ 管理员。
-                此前这里写的是严格相等 `it.owner === user`,无主作品后端允许取消、界面却不画
-                按钮——正是后端 cancel_project 那个 bug 在前端的镜像。 */}
-            {(!it.owner || it.owner === user || isAdmin) &&
+            {/* 判据必须与后端 _may_edit 一致:自己的 / 管理员。
+                2026-08-06 后端去掉了「无主则谁都能改」,这里跟着去掉 `!it.owner`——两侧任一
+                多放行一颗按钮,下场都是点了报 403,而不是真能取消。 */}
+            {(it.owner === user || isAdmin) &&
               (it.pipeline === 'queued' || it.pipeline === 'running') && (
               cancellingIds.has(it.project_id) ? (
                 <button

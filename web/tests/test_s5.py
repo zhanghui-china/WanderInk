@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx, pytest, respx
+from shanhai import store
 from shanhai.providers.music import MusicClient
 from shanhai.providers.tts import TTSClient, TTSError
 from shanhai.schema import Project, StoryboardCell
@@ -619,3 +620,87 @@ def test_default_manifest_is_not_empty():
         assert (s5_audio.DEFAULT_MANIFEST.parent / t["file"]).exists(), f"曲库缺文件 {t['file']}"
     # 分镜可能出现的全部情绪都要有曲子兜底,否则 _select_manifest_bgm 会退化成"永远选第一首"
     assert {"宁静", "温情", "惊变", "悲壮", "险境", "烟雨", "苍凉"} <= covered
+
+
+# ---------- 用户保存的 BGM(四级降级的第一级)----------
+
+def _bgm_library(tmp_path: Path, monkeypatch, item_id="b1", data=b"ID3fake-mp3") -> dict:
+    """在隔离 root 下造一条库条目 + 它的文件。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    (tmp_path / store.BGM_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (tmp_path / store.BGM_DIRNAME / "bgm_x.mp3").write_bytes(data)
+    item = {"id": item_id, "owner": "alice", "name": "存好的",
+            "source": "upload", "file": "bgm_x.mp3", "duration_ms": 30000}
+    store.update_bgm_items(lambda items: items.append(item))
+    return item
+
+
+def _bgm_project(**params) -> Project:
+    p = Project(project_id="bgmproj", scenic_spot="雷峰塔", owner="alice")
+    p.storyboard = [StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
+                                   caption="c", emotion="宁静")]
+    for k, v in params.items():
+        setattr(p.params, k, v)
+    return p
+
+
+def test_saved_bgm_wins_and_skips_ai_generation(tmp_path: Path, monkeypatch):
+    """**省掉一次 GPU 独占的执法点。** AI 生成一首最长 180s,还与生图抢同一把本地单并发锁;
+    选定了已保存的曲子就该完全跳过它,而不是"生成完再丢掉"。"""
+    _bgm_library(tmp_path, monkeypatch)
+    p = _bgm_project(bgm=True, bgm_ref="b1")
+    music = MagicMock()
+    out = s5_audio._resolve_bgm(p, music, tmp_path, s5_audio.DEFAULT_MANIFEST)
+    assert music.generate.call_count == 0             # 一次都没调
+    assert p.status["bgm"] == "saved"
+    assert Path(out) == tmp_path / "audio" / "bgm.mp3"
+
+
+def test_saved_bgm_is_copied_into_the_project(tmp_path: Path, monkeypatch):
+    """拷贝而不是引用:S6 的 finalize_cmd 不校验 project.bgm 指向的文件是否存在,
+    路径失效时 measure_lufs 静默兜底、紧接着 ffmpeg 真的报错。所以删库不能影响已生成的作品。"""
+    _bgm_library(tmp_path, monkeypatch, data=b"ID3original")
+    p = _bgm_project(bgm=True, bgm_ref="b1")
+    out = Path(s5_audio._resolve_bgm(p, None, tmp_path, s5_audio.DEFAULT_MANIFEST))
+    assert out.read_bytes() == b"ID3original"
+    (tmp_path / store.BGM_DIRNAME / "bgm_x.mp3").unlink()      # 用户之后删了库条目
+    assert out.is_file() and out.read_bytes() == b"ID3original"
+
+
+def test_missing_bgm_ref_degrades_to_ai(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = _bgm_project(bgm=True, bgm_ref="nosuch")
+    music = MagicMock()
+    music.generate.side_effect = lambda *a, **k: (tmp_path / "audio" / "bgm.mp3").write_bytes(b"ai")
+    s5_audio._resolve_bgm(p, music, tmp_path, s5_audio.DEFAULT_MANIFEST)
+    assert music.generate.call_count == 1             # 降级到 AI,不抛
+    assert p.status["bgm"] == "ai"
+
+
+def test_bgm_ref_pointing_at_deleted_file_degrades_to_ai(tmp_path: Path, monkeypatch):
+    _bgm_library(tmp_path, monkeypatch)
+    (tmp_path / store.BGM_DIRNAME / "bgm_x.mp3").unlink()      # 索引在、文件没了
+    p = _bgm_project(bgm=True, bgm_ref="b1")
+    music = MagicMock()
+    music.generate.side_effect = lambda *a, **k: (tmp_path / "audio" / "bgm.mp3").write_bytes(b"ai")
+    s5_audio._resolve_bgm(p, music, tmp_path, s5_audio.DEFAULT_MANIFEST)
+    assert p.status["bgm"] == "ai"
+
+
+def test_empty_bgm_ref_behaves_exactly_as_before(tmp_path: Path, monkeypatch):
+    """存量作品零影响:bgm_ref 为空时四级降级要退化成原来的三级。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    p = _bgm_project(bgm=True)
+    assert p.params.bgm_ref == ""
+    music = MagicMock()
+    music.generate.side_effect = lambda *a, **k: (tmp_path / "audio" / "bgm.mp3").write_bytes(b"ai")
+    s5_audio._resolve_bgm(p, music, tmp_path, s5_audio.DEFAULT_MANIFEST)
+    assert p.status["bgm"] == "ai" and music.generate.call_count == 1
+
+
+def test_bgm_switch_off_beats_bgm_ref(tmp_path: Path, monkeypatch):
+    """没勾配乐就是没勾,选过的曲子不该反过来把开关打开。"""
+    _bgm_library(tmp_path, monkeypatch)
+    p = _bgm_project(bgm=False, bgm_ref="b1")
+    assert s5_audio._resolve_bgm(p, MagicMock(), tmp_path, s5_audio.DEFAULT_MANIFEST) == ""
+    assert p.status["bgm"] == "skipped"

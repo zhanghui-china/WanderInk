@@ -177,6 +177,44 @@ def to_voice_sample_wav(raw: bytes, content_type: str) -> bytes:
         return out.read_bytes()
 
 
+# 用户保存的 BGM 的最短时长。**不是随手定的**:混音链的 afade 只在整条流最开头淡入一次,
+# 而 -stream_loop 的循环接缝处**没有任何交叉淡化**——每绕一圈就是一个硬切。AI 生成的 60 秒
+# 曲子放进 85 秒的片子只接一次缝,所以这毛病一直没被注意到;存一段 10 秒的短 loop 进 5 分钟
+# 的片子就是三十次硬切。20 秒把最难听的一档挡在门外(接缝交叉淡化要改滤镜链,是另一件事)。
+MIN_BGM_MS = 20_000
+
+
+def to_bgm_mp3(raw: bytes, content_type: str) -> bytes:
+    """把上传的音频净化成规范的 BGM mp3(44.1k 立体声)。骨架同 to_voice_sample_wav——
+    魔数优先的格式判定、白名单双层校验、一律经 ffmpeg 重编码,四条安全基线一条不少。
+
+    **但绝不能直接复用 to_voice_sample_wav**:它输出 16k 单声道 pcm,那是喂 TTS 做声纹
+    提取的规格,拿来处理音乐等于毁掉它。差异集中在 ffmpeg.bgm_upload_cmd 里。"""
+    fmt = _sniff_audio(raw) \
+        or AUDIO_DEMUXERS.get((content_type or "").split(";")[0].strip().lower())
+    if fmt not in AUDIO_FORMATS:
+        raise HTTPException(400, "无法识别的音频格式,支持 wav / mp3 / m4a")
+    with tempfile.TemporaryDirectory() as td:
+        src, out = Path(td) / f"in.{fmt}", Path(td) / "out.mp3"
+        src.write_bytes(raw)
+        try:
+            ffmpeg.sh(ffmpeg.bgm_upload_cmd(src, out, fmt))
+        except RuntimeError as e:   # ffmpeg.sh 把非零退出与超时都包成 RuntimeError
+            raise HTTPException(400, "音频无法解码,请换一个文件") from e
+        if not out.exists() or not out.stat().st_size:
+            raise HTTPException(400, "音频无法解码,请换一个文件")
+        ms = ffmpeg.probe_duration_ms(out)
+        if ms < MIN_BGM_MS:
+            raise HTTPException(400, f"配乐太短({ms / 1000:.1f} 秒),至少需要 "
+                                     f"{MIN_BGM_MS // 1000} 秒——太短的片段循环起来接缝很明显")
+        return out.read_bytes()
+
+
+def bgm_rel_path() -> str:
+    """BGM 库文件名,带随机盐。理由同 voice_sample_rel_path:文件名不该可推导。"""
+    return f"bgm_{secrets.token_urlsafe(16)}.mp3"
+
+
 def voice_sample_rel_path() -> str:
     """参考录音的相对路径,带随机盐。理由与 reference_rel_path 相同且更强:
     `/files` 静态挂载没有身份校验,而这是用户**真人声音**,敏感度不低于照片。"""

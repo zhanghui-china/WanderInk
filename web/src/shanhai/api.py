@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -702,15 +702,23 @@ def patch_user(name: str, body: UserPatchBody, user: str = Depends(current_user)
 # ---------- 接口 ----------
 
 def _may_edit(p: Project, user: str) -> bool:
-    """项目级写操作的统一归属判据:自己的、无主的(历史项目 owner 为空)、或管理员。
+    """项目级写操作的统一归属判据:自己的、或管理员。
 
     此前这条规则在 _editable/cancel_project/export_project 里各抄了一遍,已经翻过一次车
     (cancel 少写了 `p.owner and`,见 cancel_project 内注释),故收敛到这里,三处共用。
 
+    ⚠️ **曾经还有第三条「owner 为空视为无主、谁都能改」**,2026-08-06 去掉了。那条是归属机制
+    落地时为存量数据留的口子——当时线上确有 owner 为空的历史作品,一刀收紧会把它们变成谁都
+    改不了的孤儿。后来实测发现口子的实际效果是:任何普通用户都能编辑那些作品,与「只能改自己
+    的」这个承诺相抵触。已把线上仅剩的 2 个无主作品归到 admin 名下(owner 字段直接改),无主
+    数据清零,这条分支再无存量要照顾,故删除。
+    删掉它意味着 owner 为空的作品**只有管理员能改**——若以后又冒出无主数据(例如做用户硬删除
+    时没有转移作品),表现是普通用户一律 403,而不是悄悄放行。这是刻意选的方向。
+
     **管理员旁路只覆盖「归属」这一层**:_READONLY(部署模式,不是权限)与「有未完成作业→409」
     (并发写会丢更新,与身份无关)对管理员同样生效——那两道是数据安全屏障,别往这里搬。
     is_admin 要读 users.json,故放在最后短路:常规路径(改自己的项目)不产生文件 IO。"""
-    return not p.owner or p.owner == user or is_admin(user)
+    return p.owner == user or is_admin(user)
 
 
 def _editable(project_id: str, user: str) -> Project:
@@ -1234,6 +1242,137 @@ def get_project_voice_sample(project_id: str, user: str = Depends(current_user))
     return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
+# ---------- 用户 BGM 库 ----------
+# 与音色样本同构:共享目录、随机盐文件名、整个前缀从 /files 摘除、试听走带归属校验的端点。
+# 差别是这里的索引存**结构化条目**而不是一张扁平映射表——库要按用户过滤、要列出来给人挑。
+
+def _bgm_visible(item: dict, user: str) -> bool:
+    """库按用户隔离;管理员可见全部(与 _may_edit 同一套归属模型)。"""
+    return item.get("owner") == user or is_admin(user)
+
+
+def _bgm_row(item: dict) -> dict:
+    """吐给前端的行。逐字段挑选,不把索引条目整个 model_dump 出去——
+    file 是盘上的随机盐文件名,没有任何理由让客户端看到。"""
+    return {"id": item.get("id", ""), "name": item.get("name", ""),
+            "source": item.get("source", ""), "owner": item.get("owner", ""),
+            "duration_ms": int(item.get("duration_ms", 0))}
+
+
+def _new_bgm_item(owner: str, name: str, source: str, filename: str, duration_ms: int) -> dict:
+    return {"id": secrets.token_urlsafe(8), "owner": owner, "name": name[:60] or "未命名",
+            "source": source, "file": filename, "duration_ms": duration_ms,
+            "created_at": _now_iso()}
+
+
+@app.get("/api/bgm")
+def list_bgm(user: str = Depends(current_user)) -> list[dict]:
+    return [_bgm_row(it) for it in store.load_bgm_items() if _bgm_visible(it, user)]
+
+
+@app.post("/api/bgm")
+async def upload_bgm(file: UploadFile = File(...), name: str = Form(default=""),
+                     user: str = Depends(current_user)) -> dict:
+    """上传自备音频存进自己的库。净化走 uploads.to_bgm_mp3——魔数优先的格式判定、
+    白名单双层校验、一律经 ffmpeg 重编码,与音色那条路同一套安全基线;但输出是
+    44.1k 立体声 mp3 而不是 16k 单声道(那是喂 TTS 的规格,拿来处理音乐等于毁掉它)。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止上传")
+    raw = await uploads.read_limited_audio(file)
+    mp3 = uploads.to_bgm_mp3(raw, file.content_type or "")
+    rel = uploads.bgm_rel_path()
+    out = store.bgm_dir() / rel
+    uploads.atomic_write(out, mp3)
+    item = _new_bgm_item(user, name or Path(file.filename or "").stem, "upload", rel,
+                         ffmpeg.probe_duration_ms(out))
+    store.update_bgm_items(lambda items: items.append(item))
+    return _bgm_row(item)
+
+
+class BgmSaveBody(BaseModel):
+    name: str = Field(default="", max_length=60)
+
+
+@app.post("/api/projects/{project_id}/bgm/save")
+def save_project_bgm(project_id: str, body: BgmSaveBody,
+                     user: str = Depends(current_user)) -> dict:
+    """把该作品当前的配乐存进自己的库。存的是**拷贝**,之后重跑/换配乐都不影响库里这一份。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止保存配乐")
+    try:
+        p = store.load(project_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(404, f"项目不存在: {project_id}") from e
+    if not _may_edit(p, user):
+        raise HTTPException(403, "只能保存自己项目的配乐")
+    src = Path(p.bgm) if p.bgm else None
+    if src is None or not src.is_file():
+        raise HTTPException(404, "该作品当前没有配乐可保存")
+    rel = uploads.bgm_rel_path()
+    out = store.bgm_dir() / rel
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, out)
+    item = _new_bgm_item(user, body.name or p.scenic_spot, "ai", rel,
+                         ffmpeg.probe_duration_ms(out))
+    store.update_bgm_items(lambda items: items.append(item))
+    return _bgm_row(item)
+
+
+@app.get("/api/bgm/{item_id}/audio")
+def get_bgm_audio(item_id: str, user: str = Depends(current_user)) -> FileResponse:
+    """试听。/files 下 _bgm/ 整个命名空间已摘除,这里是拿到音频的唯一入口——
+    否则任何登录用户读一次 _bgm/index.json 就能顺着文件名把别人的库整个下走。"""
+    item = store.bgm_item(item_id)
+    if item is None or not _bgm_visible(item, user):
+        raise HTTPException(404, "配乐不存在")   # 不区分"不存在"与"不是你的",不给探测面
+    path = store.bgm_dir() / item["file"]
+    if not path.is_file():
+        raise HTTPException(404, "配乐文件已丢失")
+    return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.delete("/api/bgm/{item_id}")
+def delete_bgm(item_id: str, user: str = Depends(current_user)) -> dict:
+    """删库条目。**已经用它生成过的作品不受影响**——S5 那步把文件拷进了作品目录。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止删除")
+    item = store.bgm_item(item_id)
+    if item is None or not _bgm_visible(item, user):
+        raise HTTPException(404, "配乐不存在")
+    store.update_bgm_items(
+        lambda items: items.__setitem__(slice(None),
+                                        [it for it in items if it.get("id") != item_id]))
+    (store.bgm_dir() / item["file"]).unlink(missing_ok=True)
+    return {"deleted": True}
+
+
+class BgmParams(BaseModel):
+    # 空串 = 回到 AI 生成(与建作品时不选的行为一致)
+    bgm_ref: str = Field(default="", max_length=64)
+
+
+@app.patch("/api/projects/{project_id}/params/bgm")
+def update_project_bgm(project_id: str, body: BgmParams,
+                       user: str = Depends(current_user)) -> dict:
+    """换作品的配乐。形制照 update_project_voice——只放一个字段,不做通用 params 编辑。
+
+    **归属校验在这里做,不在 S5 里做**:授权只有在"知道是谁在操作"的地方才判得准,
+    管线里再判一次会让"管理员替别人选自己库里的曲子"这种合法操作静默失效。
+
+    换配乐**不清任何页的音轨**(与换音色相反):BGM 与逐页配音无关,只有 S6 合成会读它。
+    所以改完重跑 s6 即可,不必重烧一遍 TTS。"""
+    with _project_lock(project_id):
+        p = _editable(project_id, user)
+        if body.bgm_ref:
+            item = store.bgm_item(body.bgm_ref)
+            if item is None or not _bgm_visible(item, user):
+                raise HTTPException(404, "配乐不存在")
+            p.params.bgm = True          # 选了具体某首就隐含"要配乐"
+        p.params.bgm_ref = body.bgm_ref
+        store.save(p)
+    return _serialize(p)
+
+
 class VoiceParams(BaseModel):
     voice: str = Field(default="", max_length=200)
 
@@ -1590,6 +1729,10 @@ def meta(user: str = Depends(current_user)) -> dict:
         "loras": list(LORA_PRESETS),
         # 可产出的附加语种轨,如 ["en"];前端据此渲染"生成英文版"这类入口,不硬编码语种
         "track_langs": list(TRACK_LANGS),
+        # 每一步重跑会连带作废、cascade=true 时会一并跑完的下游(即 _INVALIDATES)。
+        # 前端「补全重生成」的弹窗要如实告诉用户"点下去会跑哪几步",这份名单必须来自后端:
+        # 前端自己抄一份就会漂,漂了界面就在向用户描述一个不存在的行为。
+        "step_cascade": {k: list(v) for k, v in _INVALIDATES.items()},
         "readonly": _READONLY,
     }
 
@@ -1630,7 +1773,10 @@ def write_config(body: AppConfig, user: str = Depends(current_user)) -> dict:
 
 
 # 音色样本目录在挂载根下,但整个命名空间不经 /files 对外:见 _ArtifactStatic 说明。
-_VOICE_SAMPLE_PREFIX = store.VOICE_SAMPLE_DIRNAME + "/"
+# 保留命名空间:这两个共享目录都在 projects/ 下,但都**不经 /files 对外**。
+# _voice_samples 是真人录音;_bgm 是按用户隔离的素材库——都不该走一个只认"登录了没"
+# 的静态挂载,各自有带归属校验的端点。
+_RESERVED_PREFIXES = (store.VOICE_SAMPLE_DIRNAME + "/", store.BGM_DIRNAME + "/")
 
 
 class _ArtifactStatic(StaticFiles):
@@ -1662,7 +1808,7 @@ class _ArtifactStatic(StaticFiles):
     async def get_response(self, path: str, scope):  # noqa: ANN001 — 与父类签名一致
         if not (scope.get("session") or {}).get("user"):
             raise HTTPException(404)
-        if path.lower().startswith(_VOICE_SAMPLE_PREFIX):
+        if path.lower().startswith(_RESERVED_PREFIXES):
             raise HTTPException(404)
         protected = {"project.json", runtime_config._config_path().name.lower()}
         if Path(path).name.lower() in protected:

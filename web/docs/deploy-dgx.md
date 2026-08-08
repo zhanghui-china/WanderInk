@@ -44,6 +44,7 @@
 - **发布流程**:Mac 改+测+commit → rsync(**必须 `--exclude .env --exclude projects`**,否则覆盖 DGX 配置/数据)→ 确认无管线在跑(`/api/projects` 无 running/queued)→ `systemctl --user restart shanhai-web`。
 - ⚠️ **rsync 一定要加 `--exclude __pycache__`**:不加会把 Mac 编译的 `.pyc` 连同 mtime 一起传过去,DGX 上 traceback 会诡异地显示 Mac 路径(2026-07-27 踩过)。
 - ⚠️ **家目录 2026-07-26 从 `/home1/huntun` 改到了 `/home/huntun`**(管理员改 `/etc/passwd`),两份是**独立副本不是软链**。`~` 与运行中的服务都指新的 `/home/huntun`,改 `/home1` 那份完全无效。副作用:`.venv/bin/` 里的 console script shebang 仍写死旧绝对路径,`uv sync` 只会重建它自己管的那几个(`shanhai-web`/`shanhai`),`pytest`/`uvicorn` 等 12 个不会——**表现是 `uv run pytest` 跑的是旧代码、测试结果与线上不符**。排查:`grep -l "^#!/home1" .venv/bin/*`;修复:`sed -i "1s|/home1/|/home/|" ` 这些文件,或 `uv sync --reinstall`。三个 shim 的 venv 同样中招。
+  **同一次迁移还留了第二条尾巴(2026-08-08 才发现并修掉)**:`~/.local/bin/ffmpeg` 与 `ffprobe` 是**软链,当时仍指向 `/home1/huntun/anaconda3/envs/shanhai-ffmpeg/bin/`**。`/home1` 是**另一块物理盘**(`/dev/sda`,当时已用 94%),而 systemd 单元把 `~/.local/bin` 排在 PATH 最前,于是服务一直在用旧盘那份 ffmpeg。一旦 `/home1` 卸载/清理/掉盘,软链断掉,PATH 会**静默落到 `/usr/local/bin/ffmpeg`**——那是个精简构建,**没有 libx264 也没有 libmp3lame**,表现是 S5 拼旁白与 S6 合成一起报错,而 `/api/version` 一切正常、服务全 active,极难往 ffmpeg 上想。已改指 `/home/huntun/anaconda3/envs/shanhai-ffmpeg/bin/`(能力逐项一致,已真编码验证 libmp3lame/libx264/aac/pcm_s16le/ffprobe + 端到端 S6)。排查:`readlink ~/.local/bin/ffmpeg ~/.local/bin/ffprobe | grep /home1`。
 - Mac 同一工作树还跑着两个实例(公网只读 :10000、本机编辑 :8081):重启前确认工作树是已提交可上线状态。
 - 作品数据各自生长:DGX `projects/`(生产)与 Mac `projects/`(展示)不互通、不互相 rsync 覆盖。
 
@@ -330,3 +331,23 @@ curl http://127.0.0.1:8188/system_stats   # 200 说明 ComfyUI 活着;超时/连
 **部署记录**:375 测试全绿(本地+DGX 一致,较此前基线 373 净增 2 个新 skill 测试)、前端 `npm run build` 通过 → 确认无在途任务 → rsync(代码 + 单独 rsync `web/dist`,DGX 上无 `node_modules`/`tsgo`,前端固定在本机构建后同步产物,不在 DGX 上跑 `npm run build`)→ DGX `uv sync`+pytest → `systemctl --user restart shanhai-web` → 200。
 
 **现状(供下次核对)**:新建作品表单现在只有一个"使用编剧/导演大师skill"开关(勾选=S1+S2 都用),`master_skill` 字段名替代了旧的 `screenwriter_skill`。DGX `config.json` 现在 s0/s1/s2 三个环节都有 hermes-agent 覆盖。`director-master` 单次约 3.5 万 token/265~319 秒,比编剧大师(15~16 万 token/200~400 秒)轻,但仍显著慢于普通 S2 调用,这也是开关默认关闭的原因。
+
+## ⚠️ systemd 单元必须带 `PYTHONUNBUFFERED=1`,否则流水线的失败原因全看不到(2026-08-08)
+
+**现象**:一部作品(`604c0c84` 雷峰塔)跑完是 `done(降级:0/8 页真人解说,8 页静音兜底)`——整片没有一句解说。想查原因时发现:**整条流水线跑了 20 分钟,`journalctl` 里一条业务 print 都没有**。`配乐响度 … → 增益 …` 这行 S6 必打的日志,当天 0 条,最近一条是前一天。
+
+**根因**:`shanhai-web.service` 没有设 `PYTHONUNBUFFERED`。Python 的 stdout 接管道(systemd 把它接给 journald)时是**块缓冲**(8KB),流水线所有 `print`——环节进度、`第 N 页 TTS 失败…静音兜底`、`配乐响度`、大师 skill 降级提示——都堆在缓冲区里,被后续输出挤掉或在重启时丢失。
+
+⚠️ **这不是"日志少了点",是"每次生成失败,最该看的那行字恰恰最可能看不到"。** 2026-08-04 那次 502 的 8 条静音兜底之所以留了下来,只是凑巧把 8KB 缓冲区填满冲了出来——**能看到是偶然,看不到是常态**。
+
+**修复**:`~/.config/systemd/user/shanhai-web.service` 的 `[Service]` 段加一行,然后 `systemctl --user daemon-reload && systemctl --user restart shanhai-web`(重启前照例确认无在途作业):
+
+```ini
+Environment="PYTHONUNBUFFERED=1"
+```
+
+**验证**:重启后重跑一次 S6,`配乐响度 -11.2 LUFS → 增益 -14.8 dB` 当场就出现在 `journalctl --user -u shanhai-web` 里。
+
+⚠️ **单元文件不在版本控制里**(它在 DGX 的 `~/.config/systemd/user/`,不随 rsync 走),所以**换台机器部署会重蹈覆辙**。新机部署时把这一行连同 `WorkingDirectory`/`EnvironmentFile`/`PATH` 一起写进单元。四个 shim 服务同理,只是它们的日志目前还没吃过亏。
+
+**顺带的教训**:排查这次故障时,我先猜"TTS 服务挂了"(实测 HTTP 200、产出合法 mp3,推翻)、再猜"超时"(TTSClient 超时写死 300 秒,而单次请求只要 30 秒,推翻),最后才发现**证据根本没被记录**。重跑 S5 一次就全好了(`s5 -> done`,187 秒,8 页全部补回真人解说),说明那是**瞬时故障**——但具体是什么,已经无从追认。先把可观测性补上,下一次才谈得上诊断。

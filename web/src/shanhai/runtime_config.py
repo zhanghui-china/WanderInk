@@ -147,6 +147,24 @@ def update_overrides(mutate: Callable[[AppConfig], AppConfig]) -> AppConfig:
         return new
 
 
+def _apply_layer(updates: dict, layer: dict) -> None:
+    """叠加一层覆盖。若这一层换了 llm_base_url 却没写 llm_provider,provider 不再从下层
+    继承,而是回到 openai。
+
+    llm_provider 描述的是"怎么跟这个端点说话",它属于**端点**、不属于用户。逐字段合并会把
+    A 端点的协议配到 B 端点上——2026-08-08 线上正是如此:stages.s0/s1/s2 指向 hermes-agent
+    (纯 OpenAI 兼容)却没写 provider,某用户在自己那层选了 ollama,于是拿 Ollama 原生协议去
+    打 hermes,POST /api/chat 得到 404,而界面上两处配置各看各的、完全看不出冲突。
+
+    为什么回落到 openai 而不是保持继承:"没声明协议的端点按 OpenAI 兼容处理"既是本项目的
+    历史假设(ollama 分支是后加的),也正是现存所有 stage 覆盖隐含的那个。
+    ⚠️ 必须**显式写入** openai 而不是只 pop 掉:光 pop 会回落到 base(.env 的
+    SHANHAI_LLM_PROVIDER),那仍然是"别的端点的协议",同一个 bug 换一层再犯一次。"""
+    if "llm_base_url" in layer and "llm_provider" not in layer:
+        updates["llm_provider"] = "openai"
+    updates.update(layer)
+
+
 def resolve_settings(
     stage: str | None = None,
     cfg: AppConfig | None = None,
@@ -161,14 +179,17 @@ def resolve_settings(
     owner 传作品归属者(Project.owner),**不是当前操作者**:admin 帮别人重跑某一步时仍用
     作品主人的模型,否则同一部作品的 S1 与 S4 会走两套模型、文风画风对不上。
     owner="" 是默认值,故历史无主项目与 CLI(无登录态)自然跳过 users 层回落到 global——
-    与写侧 _may_edit 的"owner 为空视为无主"是同一种处理。"""
+    与写侧 _may_edit 的"owner 为空视为无主"是同一种处理。
+
+    ⚠️ 叠加不是纯粹的逐字段覆盖:llm_provider 跟着 llm_base_url 走,理由见 _apply_layer。"""
     base = base or Settings()
     cfg = cfg or load_overrides()
-    updates = cfg.global_.model_dump(exclude_none=True)
+    updates: dict = {}
+    _apply_layer(updates, cfg.global_.model_dump(exclude_none=True))
     if owner and owner in cfg.users:
-        updates.update(cfg.users[owner].model_dump(exclude_none=True))
+        _apply_layer(updates, cfg.users[owner].model_dump(exclude_none=True))
     if stage is not None and stage in cfg.stages:
-        updates.update(cfg.stages[stage].model_dump(exclude_none=True))
+        _apply_layer(updates, cfg.stages[stage].model_dump(exclude_none=True))
     return base.model_copy(update=updates) if updates else base
 
 

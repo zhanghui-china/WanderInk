@@ -86,6 +86,24 @@ def voice_sample_cmd(src: Path, out: Path, in_fmt: str,
             "-ar", str(VOICE_SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le", str(out)]
 
 
+# 用户上传的 BGM 上限。比录音的 20 秒宽得多——BGM 是要垫满整片的素材,但也不能无上限:
+# 混音时它会被 -stream_loop 循环,存一首 10 分钟的曲子除了占盘没有任何额外收益。
+BGM_MAX_S = 300
+
+
+def bgm_upload_cmd(src: Path, out: Path, in_fmt: str, max_s: float = BGM_MAX_S) -> list[str]:
+    """把上传的音频转成规范的 BGM mp3。与 voice_sample_cmd 同一套安全立场——
+    `-f {in_fmt}` 显式指定 demuxer 而不是让 ffmpeg 自动探测,重编码本身即净化
+    (干掉伪装成音频的 polyglot 字节与容器元数据)。
+
+    但**参数刻意与 voice_sample_cmd 不同**:那边是 16k 单声道 pcm(喂 TTS 做声纹提取),
+    拿来处理音乐等于毁掉它。这里必须落在 AUDIO_RATE/AUDIO_CH(44.1k 立体声)——
+    本文件顶部那条"所有音频分支统一 44.1kHz/立体声"的约束正是为混音链定的,
+    finalize_cmd 的 amix 依赖它。"""
+    return ["ffmpeg", "-y", "-f", in_fmt, "-i", str(src), "-t", f"{max_s:g}",
+            *_AR_AC, "-c:a", "libmp3lame", "-b:a", "192k", str(out)]
+
+
 def probe_duration_ms(path: Path) -> int:
     """读时长。超时同样包成 RuntimeError(与 sh 一致):唯一在 try 外调它的地方是
     uploads,那里不包装就会把整条 ffprobe 命令行漏进 500 响应;s5_audio 的调用点是
@@ -104,8 +122,12 @@ def probe_duration_ms(path: Path) -> int:
 
 # 成片人声的目标响度,与 finalize_cmd 里 loudnorm 的 I= 必须一致(它就是人声的基准线)。
 VOICE_TARGET_LUFS = -16.0
-# 配乐比人声低多少。广播/纪录片旁白配乐的通行档位是 15~20 dB;用户拍板 18。
-BGM_BELOW_VOICE_DB = 18.0
+# 配乐比人声低多少(振幅约 32%)。广播/纪录片旁白配乐的通行档位是 15~20 dB,这里刻意取更低
+# 的 10 dB——护台词的活交给下面 _DUCK 那道人声闪避(说话时把配乐再压下去),静态床位就可以
+# 留给"停顿/片头/片尾处要听得见氛围",即广播里的 music up、duck under VO。
+# 2026-07-28 定的 18 dB 是在链路有病时的将就:当时配乐用固定系数盲乘、loudnorm 又挂在混音
+# 之后(人声间隙里把配乐顶上来),只能靠压低床位规避。那两处已修好,故把床位抬回来。
+BGM_BELOW_VOICE_DB = 10.0
 # measure_lufs 解析失败时的兜底。**必须往"素材很响"的方向猜**:猜响 → 衰减更多 → 配乐偏轻,
 # 顶多是不明显;猜轻 → 衰减不够 → 盖住解说,那正是这次要修的毛病。方向不能反。
 _LUFS_FALLBACK = -8.0
@@ -132,8 +154,14 @@ def measure_lufs(path: Path) -> float:
 
 def bgm_gain_db(bgm_lufs: float) -> float:
     """把实测响度换算成要施加的增益,使配乐恒定落在"比人声低 BGM_BELOW_VOICE_DB"。
-    例:实测 -9.4 → -24.6 dB;实测 -21.4 → -12.6 dB。目标恒为 -34 LUFS。"""
-    return VOICE_TARGET_LUFS - BGM_BELOW_VOICE_DB - bgm_lufs
+    例:实测 -9.4 → -16.6 dB;实测 -21.4 → -4.6 dB。目标恒为 -26 LUFS。
+
+    **上限钳到 0:配乐永远不放大。** 这条不是多余的保险——公式本身没有上界,一段很轻的
+    素材(环境录音,或前面大段静音把 integrated 值拉低的曲子,实测能到 -50 LUFS)会算出
+    +16 dB 的放大,把底噪连同音乐一起抬起来。AI 路径碰不到这个口子(ACE-Step 输出实测恒在
+    -21 LUFS 以上),**是"用户自己保存 BGM"这个功能第一次打开它**。
+    需要放大才够响的素材,本来就不适合垫在人声底下。"""
+    return min(VOICE_TARGET_LUFS - BGM_BELOW_VOICE_DB - bgm_lufs, 0.0)
 
 
 def clip_duration_s(duration_ms: int, has_audio: bool) -> float:
@@ -296,8 +324,12 @@ def finalize_cmd(video: Path, bgm: Path | None, out: Path,
     3. **amix 必须显式 normalize=0。** 默认 normalize=1 会把每路除以路数(-6 dB),
        原先靠后面的 loudnorm 补回来;现在 loudnorm 已经挪到人声支路,不关掉整片会轻一半。
 
-    结尾的 alimiter 是最后一道闸:人声已被 loudnorm 限到 TP=-1.5,再叠一路低 18 dB 的
-    配乐理论上抬不过 0.5 dB,但闸门便宜,不留侥幸。
+    ⚠️ **结尾的 alimiter 已经不是"备而不用的保险",它现在真的在工作。** 人声被 loudnorm 限到
+    TP=-1.5 dBFS(0.841 线性),而 alimiter 的门槛 0.85 是 -1.41 dBFS —— **人声独自就占满了
+    余量,只剩 0.09 dB**。配乐还是低 18 dB 时叠加只抬 +0.07 dB,恰好落在余量内,闸门形同虚设;
+    2026-08-08 床位抬到低 10 dB 后叠加抬 +0.41 dB,**越过门槛,限幅器开始做真实的增益衰减**。
+    所以别把它当摆设删掉;反过来,若日后听到配乐"一压一放"的呼吸感,第一个该查的就是这里
+    (要么放宽 0.85,要么把床位压回去),而不是去调 _DUCK。
     """
     loudnorm = f"loudnorm=I={VOICE_TARGET_LUFS:g}:TP=-1.5:LRA=11"
     if bgm:

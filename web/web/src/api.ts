@@ -8,6 +8,7 @@ import type {
   NewProjectInput,
   ProjectDetail,
   ProjectSummary,
+  BgmItem,
   QueueItem,
   UserAccount,
 } from './types'
@@ -64,6 +65,12 @@ export const characterReferenceTarget = (id: string, name: string): UploadTarget
 // 只在拿到返回的 voice 之后才分叉成"建作品"或"改 params"。
 export const voiceSampleTarget = (): UploadTarget => ({ url: '/api/voice-samples' })
 
+// BGM 上传同样不绑作品:新建表单与详情页共用这一个端点与同一份用户级库。
+export const bgmUploadTarget = (name: string): UploadTarget => ({
+  url: '/api/bgm',
+  extra: { name },
+})
+
 export interface VoiceSample {
   voice: string
   sample_url: string
@@ -82,6 +89,33 @@ export const api = {
   logout: () => fetch('/api/logout', { ...CREDS, method: 'POST' }).then((r) => j<unknown>(r)),
 
   me: () => fetch('/api/me', CREDS).then((r) => j<{ username: string; is_admin: boolean }>(r)),
+
+  // ---- 用户 BGM 库。试听走 /api/bgm/{id}/audio(带归属校验),不能直接拼 /files:
+  //      _bgm/ 整个命名空间已从静态挂载摘除。 ----
+  listBgm: () => fetch('/api/bgm', CREDS).then((r) => j<BgmItem[]>(r)),
+
+  deleteBgm: (id: string) =>
+    fetch(`/api/bgm/${encodeURIComponent(id)}`, { ...CREDS, method: 'DELETE' }).then((r) =>
+      j<{ deleted: boolean }>(r)
+    ),
+
+  // 把作品当前的配乐存进自己的库
+  saveProjectBgm: (id: string, name: string) =>
+    fetch(`/api/projects/${id}/bgm/save`, {
+      ...CREDS,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }).then((r) => j<BgmItem>(r)),
+
+  // 换配乐。空串 = 回到 AI 生成。换完只需重跑 S6 合成,不必重跑 S5 配音。
+  updateProjectBgm: (id: string, bgm_ref: string) =>
+    fetch(`/api/projects/${id}/params/bgm`, {
+      ...CREDS,
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bgm_ref }),
+    }).then((r) => j<ProjectDetail>(r)),
 
   // ---- 账号管理。错误文案由后端 HTTPException 的 detail 原样带出(见 j<T> 与 apiErrorFrom),
   //      前端直接 setErr(e.message) 即可,不需要翻译表。 ----

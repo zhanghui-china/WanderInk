@@ -1,13 +1,21 @@
-import { Fragment, useEffect, useState } from 'react'
-import { api, characterReferenceTarget, voiceSampleTarget, type VoiceSample } from '../api'
+import { Fragment, useCallback, useEffect, useState } from 'react'
+import {
+  api,
+  bgmUploadTarget,
+  characterReferenceTarget,
+  voiceSampleTarget,
+  type VoiceSample,
+} from '../api'
+import { STAGE_LABEL } from '../stages'
 import { STYLE_LABEL } from '../styles'
 import { useUpload } from '../useUpload'
-import type { Meta, ProjectDetail as Detail, Character, Page } from '../types'
-import { CardHead, Seal, mountFrame } from './decor'
+import type { BgmItem, Meta, ProjectDetail as Detail, Character, Page } from '../types'
+import { CardHead, CardHeadInline, Seal, mountFrame } from './decor'
 import { CharacterRedrawDialog } from './CharacterRedrawDialog'
 import { ImageLightbox } from './ImageLightbox'
 import { ImagePicker } from './ImagePicker'
 import { ProgressSteps } from './ProgressSteps'
+import { StepRunDialog } from './StepRunDialog'
 import { VoiceRecorder } from './VoiceRecorder'
 import { UploadDialog } from './UploadDialog'
 
@@ -72,13 +80,21 @@ function SubTracks({ subtitles, defaultLang }: {
   )
 }
 
+// 标签取 stages.ts 的 STAGE_LABEL(它自称是环节 key→中文标签的单一真源)。此前这里
+// 各写一份,而重跑弹窗要按环节名单拼文案,不统一就会出现"按钮写 A、弹窗写 B"。
 const STEP_ACTIONS: { name: string; label: string; destructive?: boolean }[] = [
-  { name: 's2', label: '分镜', destructive: true },
-  { name: 's3', label: '角色' },
-  { name: 's4', label: '漫画页' },
-  { name: 's5', label: '配音' },
-  { name: 's6', label: '合成' },
+  { name: 's2', label: STAGE_LABEL.s2, destructive: true },
+  { name: 's3', label: STAGE_LABEL.s3 },
+  { name: 's4', label: STAGE_LABEL.s4 },
+  { name: 's5', label: STAGE_LABEL.s5 },
+  { name: 's6', label: STAGE_LABEL.s6 },
 ]
+
+// 分镜换掉的是 storyboard,而角色三视图依赖剧本——这一条反直觉(用户容易以为角色也会重画),
+// 所以单独给它一句说明。其余步骤的级联都符合直觉,不加注。
+const STEP_NOTE: Record<string, string> = {
+  s2: '角色三视图不受影响——它依赖剧本,而这一步只换分镜。',
+}
 
 // 各单步重跑按钮的真实前置条件,对应各 step 模块自己的守卫(s2/s3 需先完成 S1,
 // s4/s5/s6 需先有分镜)。按钮不检查这个会让用户点了必然失败的操作——
@@ -152,7 +168,7 @@ export function ProjectDetailView({
   const [stepBusy, setStepBusy] = useState<string | null>(null)
   const [trackBusy, setTrackBusy] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const [s2Open, setS2Open] = useState(false)
+  const [stepDialog, setStepDialog] = useState<string | null>(null)
   const [sourcesOpen, setSourcesOpen] = useState(false)
   // 原文不随详情下发(详情每 2 秒轮询一次),点开时才拉一次;null = 还没拿到
   const [storyText, setStoryText] = useState<string | null>(null)
@@ -162,6 +178,7 @@ export function ProjectDetailView({
   const [voiceBusy, setVoiceBusy] = useState(false)
   const voiceUpload = useUpload<VoiceSample>()
   const [resetting, setResetting] = useState(false)
+  const [bgmOpen, setBgmOpen] = useState(false)
 
   // 失联作业的唯一出口。后端只在真的失联时放行:有活作业 409(该用取消)、已是终态 400。
   async function doReset() {
@@ -182,16 +199,25 @@ export function ProjectDetailView({
   // 作业表,不看磁盘状态;run_step 更是全程不看),此前是前端把用户挡在了已经开着的门外。
   const generating = (project.pipeline === 'queued' || project.pipeline === 'running')
     && !project.stalled
-  // 别人的作品只能看不能改。判据必须与后端 _may_edit 严格一致:owner 为空的历史作品视为
-  // 无主、不做归属限制(否则界面把按钮藏了、后端其实允许);owner 非空且不是自己则只读,
-  // 管理员除外(admin 可操作任何人的作品,后端 _may_edit 同样放行)。
+  // 这一步重跑会连带跑完的下游中文名。后端 meta.step_cascade 给的是环节 key,在这里翻成
+  // 标签;未知 key 直接丢掉而不是显示原始 key——宁可少列一项,不在弹窗里蹦出"s7"这种东西。
+  const cascadeOf = (name: string): string[] =>
+    (meta?.step_cascade?.[name] ?? []).map((k) => STAGE_LABEL[k]).filter(Boolean)
+  // 别人的作品只能看不能改。判据必须与后端 _may_edit 严格一致:不是自己的就只读,管理员除外
+  // (admin 可操作任何人的作品,后端 _may_edit 同样放行)。
+  // owner 为空的作品同样归入"改不了"——2026-08-06 与后端一起去掉了"无主则谁都能改"那条,
+  // 详见后端 _may_edit 的 docstring。前后端必须同时改,否则一侧藏按钮、另一侧仍放行。
   // ⚠️ 管理员旁路**只覆盖归属这一层**:下面 editable 里的 !readonly 与 !generating 对管理员
   // 照样生效,后端那两道也一样——它们是数据安全屏障,不是权限。前端与后端任一侧多放行一颗
   // 按钮,下场都是点了报 403/409,而不是真能改。
-  const owned = !project.owner || project.owner === user || isAdmin
+  const owned = project.owner === user || isAdmin
   const editable = !meta?.readonly && !generating && owned
   // 「这是别人的作品」——纯事实,与能不能改无关(管理员能改,但仍要被告知不是自己的)。
+  // owner 为空时不摆这条:横幅要渲染 owner 名,空串会显示成「 的作品」。改不了的理由由下面
+  // 那条无主提示单独给,否则按钮凭空消失、用户会以为功能坏了。
   const foreign = !!project.owner && project.owner !== user
+  // owner 为空的历史作品:现在只有管理员能改(见后端 _may_edit)。非管理员要有个说法。
+  const orphan = !project.owner
   const pendingCount = project.pages.filter(
     (p) => p.status === 'draft' || p.status === 'failed' || !p.audio,
   ).length
@@ -294,11 +320,14 @@ export function ProjectDetailView({
     }
   }
 
-  // 「分镜」重跑会作废漫画页/配音/合成(角色三视图不受影响——它依赖剧本不依赖分镜),
-  // 所以单独给它一个三出口弹窗,而不是让用户点完再自己去点三次。其余步骤沿用原确认框。
+  // 有下游的步骤一律给三出口弹窗(取消/只跑这一步/连下游一起跑完)。理由是后端只要这一步
+  // 真的重生成了就会清掉下游产物——无论 cascade 真假,见 api._run_one_step——所以"只跑这一步"
+  // 必然把作品留在半成品状态,得让用户能一次跑完。名单来自后端 meta.step_cascade,不硬编码。
+  // 「合成」(s6)没有下游,两个出口完全等价,给它弹窗是假选择,继续用原确认框;
+  // 老后端没有 step_cascade 时所有步骤都走这条兜底,即本功能上线前的行为。
   async function handleStep(name: string, label: string) {
-    if (name === 's2') {
-      setS2Open(true)
+    if (cascadeOf(name).length > 0) {
+      setStepDialog(name)
       return
     }
     if (!window.confirm(`确定重新执行「${label}」?这会清空之后各步骤的产物。`)) return
@@ -306,7 +335,7 @@ export function ProjectDetailView({
   }
 
   async function doStep(name: string, cascade: boolean) {
-    setS2Open(false)
+    setStepDialog(null)
     setStepBusy(name)
     try {
       await api.runStep(project.project_id, name, cascade)
@@ -359,6 +388,14 @@ export function ProjectDetailView({
                   </span>
                 </>
               )}
+              {orphan && (
+                <>
+                  {' · '}
+                  <span className="text-alarm">
+                    无归属作品{isAdmin ? ' · 管理员可编辑' : ',仅管理员可编辑'}
+                  </span>
+                </>
+              )}
             </p>
             {/* 剧本/分镜这两步实际用的引擎(模型 + 是否走大师 skill)。勾了大师开关但该环节
                 后端不是 hermes-agent 时后端会静默退化,退化原因也写在这两个值里——在此之前
@@ -392,6 +429,11 @@ export function ProjectDetailView({
           {!meta?.readonly && owned && (
             <button type="button" onClick={() => setVoiceOpen(true)} className={ghostBtn}>
               换音色
+            </button>
+          )}
+          {!meta?.readonly && owned && (
+            <button type="button" onClick={() => setBgmOpen(true)} className={ghostBtn}>
+              配乐
             </button>
           )}
           <button type="button" onClick={copyLink} className={ghostBtn}>
@@ -711,53 +753,24 @@ export function ProjectDetailView({
           )}
         </div>
       )}
-      {s2Open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-6"
-          onClick={() => setS2Open(false)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md rounded-2xl border border-band bg-paper p-5 shadow-paper-lg"
-          >
-            <h3 className="font-serif text-sm font-semibold tracking-wide text-ink">
-              重新生成分镜
-            </h3>
-            <p className="mt-2 text-xs text-ink-soft">
-              分镜会被整体重写,已生成的<b>漫画页、配音、成片</b>(含英文版)随之作废,
-              旧的图片与音频文件会被清理。
-              <br />
-              角色三视图<b>不受影响</b>——它依赖剧本,而这一步只换分镜。
-            </p>
-            <div className="mt-4 flex flex-wrap justify-end gap-2">
-              <button type="button" onClick={() => setS2Open(false)} className={ghostBtn}>
-                取消
-              </button>
-              <button
-                type="button"
-                onClick={() => void doStep('s2', false)}
-                disabled={stepBusy !== null}
-                className={ghostBtn}
-              >
-                只重跑分镜
-              </button>
-              <button
-                type="button"
-                onClick={() => void doStep('s2', true)}
-                disabled={stepBusy !== null}
-                className={primaryBtn}
-              >
-                分镜 + 漫画页 + 配音 + 合成
-              </button>
-            </div>
-            <p className="mt-2 text-right text-[11px] text-muted">
-              选「只重跑分镜」的话,之后需自己依次点「漫画页」「配音」「合成」
-            </p>
-          </div>
-        </div>
+      {stepDialog && (
+        <StepRunDialog
+          stepLabel={STAGE_LABEL[stepDialog] ?? stepDialog}
+          cascadeLabels={cascadeOf(stepDialog)}
+          note={STEP_NOTE[stepDialog]}
+          busy={stepBusy !== null}
+          onConfirm={(cascade) => void doStep(stepDialog, cascade)}
+          onCancel={() => setStepDialog(null)}
+        />
       )}
+      {bgmOpen && (
+        <BgmDialog
+          project={project}
+          onClose={() => setBgmOpen(false)}
+          onChanged={onChanged}
+        />
+      )}
+
       {voiceOpen && (
         <UploadDialog
           title="更换配音音色"
@@ -1801,6 +1814,183 @@ function PageCard({
       )}
       {lightboxOpen && pg.image && (
         <ImageLightbox src={pg.image} alt={`第 ${pg.index} 页`} onClose={() => setLightboxOpen(false)} />
+      )}
+    </div>
+  )
+}
+
+// ---------- 配乐 ----------
+// 一个弹窗管三件事:选库里的曲子、试听、把本作品当前的配乐存进库。上传自备音频复用
+// UploadDialog 那条路,不在这里重造。
+// ⚠️ 试听走 /api/bgm/{id}/audio 而不是拼 /files:_bgm/ 整个命名空间已从静态挂载摘除
+// (否则任何登录用户读一次 index.json 就能顺着文件名把别人的库整个下走)。
+function BgmDialog({
+  project,
+  onClose,
+  onChanged,
+}: {
+  project: Detail
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const [items, setItems] = useState<BgmItem[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [picked, setPicked] = useState<{ blob: Blob; filename: string } | null>(null)
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const bgmUpload = useUpload<BgmItem>()
+
+  const current = project.params.bgm_ref ?? ''
+  const hasBgm = (project.status['bgm'] ?? '') !== 'skipped' && !!project.status['bgm']
+
+  const refresh = useCallback(() => {
+    api.listBgm().then(setItems).catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+  }, [])
+  useEffect(refresh, [refresh])
+
+  async function run(fn: () => Promise<unknown>, ok: string) {
+    setBusy(true)
+    setErr(null)
+    setNotice(null)
+    try {
+      await fn()
+      setNotice(ok)
+      refresh()
+      onChanged()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const row = 'flex flex-wrap items-center gap-2 rounded-lg border border-line px-3 py-2'
+  const smallBtn =
+    'rounded-md border border-line bg-white/50 px-2 py-1 text-[11px] text-ink-soft transition hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4" onClick={onClose}>
+      <div
+        className="max-h-[85vh] w-full max-w-lg space-y-4 overflow-y-auto rounded-2xl border border-band bg-paper p-5 shadow-paper-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <CardHeadInline glyph="乐" title="配乐" />
+          <button type="button" onClick={onClose} aria-label="关闭"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-ink-soft transition hover:text-cinnabar">
+            ×
+          </button>
+        </div>
+
+        <p className="text-[11px] leading-relaxed text-muted">
+          换配乐后<b>只需重跑「合成」这一步</b>,不用重新配音。配乐会自动循环到成片长度,
+          所以不必存满长的曲子;音量也会自动压到解说之下。
+        </p>
+
+        {hasBgm && (
+          <button type="button" disabled={busy} className={smallBtn}
+            onClick={() => {
+              const name = window.prompt('给这首配乐起个名字:', project.scenic_spot)
+              if (name === null) return
+              run(() => api.saveProjectBgm(project.project_id, name), '已存进你的配乐库')
+            }}>
+            把本片当前的配乐存进我的库
+          </button>
+        )}
+
+        <div className="space-y-2">
+          <div className={row}>
+            <span className="text-sm text-ink">AI 生成</span>
+            <span className="text-[11px] text-muted">每次都不一样</span>
+            <span className="ml-auto">
+              {current === '' ? (
+                <span className="text-[11px] text-jade">当前</span>
+              ) : (
+                <button type="button" className={smallBtn} disabled={busy}
+                  onClick={() => run(() => api.updateProjectBgm(project.project_id, ''),
+                                     '已改为 AI 生成,重跑「合成」后生效')}>
+                  用这个
+                </button>
+              )}
+            </span>
+          </div>
+          {items.map((b) => (
+            <div key={b.id} className={row}>
+              <span className="truncate text-sm text-ink">{b.name}</span>
+              <span className="text-[11px] text-muted">
+                {b.source === 'ai' ? '来自作品' : '自备'} · {Math.round(b.duration_ms / 1000)}s
+              </span>
+              <span className="ml-auto flex items-center gap-1.5">
+                <audio src={`/api/bgm/${encodeURIComponent(b.id)}/audio`} controls className="h-8 w-40" />
+                {current === b.id ? (
+                  <span className="text-[11px] text-jade">当前</span>
+                ) : (
+                  <button type="button" className={smallBtn} disabled={busy}
+                    onClick={() => run(() => api.updateProjectBgm(project.project_id, b.id),
+                                       '已换配乐,重跑「合成」后生效')}>
+                    用这个
+                  </button>
+                )}
+                <button type="button" className={smallBtn} disabled={busy}
+                  onClick={() => {
+                    if (!window.confirm(
+                      `确定从库里删除「${b.name}」?已经用它生成过的作品不受影响` +
+                      `(那份已拷进作品目录)。此操作不可撤销。`)) return
+                    run(() => api.deleteBgm(b.id), '已删除')
+                  }}>
+                  删除
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <button type="button" className={smallBtn} disabled={busy}
+                onClick={() => setUploadOpen(true)}>
+          上传自备音频
+        </button>
+
+        {notice && <p className="rounded-md bg-jade/10 px-3 py-2 text-sm text-jade">{notice}</p>}
+        {err && <p className="rounded-md bg-alarm/8 px-3 py-2 text-sm text-alarm">{err}</p>}
+      </div>
+
+      {uploadOpen && (
+        <UploadDialog
+          title="上传配乐"
+          glyph="乐"
+          hint="wav / mp3 / m4a,至少 20 秒、不超过 8 MiB。请用纯器乐——带人声的曲子会和解说撞在一起"
+          picker={
+            <VoiceRecorder
+              onPicked={(b, f) => setPicked({ blob: b, filename: f })}
+              disabled={bgmUpload.phase === 'uploading' || bgmUpload.phase === 'processing'}
+            />
+          }
+          ready={!!picked}
+          phase={bgmUpload.phase}
+          progress={bgmUpload.progress}
+          indeterminate={bgmUpload.indeterminate}
+          error={bgmUpload.error}
+          confirmLabel="存进我的库"
+          phaseLabels={{ processing: '转码中…', done: '已存入' }}
+          onConfirm={() => {
+            if (!picked) return
+            const name = picked.filename.replace(/\.[^.]+$/, '')
+            void bgmUpload.start(bgmUploadTarget(name), picked.blob, picked.filename).then((r) => {
+              if (!r) return   // 失败信息已落在 bgmUpload.error 里,弹窗自己会显示
+              setUploadOpen(false)
+              setPicked(null)
+              bgmUpload.reset()
+              refresh()
+            })
+          }}
+          onCancel={() => {
+            bgmUpload.cancel()
+            bgmUpload.reset()
+            setUploadOpen(false)
+            setPicked(null)
+          }}
+        />
       )}
     </div>
   )

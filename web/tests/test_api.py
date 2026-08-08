@@ -17,12 +17,18 @@ from shanhai.schema import (CharacterCard, Legend, LocalizedTrack, Project, Scri
 client = TestClient(api.app)
 
 
+# 测试的登录身份。生产建作品必设 owner(api.create_project),而 store.create_project /
+# Project() 都不设——夹具若不补,拿到的是「无主作品」,自 2026-08-06 收紧后普通用户对它
+# 一律 403,测的就不再是被测功能而是归属判据了。
+TEST_USER = "testuser"
+
+
 @pytest.fixture(autouse=True)
 def _login_override():
     """现有端点已全部要求登录(Depends(current_user)),否则本文件测试会因 401 全挂。
     用依赖覆盖让测试在「已登录 testuser」语境下跑,不必真的走 cookie 登录流程
     (真实 cookie 登录流程由 tests/test_auth.py 覆盖)。"""
-    api.app.dependency_overrides[api.current_user] = lambda: "testuser"
+    api.app.dependency_overrides[api.current_user] = lambda: TEST_USER
     yield
     api.app.dependency_overrides.clear()
 
@@ -57,6 +63,24 @@ def test_meta_includes_loras():
     # loras 列表来自 loras.LORA_PRESETS 的 key,不是文件名——前端下拉框只需要短名。
     j = client.get("/api/meta").json()
     assert set(j["loras"]) == {"Real_ani_qwen", "figurine_qwen", "bjd.7ARL"}
+
+
+def test_meta_exposes_step_cascade_table():
+    """「补全重生成」的弹窗要如实告诉用户点下去会跑哪几步,名单必须来自后端这张表。
+
+    ⚠️ 断言直接对着 _INVALIDATES 本身,而不是在这里抄一份期望值——抄一份就和"前端自己
+    硬编码一份"是同一个毛病:表改了测试照样绿,界面却在向用户描述一个不存在的行为。"""
+    j = client.get("/api/meta").json()
+    assert j["step_cascade"] == {k: list(v) for k, v in api._INVALIDATES.items()}
+
+
+def test_meta_step_cascade_covers_every_runnable_step():
+    """级联表的键集合必须与可单步重跑的步骤完全一致。
+
+    少了 → 前端 cascadeOf 取不到,那一步静默退回单出口确认框(功能悄悄没了);
+    多了 → 弹窗会列出一个 run_step 根本不接受的步骤,点下去 400。"""
+    j = client.get("/api/meta").json()
+    assert set(j["step_cascade"]) == set(api._STEP_NAMES)
 
 
 def test_meta_voices_follow_s5_override(_isolated_config_path):
@@ -309,7 +333,7 @@ def test_create_stores_voice_and_speed(mock_create, _save, _settings, _pipe):
 
 def test_export_endpoint_runs_even_in_readonly(monkeypatch):
     monkeypatch.setattr(api, "_READONLY", True)          # 导出不受只读限制
-    p = Project(project_id="expid", scenic_spot="雷峰塔")
+    p = Project(project_id="expid", scenic_spot="雷峰塔", owner=TEST_USER)
     p.output["pdf"] = "projects/expid/output/book.pdf"
     p.output["zip"] = "projects/expid/output/pages.zip"
     with patch("shanhai.api.store.load", return_value=p), \
@@ -559,14 +583,18 @@ def test_cancel_matches_editable_ownership_rule(tmp_path, monkeypatch):
     """取消权限必须与编辑权限同判据。此前用的是 `p.owner != user`,而 _editable 用的是
     `p.owner and p.owner != user`——历史项目 owner 为空时人人可编辑,却**没有人**能取消
     它的作业,那个作业只能靠重启进程停下,期间一直占着执行槽。两个判据的差异没有任何
-    理由,现已共用 _may_edit,不再靠人肉保持一致。"""
+    理由,现已共用 _may_edit,不再靠人肉保持一致。
+
+    2026-08-06 起无主作品对普通用户一律 403(见 _may_edit),故这里断言的是 403 而不是
+    "放行后落到 400"。锁的仍是同一件事:cancel 与 edit 用同一个判据。"""
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     p = store.create_project("雷峰塔", root=tmp_path)
     p.owner = ""                              # 无主的历史项目
     store.save(p, root=tmp_path)
-    r = client.post(f"/api/projects/{p.project_id}/cancel")
-    # 归属校验放行 → 落到"当前没有可取消的作业"那条 400,而不是 403
-    assert r.status_code == 400
+    assert client.post(f"/api/projects/{p.project_id}/cancel").status_code == 403
+    # 同判据的另一半:编辑侧同样拒绝(若两边判据再次分叉,这两条会一起报警)
+    assert client.patch(f"/api/projects/{p.project_id}/cells/1",
+                        json={"caption": "x"}).status_code == 403
 
 
 def test_cancel_rejects_other_owner(tmp_path, monkeypatch):
@@ -777,14 +805,29 @@ def test_export_rejects_other_owner(tmp_path, monkeypatch):
     assert client.post(f"/api/projects/{p.project_id}/export").status_code == 403
 
 
-def test_export_allows_ownerless_legacy_project(tmp_path, monkeypatch):
-    """历史项目 owner 为空视为无主,判据与 _editable 保持一致(不是 owner != user)。"""
+def test_export_rejects_ownerless_project_for_non_admin(tmp_path, monkeypatch):
+    """无主作品(owner 为空)对普通用户一律 403,导出侧与 _editable 判据一致。
+
+    2026-08-06 之前这里断言的是 200(为存量历史数据留的口子),线上无主数据清零后收紧。"""
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     p = store.create_project("雷峰塔", root=tmp_path)
     p.owner = ""
     store.save(p, root=tmp_path)
     with patch("shanhai.api.export.build_exports", side_effect=lambda proj, _d: proj):
-        assert client.post(f"/api/projects/{p.project_id}/export").status_code == 200
+        assert client.post(f"/api/projects/{p.project_id}/export").status_code == 403
+
+
+def test_admin_still_edits_ownerless_project(tmp_path, monkeypatch):
+    """收紧后无主作品并非谁都改不了——管理员仍可编辑,否则真冒出无主数据就成了死锁。"""
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = ""
+    p.storyboard = [StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
+                                   caption="c1", emotion="宁静")]
+    store.save(p, root=tmp_path)
+    r = client.patch(f"/api/projects/{p.project_id}/cells/1", json={"caption": "新"})
+    assert r.status_code == 200
 
 
 def test_delete_project_requires_admin(monkeypatch):
@@ -1519,7 +1562,7 @@ def test_get_queue_reflects_jobs_owner_and_spot():
 # ---------- 编辑端点 ----------
 
 def test_patch_cell_clears_audio_on_caption_change():
-    p = Project(project_id="editid", scenic_spot="雷峰塔")
+    p = Project(project_id="editid", scenic_spot="雷峰塔", owner=TEST_USER)
     p.storyboard = [StoryboardCell(index=1, scene_ref="1-1", visual_desc="断桥",
                                    characters=[], caption="旧文案", emotion="宁静",
                                    image="pages/page_01.png", audio="audio/page_01.mp3",
@@ -1576,15 +1619,15 @@ def test_delete_cell_rejects_non_owner():
     assert r.status_code == 403
 
 
-def test_patch_cell_allows_legacy_project_without_owner():
-    # 历史项目 owner 为空字符串:视为无主,不做归属限制(不能因加固而锁死存量数据)。
+def test_patch_cell_rejects_project_without_owner():
+    # owner 为空的作品:普通用户改不了(2026-08-06 收紧,此前断言的是 200)。
     p = Project(project_id="legacyid", scenic_spot="雷峰塔")
     assert p.owner == ""
     p.storyboard = [StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
                                    caption="c1", emotion="宁静")]
     with patch("shanhai.api.store.load", return_value=p), patch("shanhai.api.store.save"):
         r = client.patch("/api/projects/legacyid/cells/1", json={"caption": "新"})
-    assert r.status_code == 200
+    assert r.status_code == 403
 
 
 # ---- 管理员归属旁路(_may_edit)。前四条锁"能",后两条锁"能到哪为止"。----
@@ -1711,7 +1754,7 @@ def test_run_one_step_ownerless_project_uses_global(tmp_path, monkeypatch):
 
 
 def test_reorder_rejects_non_permutation():
-    p = Project(project_id="reorderid", scenic_spot="雷峰塔")
+    p = Project(project_id="reorderid", scenic_spot="雷峰塔", owner=TEST_USER)
     p.storyboard = [
         StoryboardCell(index=1, scene_ref="", visual_desc="a", characters=[],
                        caption="c1", emotion="宁静"),
@@ -1753,7 +1796,7 @@ def test_run_step_rejects_non_owner():
 @patch("shanhai.api._run_step")           # 不真跑单步
 @patch("shanhai.api.Settings")            # 不读 .env / 建真实客户端
 def test_run_step_queues_job(_settings, mock_run_step):
-    p = Project(project_id="stepid", scenic_spot="雷峰塔")
+    p = Project(project_id="stepid", scenic_spot="雷峰塔", owner=TEST_USER)
     # store.save 必须一并 mock——漏了这个之前会把 queued 状态真写进仓库根 projects/stepid/,
     # 每次跑测试都污染真实数据目录(2026-07-14 实测:DGX 部署前多次撞见这个残留项目)。
     with patch("shanhai.api.store.load", return_value=p), \
@@ -1769,7 +1812,7 @@ def test_run_step_queues_job(_settings, mock_run_step):
 @patch("shanhai.api.Settings")
 def test_run_step_marks_queued_before_submit(_settings, _run):
     # 202 后立刻轮询不能读到上一次遗留的 done —— 提交前须先落盘 queued
-    p = Project(project_id="qid", scenic_spot="雷峰塔")
+    p = Project(project_id="qid", scenic_spot="雷峰塔", owner=TEST_USER)
     p.status["pipeline"] = "done"           # 上一步遗留状态
     with patch("shanhai.api.store.load", return_value=p), \
          patch("shanhai.api.store.save") as mock_save:
@@ -1785,8 +1828,8 @@ def test_run_step_marks_queued_before_submit(_settings, _run):
 def test_run_step_persists_fresh_reload_not_stale_snapshot(_settings, _run):
     # finding-1 回归:run_step 写 queued 必须在 per-project 锁内重新 store.load 最新快照,
     # 而非复用 _editable 锁外拿到的陈旧 p —— 否则会覆盖此间发生的并发编辑(丢更新)。
-    stale = Project(project_id="freshid", scenic_spot="旧")   # _editable 锁外拿到的陈旧快照
-    fresh = Project(project_id="freshid", scenic_spot="新")   # 锁内重载应拿到的最新快照
+    stale = Project(project_id="freshid", scenic_spot="旧", owner=TEST_USER)   # _editable 锁外拿到的陈旧快照
+    fresh = Project(project_id="freshid", scenic_spot="新", owner=TEST_USER)   # 锁内重载应拿到的最新快照
     loads = [stale, fresh]                                    # 第 1 次 _editable、第 2 次锁内重载
     saved = {}
     with patch("shanhai.api.store.load", side_effect=lambda *a, **k: loads.pop(0)), \
@@ -2112,7 +2155,7 @@ def _jpeg_bytes(w=800, h=1200, color=(200, 50, 50)) -> bytes:
     return buf.getvalue()
 
 
-def _ref_project(owner: str = "") -> Project:
+def _ref_project(owner: str = TEST_USER) -> Project:
     p = Project(project_id="refid", scenic_spot="雷峰塔", owner=owner)
     p.script = Script(title="t", theme="th", acts=[], characters=[
         CharacterCard(name="白娘子", role="蛇仙", personality="p", appearance="a",
@@ -2462,6 +2505,7 @@ def test_story_endpoint_returns_verbatim(tmp_path, monkeypatch):
     """原文改走独立端点,用户点开按钮时才拉一次。"""
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = TEST_USER          # 生产路径必设 owner,夹具不补就成了「无主作品」
     p.story = "第一段\n\n第二段"
     store.save(p, root=tmp_path)
     r = client.get(f"/api/projects/{p.project_id}/story")
@@ -2472,6 +2516,8 @@ def test_story_endpoint_returns_verbatim(tmp_path, monkeypatch):
 def test_story_endpoint_null_when_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = TEST_USER          # 生产路径必设 owner,夹具不补就成了「无主作品」
+    store.save(p, root=tmp_path)  # 端点是从盘上重读的,只改内存这份不算数
     assert client.get(f"/api/projects/{p.project_id}/story").json()["story"] is None
 
 
@@ -2501,15 +2547,14 @@ def test_story_allows_admin(tmp_path, monkeypatch):
     assert r.status_code == 200 and r.json()["story"] == "别人贴的私人文本"
 
 
-def test_story_allows_ownerless_legacy_project(tmp_path, monkeypatch):
-    """判据与写侧 _may_edit 共用,故「owner 为空的历史项目视为无主」在读侧同样成立——
-    线上历史项目多数 owner 为空,收紧不能把存量数据锁死。"""
+def test_story_rejects_ownerless_project_for_non_admin(tmp_path, monkeypatch):
+    """判据与写侧 _may_edit 共用,故收紧「无主」这条在读侧同步生效:自备原文是私人文本,
+    无主时不该落给随便哪个登录用户。2026-08-06 之前这里断言的是 200。"""
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     p = store.create_project("雷峰塔", root=tmp_path)
     p.owner, p.story = "", "无主项目的原文"
     store.save(p, root=tmp_path)
-    r = client.get(f"/api/projects/{p.project_id}/story")
-    assert r.status_code == 200 and r.json()["story"] == "无主项目的原文"
+    assert client.get(f"/api/projects/{p.project_id}/story").status_code == 403
 
 
 def test_voice_sample_rejects_non_owner(tmp_path, monkeypatch):
@@ -2573,6 +2618,7 @@ def test_voice_sample_endpoint_streams_the_wav(tmp_path, monkeypatch):
     回听走带 Depends(current_user) 的端点,至少和作品本身同一个可见性级别。"""
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = TEST_USER          # 生产路径必设 owner,夹具不补就成了「无主作品」
     p.params.voice = "clone:v1.wav"
     store.save(p, root=tmp_path)
     store.remember_voice_sample("clone:v1.wav", "vs_B.wav", root=tmp_path)
@@ -2590,6 +2636,7 @@ def test_update_voice_clears_every_page_audio(tmp_path, monkeypatch):
     voice_en 一并清空,否则英文轨的显式覆盖会盖过新音色。"""
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = TEST_USER          # 生产路径必设 owner,夹具不补就成了「无主作品」
     p.params.voice, p.params.voice_en = "clone:old.wav", "clone:old.wav"
     p.storyboard = [StoryboardCell(index=i, scene_ref=f"1-{i}", visual_desc=f"v{i}",
                                    characters=[], caption=f"cap{i}", emotion="宁静",
@@ -2616,6 +2663,7 @@ def test_update_voice_clears_every_page_audio(tmp_path, monkeypatch):
 def test_voice_sample_endpoint_404_when_no_custom_voice(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
     p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = TEST_USER          # 生产路径必设 owner,夹具不补就成了「无主作品」
     store.save(p, root=tmp_path)
     assert client.get(f"/api/projects/{p.project_id}/voice-sample").status_code == 404
 
@@ -2776,3 +2824,125 @@ def test_legacy_cookie_without_pwd_ver_still_works(tmp_path, monkeypatch):
     c = _real_client()
     assert c.post("/api/login", json={"username": "old", "password": "goodpassword"}).status_code == 200
     assert c.get("/api/me").status_code == 200
+
+
+# ---------- 用户 BGM 库 ----------
+
+def _seed_bgm(tmp_path, monkeypatch, owner="alice", item_id="b1"):
+    monkeypatch.setattr(store, "DEFAULT_ROOT", tmp_path)
+    (tmp_path / store.BGM_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (tmp_path / store.BGM_DIRNAME / f"{item_id}.mp3").write_bytes(b"ID3fake")
+    item = {"id": item_id, "owner": owner, "name": "存好的", "source": "upload",
+            "file": f"{item_id}.mp3", "duration_ms": 30000}
+    store.update_bgm_items(lambda items: items.append(item))
+    return item
+
+
+def test_bgm_list_is_per_user(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="alice", item_id="a1")
+    _seed_bgm(tmp_path, monkeypatch, owner="someone-else", item_id="o1")
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    # _login_override 恒为 testuser,所以两条都不是他的
+    assert client.get("/api/bgm").json() == []
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    assert [r["id"] for r in client.get("/api/bgm").json()] == ["t1"]
+
+
+def test_bgm_list_admin_sees_all(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="alice", item_id="a1")
+    monkeypatch.setattr(api, "is_admin", lambda user: True)
+    assert [r["id"] for r in client.get("/api/bgm").json()] == ["a1"]
+
+
+def test_bgm_row_never_leaks_the_salted_filename(tmp_path, monkeypatch):
+    """file 是盘上的随机盐文件名,没有任何理由让客户端看到——它是"靠不可推导保密"的一环。"""
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    row = client.get("/api/bgm").json()[0]
+    assert set(row) == {"id", "name", "source", "owner", "duration_ms"}
+
+
+def test_bgm_audio_rejects_other_owner(tmp_path, monkeypatch):
+    """404 而不是 403:不区分"不存在"与"不是你的",不给探测面。"""
+    _seed_bgm(tmp_path, monkeypatch, owner="someone-else", item_id="o1")
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    assert client.get("/api/bgm/o1/audio").status_code == 404
+
+
+def test_bgm_audio_streams_for_owner(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    r = client.get("/api/bgm/t1/audio")
+    assert r.status_code == 200 and r.content == b"ID3fake"
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_bgm_delete_removes_entry_and_file(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    assert client.delete("/api/bgm/t1").status_code == 200
+    assert store.load_bgm_items() == []
+    assert not (tmp_path / store.BGM_DIRNAME / "t1.mp3").exists()
+
+
+def test_bgm_delete_rejects_other_owner(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="someone-else", item_id="o1")
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    assert client.delete("/api/bgm/o1").status_code == 404
+    assert len(store.load_bgm_items()) == 1               # 没被删掉
+
+
+def test_patch_project_bgm_sets_ref_and_implies_switch(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = TEST_USER          # 生产路径必设 owner,夹具不补就成了「无主作品」
+    p.params.bgm = False
+    store.save(p, root=tmp_path)
+    r = client.patch(f"/api/projects/{p.project_id}/params/bgm", json={"bgm_ref": "t1"})
+    assert r.status_code == 200
+    saved = store.load(p.project_id, root=tmp_path)
+    assert saved.params.bgm_ref == "t1"
+    assert saved.params.bgm is True            # 选了具体某首就隐含"要配乐"
+
+
+def test_patch_project_bgm_rejects_other_owners_item(tmp_path, monkeypatch):
+    """归属校验在端点做(这里知道是谁在操作),不在 S5 里做。"""
+    _seed_bgm(tmp_path, monkeypatch, owner="someone-else", item_id="o1")
+    monkeypatch.setattr(api, "is_admin", lambda user: False)
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = TEST_USER          # 生产路径必设 owner,夹具不补就成了「无主作品」
+    store.save(p, root=tmp_path)
+    assert client.patch(f"/api/projects/{p.project_id}/params/bgm",
+                        json={"bgm_ref": "o1"}).status_code == 404
+
+
+def test_patch_project_bgm_empty_ref_returns_to_ai(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    p = store.create_project("雷峰塔", root=tmp_path)
+    p.owner = TEST_USER          # 生产路径必设 owner,夹具不补就成了「无主作品」
+    p.params.bgm_ref = "t1"
+    store.save(p, root=tmp_path)
+    assert client.patch(f"/api/projects/{p.project_id}/params/bgm",
+                        json={"bgm_ref": ""}).status_code == 200
+    assert store.load(p.project_id, root=tmp_path).params.bgm_ref == ""
+
+
+def test_bgm_write_endpoints_blocked_in_readonly(tmp_path, monkeypatch):
+    _seed_bgm(tmp_path, monkeypatch, owner="testuser", item_id="t1")
+    monkeypatch.setattr(api, "_READONLY", True)
+    assert client.delete("/api/bgm/t1").status_code == 403
+    assert client.get("/api/bgm").status_code == 200       # 只读不挡读
+
+
+def test_files_hides_whole_bgm_namespace(tmp_path, monkeypatch):
+    """与 _voice_samples 同一道闸:库按用户隔离,不该经一个只认"登录了没"的静态挂载漏出去
+    ——否则任何登录用户读一次 _bgm/index.json 就能顺着文件名把别人的库整个下走。"""
+    import shutil as _sh
+    c = _cookie_client(tmp_path, monkeypatch)
+    d = store.DEFAULT_ROOT / store.BGM_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "index.json").write_text('{"items": []}', encoding="utf-8")
+    (d / "bgm_x.mp3").write_bytes(b"ID3fake")
+    try:
+        base = f"/files/{store.BGM_DIRNAME}"
+        assert c.get(f"{base}/index.json").status_code == 404
+        assert c.get(f"{base}/bgm_x.mp3").status_code == 404
+    finally:
+        _sh.rmtree(d, ignore_errors=True)

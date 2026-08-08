@@ -10,6 +10,7 @@
 // 攒到 33 个无配乐的作品才被用户发现。
 export const BGM_NOTE: Record<string, { short: string; text: string; alarm?: boolean }> = {
   ai: { short: 'AI 配乐', text: '已配乐(AI 生成)' },
+  saved: { short: '已选配乐', text: '已配乐(用你保存的曲子)' },
   manifest: { short: '曲库配乐', text: '已配乐(曲库选曲)' },
   skipped: { short: '未配乐', text: '建作品时未勾选配乐' },
   failed: { short: '配乐失败', text: '配乐生成失败,本片无背景音乐', alarm: true },

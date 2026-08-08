@@ -2,11 +2,12 @@
 TTS 不可用时按文案字数估算时长、生成静音音轨兜底,成片完整但无解说。"""
 import concurrent.futures as cf
 import json
+import shutil
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
-from shanhai import ffmpeg
+from shanhai import ffmpeg, store
 from shanhai.ffmpeg import probe_duration_ms
 from shanhai.providers.music import MusicClient
 from shanhai.providers.tts import TTSClient
@@ -249,9 +250,38 @@ def _generate_ai_bgm(project: Project, music: MusicClient, workdir: Path) -> str
     return str(out)
 
 
+def _use_saved_bgm(project: Project, workdir: Path) -> str | None:
+    """用户从自己的库里选定的 BGM。命中返回落盘路径,否则 None(由调用方继续降级)。
+
+    **拷贝一份进作品目录,不直接引用库文件**。作品要自包含:直接引用的话,用户之后删掉
+    库条目,重跑 S6 就会失败——而 s6_compose 的 finalize_cmd **不校验 project.bgm 指向的
+    文件是否存在**,measure_lufs 会静默兜底、紧接着 ffmpeg 真的报错,整个 S6 挂掉而不是
+    优雅降级。拷贝的代价只是几 MB,换来"已生成的作品不受后续库操作影响"。
+    落点与 AI 路径一致(audio/bgm.mp3),所以 S6 完全不需要区分 BGM 从哪来。
+
+    这里只校验**存在性**,不校验归属:授权发生在设置 bgm_ref 的那个端点(那里才知道
+    是谁在操作),管线里再判一次会让"管理员替别人选了自己库里的曲子"这种合法操作静默失效。"""
+    ref = project.params.bgm_ref
+    if not ref:
+        return None
+    item = store.bgm_item(ref)
+    if item is None:
+        print(f"⚠️ 选定的配乐条目不存在({ref}),降级到 AI 生成")
+        return None
+    src = store.bgm_dir() / item["file"]
+    if not src.is_file():
+        print(f"⚠️ 选定的配乐文件已丢失({src}),降级到 AI 生成")
+        return None
+    audio_dir = workdir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    out = audio_dir / "bgm.mp3"
+    shutil.copyfile(src, out)
+    return str(out)
+
+
 def _resolve_bgm(project: Project, music: MusicClient | None, workdir: Path,
                  manifest_path: Path) -> str:
-    """三级降级选 BGM:AI 生成 → 静态曲库 → 无 BGM,返回路径(无则空串)。
+    """四级降级选 BGM:用户选定的已保存 BGM → AI 生成 → 静态曲库 → 无,返回路径(无则空串)。
     H4:任何失败(AI shim 未部署/超时、manifest 缺失/损坏/字段不全)都整段捕获降级,绝不向上抛——
     BGM 是非关键增强,不该拖垮更关键的配音;在独立线程里跑亦不会炸掉 TTS 线程池或整个 S5。
 
@@ -262,6 +292,12 @@ def _resolve_bgm(project: Project, music: MusicClient | None, workdir: Path,
         # 用户没勾配乐:直接跳过,不白烧一次 ACE-Step(单曲最长 180s 且与生图抢同一块 GPU)
         project.status["bgm"] = "skipped"
         return ""
+    # 选定的已保存 BGM 短路在最前面。这不只是"少等一会"——AI 生成一首最长 180 秒,
+    # 且与生图抢同一把 providers/_http 的本地单并发锁,省下的是一整段 GPU 独占。
+    saved = _use_saved_bgm(project, workdir)
+    if saved:
+        project.status["bgm"] = "saved"
+        return saved
     bgm_path: str | None = None
     if music is not None:
         try:

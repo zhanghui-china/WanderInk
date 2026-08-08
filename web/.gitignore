@@ -25,3 +25,6 @@ version.json
 # 它是开发工具不是产品代码,而 sync-wanderink.sh 会把整个仓库根发布到公开的 WanderInk 仓库。
 # .claude/launch.json 这类项目自己的配置仍然照常提交。
 .claude/skills/
+
+# 本地部署包装脚本,里面写着 DGX 的真实内网地址。同上,sync-wanderink.sh 会把仓库根发布出去。
+deploy.local.sh
