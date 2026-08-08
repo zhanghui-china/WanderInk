@@ -131,10 +131,10 @@ def test_finalize_cmd_loudnorm_applies_to_voice_not_the_mix():
 
 
 def test_bgm_gain_is_computed_from_measured_loudness():
-    """不管 ACE-Step 出的曲子多响,混完都恒定落在"比人声低 18 dB"(即 -34 LUFS)。
+    """不管 ACE-Step 出的曲子多响,混完都恒定落在"比人声低 10 dB"(即 -26 LUFS)。
     线上实测的两个极端值:黄鹤楼 -9.4、华山 -21.4,跨度 12 dB。"""
-    assert ffmpeg.bgm_gain_db(-9.4) == pytest.approx(-24.6)
-    assert ffmpeg.bgm_gain_db(-21.4) == pytest.approx(-12.6)
+    assert ffmpeg.bgm_gain_db(-9.4) == pytest.approx(-16.6)
+    assert ffmpeg.bgm_gain_db(-21.4) == pytest.approx(-4.6)
     for lufs in (-9.4, -21.4, -11.5):
         assert lufs + ffmpeg.bgm_gain_db(lufs) == pytest.approx(
             ffmpeg.VOICE_TARGET_LUFS - ffmpeg.BGM_BELOW_VOICE_DB)
@@ -145,7 +145,11 @@ def test_measure_lufs_falls_back_loud_not_quiet(tmp_path: Path):
     猜轻 → 衰减不够 → 盖住解说,正是这次要修的毛病。方向锁,别写反。"""
     got = ffmpeg.measure_lufs(tmp_path / "does-not-exist.mp3")
     assert got == ffmpeg._LUFS_FALLBACK
-    assert ffmpeg.bgm_gain_db(got) < -20, "兜底值必须导致大幅衰减"
+    # 锁的是**方向**,不是幅度。原先写死 `< -20`,那是从当时的 BGM_BELOW_VOICE_DB=18 反推出
+    # 来的魔数,与"往哪边猜"这件事无关——2026-08-08 把床位调到 10 就把它撞挂了。改成与床位
+    # 常量无关的表述:兜底值必须比实测最轻的那首(-21.4)还响,从而衰减更多、配乐偏轻。
+    assert ffmpeg._LUFS_FALLBACK > -21.4, "兜底必须往「素材很响」的方向猜"
+    assert ffmpeg.bgm_gain_db(got) < ffmpeg.bgm_gain_db(-21.4), "故它的衰减必须比最轻素材更多"
 
 
 def test_finalize_cmd_no_bgm():

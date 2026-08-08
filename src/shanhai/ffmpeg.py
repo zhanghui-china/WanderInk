@@ -122,8 +122,12 @@ def probe_duration_ms(path: Path) -> int:
 
 # 成片人声的目标响度,与 finalize_cmd 里 loudnorm 的 I= 必须一致(它就是人声的基准线)。
 VOICE_TARGET_LUFS = -16.0
-# 配乐比人声低多少。广播/纪录片旁白配乐的通行档位是 15~20 dB;用户拍板 18。
-BGM_BELOW_VOICE_DB = 18.0
+# 配乐比人声低多少(振幅约 32%)。广播/纪录片旁白配乐的通行档位是 15~20 dB,这里刻意取更低
+# 的 10 dB——护台词的活交给下面 _DUCK 那道人声闪避(说话时把配乐再压下去),静态床位就可以
+# 留给"停顿/片头/片尾处要听得见氛围",即广播里的 music up、duck under VO。
+# 2026-07-28 定的 18 dB 是在链路有病时的将就:当时配乐用固定系数盲乘、loudnorm 又挂在混音
+# 之后(人声间隙里把配乐顶上来),只能靠压低床位规避。那两处已修好,故把床位抬回来。
+BGM_BELOW_VOICE_DB = 10.0
 # measure_lufs 解析失败时的兜底。**必须往"素材很响"的方向猜**:猜响 → 衰减更多 → 配乐偏轻,
 # 顶多是不明显;猜轻 → 衰减不够 → 盖住解说,那正是这次要修的毛病。方向不能反。
 _LUFS_FALLBACK = -8.0
@@ -150,7 +154,7 @@ def measure_lufs(path: Path) -> float:
 
 def bgm_gain_db(bgm_lufs: float) -> float:
     """把实测响度换算成要施加的增益,使配乐恒定落在"比人声低 BGM_BELOW_VOICE_DB"。
-    例:实测 -9.4 → -24.6 dB;实测 -21.4 → -12.6 dB。目标恒为 -34 LUFS。
+    例:实测 -9.4 → -16.6 dB;实测 -21.4 → -4.6 dB。目标恒为 -26 LUFS。
 
     **上限钳到 0:配乐永远不放大。** 这条不是多余的保险——公式本身没有上界,一段很轻的
     素材(环境录音,或前面大段静音把 integrated 值拉低的曲子,实测能到 -50 LUFS)会算出
@@ -320,8 +324,12 @@ def finalize_cmd(video: Path, bgm: Path | None, out: Path,
     3. **amix 必须显式 normalize=0。** 默认 normalize=1 会把每路除以路数(-6 dB),
        原先靠后面的 loudnorm 补回来;现在 loudnorm 已经挪到人声支路,不关掉整片会轻一半。
 
-    结尾的 alimiter 是最后一道闸:人声已被 loudnorm 限到 TP=-1.5,再叠一路低 18 dB 的
-    配乐理论上抬不过 0.5 dB,但闸门便宜,不留侥幸。
+    ⚠️ **结尾的 alimiter 已经不是"备而不用的保险",它现在真的在工作。** 人声被 loudnorm 限到
+    TP=-1.5 dBFS(0.841 线性),而 alimiter 的门槛 0.85 是 -1.41 dBFS —— **人声独自就占满了
+    余量,只剩 0.09 dB**。配乐还是低 18 dB 时叠加只抬 +0.07 dB,恰好落在余量内,闸门形同虚设;
+    2026-08-08 床位抬到低 10 dB 后叠加抬 +0.41 dB,**越过门槛,限幅器开始做真实的增益衰减**。
+    所以别把它当摆设删掉;反过来,若日后听到配乐"一压一放"的呼吸感,第一个该查的就是这里
+    (要么放宽 0.85,要么把床位压回去),而不是去调 _DUCK。
     """
     loudnorm = f"loudnorm=I={VOICE_TARGET_LUFS:g}:TP=-1.5:LRA=11"
     if bgm:
