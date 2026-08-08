@@ -3097,5 +3097,8 @@ def test_config_test_uses_short_timeout_not_llm_timeout(_isolated_config_path, m
     r = client.post("/api/config/test", json={"scope": "user:alice", "config": {}})
     assert r.status_code == 200 and r.json()["ok"] is True
     assert built["timeout"] == api.LLM_TEST_TIMEOUT_S      # 不是 900
-    assert built["timeout"] < 60, "测试超时必须是人能等的量级"
+    # 上界锁的是"人还愿意等",不是某个具体秒数。2026-08-08 从 20 抬到 60(线上换成思考型
+    # 模型后回一个字要 10~20 秒,20 秒会约 1/5 概率误报失败),这条断言当时跟着一起改的——
+    # 若哪天又要往上抬,先想清楚"人真的会等这么久吗",别顺手把上界跟着放大。
+    assert built["timeout"] <= 60, "测试超时必须是人能等的量级"
     assert calls["retries"] == 0

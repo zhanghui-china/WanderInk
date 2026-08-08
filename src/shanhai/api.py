@@ -1791,7 +1791,12 @@ _LLM_STAGES = tuple(st for st, cs in STAGE_CLIENTS.items() if "llm" in cs)
 
 # ⚠️ 绝不能用 settings.llm_timeout:线上是 900s、重试 2 次,一次失败最坏要等 45 分钟。
 # 测试是给人点的,必须自带短超时 + retries=0。
-LLM_TEST_TIMEOUT_S = 20.0
+#
+# 20 → 60(2026-08-08):线上主力换成思考型模型(vllm 上的 Qwen3.5-9B)后,**回一个字都要
+# 10~20 秒**——同一端点连测 5 次实测 10.8/16.3/超时/16.5/10.8 秒,约 1/5 概率误报失败。
+# 假阴性比慢更糟:它会让人去改一个本来正确的配置。60 秒是"人还愿意等"与"别误报"之间的折中。
+# 别再往回压:这个值要能容下思考型模型的一次最小往返,而不是按普通模型的手感定。
+LLM_TEST_TIMEOUT_S = 60.0
 # 本地端点抢那把全局单并发锁的时限。等不到就如实说"后端正忙"——那是有用的信息,
 # 不是失败;而无限期等会把 FastAPI 的 worker 线程挂住(见 _http.try_local_backend_guard)。
 LLM_TEST_LOCK_WAIT_S = 5.0
