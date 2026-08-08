@@ -3089,13 +3089,44 @@ def test_config_test_uses_short_timeout_not_llm_timeout(_isolated_config_path, m
         def __init__(self, base_url, api_key, model, timeout=300):
             built.update(timeout=timeout, base_url=base_url, model=model)
 
-        def chat(self, system, user, temperature=0.7, retries=2):
-            calls.update(retries=retries)
+        def chat(self, system, user, temperature=0.7, retries=2, max_tokens=None):
+            calls.update(retries=retries, max_tokens=max_tokens)
             return "好"
 
     monkeypatch.setattr(api, "LLMClient", FakeLLM)
     r = client.post("/api/config/test", json={"scope": "user:alice", "config": {}})
     assert r.status_code == 200 and r.json()["ok"] is True
     assert built["timeout"] == api.LLM_TEST_TIMEOUT_S      # 不是 900
-    assert built["timeout"] < 60, "测试超时必须是人能等的量级"
+    # 上界锁的是"人还愿意等",不是某个具体秒数。2026-08-08 从 20 抬到 60(线上换成思考型
+    # 模型后回一个字要 10~20 秒,20 秒会约 1/5 概率误报失败),这条断言当时跟着一起改的——
+    # 若哪天又要往上抬,先想清楚"人真的会等这么久吗",别顺手把上界跟着放大。
+    assert built["timeout"] <= 60, "测试超时必须是人能等的量级"
     assert calls["retries"] == 0
+    # ⚠️ 真正防长尾的是这个,不是超时值。思考型模型为了回一个字会先思考 185~1524 个 token
+    # (实测耗时 8.8~74.3 秒,长尾无上界),抬超时抬多少都会有一条尾巴;掐输出长度才治本。
+    # 漏传它 → 超时值再大也会偶发误报,而误报会让人去改一个本来正确的配置。
+    assert calls["max_tokens"] == api.LLM_TEST_MAX_TOKENS
+
+
+def test_config_test_treats_truncated_empty_output_as_success(_isolated_config_path, monkeypatch):
+    """思考型模型被 max_tokens 截断后 content 可能为空——**那不算失败**。
+
+    探活要回答的是"这个端点能不能正常应答我们这种请求"(协议对不对、鉴权过不过、模型名认不认),
+    不是"它说了什么"。判成失败会把一个完全可用的配置报成坏的,而假阴性会让人去改对的东西。
+    这条容易被后人当 bug 顺手"修"掉,所以单独锁住。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        users={"alice": runtime_config.UserOverride(
+            llm_base_url="https://cloud.example.com/v1", llm_model="thinky")}))
+
+    class SilentLLM:
+        def __init__(self, *a, **k):
+            pass
+
+        def chat(self, system, user, temperature=0.7, retries=2, max_tokens=None):
+            return ""          # 思考没结束就被截断,一个字都没轮到
+
+    monkeypatch.setattr(api, "LLMClient", SilentLLM)
+    body = client.post("/api/config/test",
+                       json={"scope": "user:alice", "config": {}}).json()
+    assert body["ok"] is True
+    assert "截断" in body["results"][0]["detail"]      # 但要如实说明是截断,不能假装拿到了内容

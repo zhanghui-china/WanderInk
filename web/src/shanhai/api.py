@@ -404,9 +404,9 @@ def _pipeline(project_id: str, cfg: AppConfig, story: str | None) -> None:
         _locked_save(p)
         stages = [
             ("s1", lambda: s1_script.run(p, clients["s1"][0],
-                                         use_skill=runtime_config.use_master_skill(p, settings["s1"], "s1"))),
+                                         skill_prefix=runtime_config.use_master_skill(p, settings["s1"], "s1"))),
             ("s2", lambda: s2_storyboard.run(p, clients["s2"][0],
-                                             use_skill=runtime_config.use_master_skill(p, settings["s2"], "s2"))),
+                                             skill_prefix=runtime_config.use_master_skill(p, settings["s2"], "s2"))),
             ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
                                              settings["s3"].image_size,
                                              on_progress=lambda: _locked_save(p),
@@ -1475,7 +1475,7 @@ def _run_one_step(p: Project, project_id: str, name: str, cfg: AppConfig,
     p.status.pop(name, None)
     _locked_save(p)
     if name == "s2":
-        p = s2_storyboard.run(p, llm, use_skill=runtime_config.use_master_skill(p, s, "s2"))
+        p = s2_storyboard.run(p, llm, skill_prefix=runtime_config.use_master_skill(p, s, "s2"))
     elif name == "s3":
         # 跑之前先给三视图文件拍指纹:跑完凡是**变过**的角色,其出场页必须作废重画,
         # 否则那次重画对已 confirmed 的页完全无效(S4 会幂等跳过它们),用户以为修好了其实没有。
@@ -1791,7 +1791,18 @@ _LLM_STAGES = tuple(st for st, cs in STAGE_CLIENTS.items() if "llm" in cs)
 
 # ⚠️ 绝不能用 settings.llm_timeout:线上是 900s、重试 2 次,一次失败最坏要等 45 分钟。
 # 测试是给人点的,必须自带短超时 + retries=0。
+#
+# 这个值 2026-08-08 当天调过两次,记下过程免得有人再走一遍:
+#   20 → 60:线上换成思考型模型(vllm/Qwen3.5-9B)后频繁误报,以为是"阈值卡太紧"。
+#   60 → 20:错了。抬阈值治不了——无钳制实测 8 次,耗时 8.8/9.8/11.4/13.0/15.5/19.4/33.8/74.3 秒,
+#           completion_tokens 185~1524,**为了回一个字它先思考几百到一千五百个 token**,
+#           是长尾分布、没有上界;60 秒同样被跑满过。真正的修法是下面的 LLM_TEST_MAX_TOKENS:
+#           掐掉输出长度就掐掉了长尾的来源,于是超时可以放心压回 20。
+# 教训:先量分布再定阈值。前两次都是拿一组 5 次采样当分布,而那组没抽到长尾。
 LLM_TEST_TIMEOUT_S = 20.0
+# 探活请求的输出长度上限。思考型模型会被截断、content 可能为空——**那不算失败**:
+# 探活要回答的是"这个端点能不能正常应答我们这种请求"(协议、鉴权、模型名),不是它说了什么。
+LLM_TEST_MAX_TOKENS = 64
 # 本地端点抢那把全局单并发锁的时限。等不到就如实说"后端正忙"——那是有用的信息,
 # 不是失败;而无限期等会把 FastAPI 的 worker 线程挂住(见 _http.try_local_backend_guard)。
 LLM_TEST_LOCK_WAIT_S = 5.0
@@ -1821,12 +1832,19 @@ def _probe_llm(s: Settings) -> tuple[bool, str]:
     try:
         with try_local_backend_guard(s.llm_endpoint[0], LLM_TEST_LOCK_WAIT_S):
             # retries=0:配置错了重试多少次都是错,只会让用户多等三倍
-            text = llm.chat("你是测试探针,只回一个字。", _TEST_PROMPT, retries=0)
+            # max_tokens:掐掉思考型模型的长尾,理由见 LLM_TEST_TIMEOUT_S 上方
+            text = llm.chat("你是测试探针,只回一个字。", _TEST_PROMPT, retries=0,
+                            max_tokens=LLM_TEST_MAX_TOKENS)
     except LocalBackendBusy as e:
         return False, str(e)
     except Exception as e:  # noqa: BLE001 —— 上游任何失败都要变成用户能看懂的一行字
         return False, str(e)
-    return True, f"正常,返回 {len(text.strip())} 字"
+    n = len(text.strip())
+    if n:
+        return True, f"正常,返回 {n} 字"
+    # 空内容**不算失败**:请求被正常受理并返回了合法响应,只是思考型模型的输出在
+    # max_tokens 处被截断、没轮到正文。协议/鉴权/模型名这些探活真正要查的东西都已验证过。
+    return True, f"正常(思考型模型,输出在 {LLM_TEST_MAX_TOKENS} token 处截断,未取到文本)"
 
 
 @app.post("/api/config/test")

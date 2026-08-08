@@ -1,6 +1,6 @@
 import json
 import httpx, pytest, respx
-from shanhai import paneling
+from shanhai import paneling, skills
 from shanhai.providers.llm import LLMClient
 from shanhai.schema import CharacterCard, Project, Script
 from shanhai.steps import s2_storyboard
@@ -124,14 +124,14 @@ def test_s2_multi_panel_includes_panel_rules_in_system_prompt():
 
 
 def test_s2_use_skill_prepends_slash_and_caps_retries():
-    # use_skill=True:system 前置 /director-master 触发导演大师 skill,retries 降到 1 封成本
+    # skill_prefix=skills.SLASH['s2']:system 前置 /director-master 触发导演大师 skill,retries 降到 1 封成本
     from unittest.mock import MagicMock
     llm = MagicMock()
     llm.structured.return_value = s2_storyboard._Cells.model_validate(CELLS)
     p = Project(project_id="x", scenic_spot="雷峰塔")
     p.params.duration_min = 1
     p.script = Script(title="t", theme="th", acts=[], characters=[])
-    s2_storyboard.run(p, llm, use_skill=True)
+    s2_storyboard.run(p, llm, skill_prefix=skills.SLASH['s2'])
     sys_arg = llm.structured.call_args.args[0]
     assert sys_arg.startswith("/director-master")
     assert "请勿反问" in sys_arg

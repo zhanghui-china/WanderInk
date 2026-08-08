@@ -144,9 +144,9 @@ def step(project_id: str, name: str):
     workdir = store.project_dir(project_id)
     t0 = time.time()
     if name == "s1":
-        p = s1_script.run(p, llm, use_skill=use_master_skill(p, s, "s1"))
+        p = s1_script.run(p, llm, skill_prefix=use_master_skill(p, s, "s1"))
     elif name == "s2":
-        p = s2_storyboard.run(p, llm, use_skill=use_master_skill(p, s, "s2"))
+        p = s2_storyboard.run(p, llm, skill_prefix=use_master_skill(p, s, "s2"))
     elif name == "s3":
         # 与 api._run_one_step 的 s3 分支同一套语义:补出来的三视图必须让其出场页作废,
         # 否则 s4 的幂等跳过会让那次补画对已有的页完全无效(单独跑 step s3 正是这个场景)。
@@ -193,9 +193,9 @@ def run(scenic_spot: str, minutes: int = 3, audience: str = "大众", tone: str 
         p.legend = p.legend_candidates[0]
     store.save(p)
     stages = [("s1", lambda: s1_script.run(p, clients["s1"][0],
-                                           use_skill=use_master_skill(p, settings["s1"], "s1"))),
+                                           skill_prefix=use_master_skill(p, settings["s1"], "s1"))),
               ("s2", lambda: s2_storyboard.run(p, clients["s2"][0],
-                                               use_skill=use_master_skill(p, settings["s2"], "s2"))),
+                                               skill_prefix=use_master_skill(p, settings["s2"], "s2"))),
               ("s3", lambda: s3_characters.run(p, clients["s3"][0], clients["s3"][1], workdir,
                                                settings["s3"].image_size,
                                                concurrency=image_concurrency(settings["s3"]))),

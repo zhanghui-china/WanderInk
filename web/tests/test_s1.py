@@ -2,6 +2,7 @@ import json
 import httpx, respx, pytest
 from shanhai.providers.llm import LLMClient
 from shanhai.schema import Legend, Project, Script
+from shanhai import skills
 from shanhai.steps import s1_script
 
 BASE = "https://p.example.com/v1"
@@ -31,13 +32,17 @@ def test_s1_requires_legend():
 
 
 def test_s1_use_skill_prepends_slash_and_caps_retries():
-    # use_skill=True:system 前置 /screenwriter-master 触发编剧大师 skill,retries 降到 1 封成本
+    # use_skill=True:system 前置斜杠命令触发编剧大师 skill,retries 降到 1 封成本。
+    # ⚠️ 这条**测不出真正的失败模式**:斜杠命令写错时 hermes 不报错,只是当普通文本吞掉
+    # (2026-08-08 实测,名字从 screenwriter-master 被对方改成了 screenwriting-master,
+    # 编剧大师因此长期空转)。单测只能锁住"前缀确实被拼上去了";名字是否还有效,只有对着
+    # 线上 hermes 的 GET /v1/skills 比对才知道 —— 见 scripts/check-hermes-skills.py。
     from unittest.mock import MagicMock
     llm = MagicMock()
     llm.structured.return_value = Script.model_validate(SCRIPT)
-    s1_script.run(_project(), llm, use_skill=True)
+    s1_script.run(_project(), llm, skill_prefix=skills.SLASH['s1'])
     sys_arg = llm.structured.call_args.args[0]
-    assert sys_arg.startswith("/screenwriter-master")
+    assert sys_arg.startswith("/screenwriting-master")
     assert "请勿反问" in sys_arg
     assert llm.structured.call_args.kwargs.get("retries") == 1
 
@@ -48,7 +53,7 @@ def test_s1_without_skill_no_slash_default_retries():
     llm.structured.return_value = Script.model_validate(SCRIPT)
     s1_script.run(_project(), llm)                 # use_skill 默认 False
     sys_arg = llm.structured.call_args.args[0]
-    assert "/screenwriter-master" not in sys_arg
+    assert "/screenwriting-master" not in sys_arg
     assert "retries" not in llm.structured.call_args.kwargs   # 走默认 retries=2
 
 def test_is_narrator():

@@ -39,21 +39,22 @@ def _script_text(script: Script) -> str:
     return "".join(parts)
 
 
-# hermes-agent 的"编剧大师"skill:system 前置 /screenwriter-master 显式触发,尾缀"别反问"
-# 压住它的多轮反问式工作流,单轮直出 JSON(实测有效)。仅在 S1 后端确为 hermes-agent 时由
-# 调用方传 use_skill=True;单次 ~16.5 万 token / ~400s,故 retries 降到 1 封顶最坏两次尝试。
-SKILL_PREFIX = "/screenwriter-master\n\n"
+# "编剧大师"skill 的尾缀:压住它原生的多轮反问式工作流,单轮直出 JSON(实测有效)。
+# 两条 skill 路径(hermes 斜杠命令 / 本地正文)都要带——正文里同样写着「每一步完成后暂停,
+# 等待用户确认」「绝不一次性生成所有内容」,不压一样会反问。
+# 前缀本身由调用方给(runtime_config.use_master_skill 决定发斜杠命令还是拼正文,见 shanhai.skills)。
+# 用 skill 时单次 ~16.5 万 token / ~400s,故 retries 降到 1 封顶最坏两次尝试。
 SKILL_SUFFIX = "\n\n【一次性给全信息,请勿反问,直接产出成品剧本】"
 
 
-def run(project: Project, llm: LLMClient, use_skill: bool = False) -> Project:
+def run(project: Project, llm: LLMClient, skill_prefix: str = "") -> Project:
     if project.legend is None:
         raise ValueError("先完成 S0 并选定传说")
     words = WORD_TARGETS[project.params.duration_min]
     user = (f"传说:《{project.legend.title}》\n梗概:{project.legend.summary}\n"
             f"目标总字数:{words}\n受众:{project.params.audience}\n基调:{project.params.tone}")
-    if use_skill:
-        script = llm.structured(SKILL_PREFIX + SYSTEM + SKILL_SUFFIX, user, Script, retries=1)
+    if skill_prefix:
+        script = llm.structured(skill_prefix + SYSTEM + SKILL_SUFFIX, user, Script, retries=1)
     else:
         script = llm.structured(SYSTEM, user, Script)
     hits = find_sensitive(_script_text(script))

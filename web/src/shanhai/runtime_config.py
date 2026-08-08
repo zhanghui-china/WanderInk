@@ -280,9 +280,10 @@ def defaults_view() -> dict:
     }
 
 
-# "大师"skill 只存在于 hermes-agent 后端(/screenwriter-master、/director-master 发给别的
-# 模型会被当乱码),故每个环节各自绑定自己的 skill 名,用于开关判定与引擎记录。
+# 每个环节绑定自己的 skill 名,用于开关判定与引擎记录。
 MASTER_SKILLS = {"s1": "编剧大师", "s2": "导演大师"}
+# 走 hermes 时靠斜杠命令触发它内置的同名 skill;此外还有一条**内置**路径,
+# 直接把 skill 正文(assets/skills/,见 shanhai.skills)拼进 system,任何 LLM 都能用。
 MASTER_SKILL_BACKEND = "hermes-agent"
 
 
@@ -312,29 +313,43 @@ def default_track_voice(p: Project, stage_settings: Settings) -> str:
     return stage_settings.tts_voice_en or stage_settings.tts_voice
 
 
-def use_master_skill(p: Project, stage_settings: Settings, stage: str) -> bool:
-    """该环节是否调"大师"skill,并把**本次实际用的引擎**记进 p.status[f"{stage}_engine"]。
+def use_master_skill(p: Project, stage_settings: Settings, stage: str) -> str:
+    """返回该环节要前置到 system 的"大师"skill 文本(**空串 = 不用**),
+    并把本次实际用的引擎记进 p.status[f"{stage}_engine"]。
 
-    判定仍是老规则:作品勾了开关**且**该环节后端确为 hermes-agent;开关开了但后端不是
-    hermes 时静默退化为普通生成,不报错(退化比失败对用户更有价值)。
+    三条路(按优先级):
+      1. 后端是 hermes-agent → 发**斜杠命令**,由它加载自己那份 skill(既有行为)
+      2. 否则,本地有 skill 正文 → 把正文拼进 system,**任何 LLM 都能用**
+         (正文来自 assets/skills/,见 shanhai.skills;这条路是"不再依赖 hermes"的关键)
+      3. 都不满足 → 空串,静默退化为普通生成(退化比失败对用户更有价值)
 
-    之所以顺带记录:退化原先只 print 一行到服务端 stdout,而 project.json 里不存任何模型
+    ⚠️ 返回类型 2026-08-08 从 bool 改成 str:此前只有 hermes 一条路,真假够用;现在"用哪段
+    文本"与"用不用"是同一个决定,分成两个返回值必然有人只改一处。调用方直接把它当前缀拼上去。
+
+    之所以顺带记录引擎:退化原先只 print 一行到服务端 stdout,而 project.json 里不存任何模型
     或 skill 信息,事后完全无法回答"这部作品到底走没走 skill"——实测正是这个盲区让一批
     质量可疑的旁白无从归因。记录跟着作品走,status 已被 api._serialize 整体透传给前端,
     因此这里写完即可见,不必再动 _serialize(那里漏一行就静默失效,是本仓库的老坑)。
 
     只写内存里的 p.status,落盘交给调用方原有的 store.save / _locked_save。"""
+    from shanhai import skills          # 局部导入:避免 config 层在 import 期依赖 steps 侧资产
+
     skill = MASTER_SKILLS[stage]
     model = stage_settings.llm_model
     if not p.params.master_skill:
         p.status[f"{stage}_engine"] = f"{model} · 普通"
-        return False
+        return ""
     if model == MASTER_SKILL_BACKEND:
-        p.status[f"{stage}_engine"] = f"{model} · {skill}"
-        return True
-    p.status[f"{stage}_engine"] = f"{model} · 普通(已忽略大师开关:后端非 {MASTER_SKILL_BACKEND})"
-    print(f"⚠️ 大师 skill 需 {MASTER_SKILL_BACKEND} 后端,当前 {stage.upper()} 用 {model},已忽略该开关")
-    return False
+        p.status[f"{stage}_engine"] = f"{model} · {skill}(远程)"
+        return skills.SLASH[stage]
+    text = skills.build_skill_prompt(stage, p)
+    if text:
+        p.status[f"{stage}_engine"] = f"{model} · {skill}(内置)"
+        return text
+    p.status[f"{stage}_engine"] = f"{model} · 普通(已忽略大师开关:skill 正文缺失)"
+    print(f"⚠️ {stage.upper()} 想用{skill}但本地无正文,已降级为普通生成;"
+          f"取回:uv run python scripts/fetch-skills.py")
+    return ""
 
 
 def config_view(readonly: bool, viewer: str = "", viewer_is_admin: bool = False) -> dict:
