@@ -108,6 +108,60 @@ def test_resolve_stage_overrides_user():
     assert resolve_settings("s2", cfg, base=_base(), owner="zhanghui").llm_model == "user-model"
 
 
+def test_provider_does_not_bleed_onto_another_endpoint():
+    """2026-08-08 线上故障的回归,形状照抄当时的 config.json。
+
+    stages.s1 指向 hermes-agent(纯 OpenAI 兼容)却没写 llm_provider,用户在自己那层选了
+    ollama。逐字段合并会让 provider 穿透上来,于是拿 Ollama 原生协议去打 hermes:
+    POST http://127.0.0.1:8642/api/chat → 404,而两处配置各看各的、界面上看不出冲突。
+    换了端点就不该继承下层的协议——这条是 _apply_layer 的执法点。"""
+    cfg = AppConfig(
+        users={"huntun": UserOverride(llm_base_url="http://127.0.0.1:11434/v1",
+                                      llm_provider="ollama")},
+        stages={"s1": ConfigOverride(llm_base_url="http://127.0.0.1:8642/v1",
+                                     llm_model="hermes-agent")},
+    )
+    s1 = resolve_settings("s1", cfg, base=_base(), owner="huntun")
+    assert s1.llm_provider == "openai"                        # 不是 ollama
+    assert s1.llm_endpoint[0] == "http://127.0.0.1:8642/v1"   # 端点仍是环节层的
+    # 没有环节覆盖的环节照常用本人的 ollama,不能误伤
+    s3 = resolve_settings("s3", cfg, base=_base(), owner="huntun")
+    assert (s3.llm_provider, s3.llm_endpoint[0]) == ("ollama", "http://127.0.0.1:11434/v1")
+
+
+def test_provider_kept_when_layer_does_not_change_endpoint():
+    """只改模型名、没换端点的覆盖不该动 provider——协议属于端点,端点没变就别管。"""
+    cfg = AppConfig(
+        users={"huntun": UserOverride(llm_base_url="http://127.0.0.1:11434/v1",
+                                      llm_provider="ollama")},
+        stages={"s1": ConfigOverride(llm_model="qwen3.5-tiny")},
+    )
+    s = resolve_settings("s1", cfg, base=_base(), owner="huntun")
+    assert (s.llm_provider, s.llm_model) == ("ollama", "qwen3.5-tiny")
+
+
+def test_explicit_provider_always_wins():
+    """换端点**并且**写明了协议时,写明的那个说了算(否则本机 Ollama 就没法按环节配了)。"""
+    cfg = AppConfig(
+        stages={"s1": ConfigOverride(llm_base_url="http://127.0.0.1:11434/v1",
+                                     llm_provider="ollama")},
+    )
+    assert resolve_settings("s1", cfg, base=_base()).llm_provider == "ollama"
+
+
+def test_provider_does_not_bleed_from_env_layer():
+    """.env 里的 provider 同样穿不过来。
+
+    锁的是 _apply_layer 里"显式写 openai"而不是"只 pop"的那个决定:只 pop 会回落到 base
+    (即 .env 的 SHANHAI_LLM_PROVIDER),那仍旧是别的端点的协议,同一个 bug 换一层再犯。"""
+    base = Settings(_env_file=None, base_url="https://p.example.com/v1", api_key="sk-1",
+                    llm_provider="ollama")
+    cfg = AppConfig(global_=ConfigOverride(llm_base_url="http://127.0.0.1:8642/v1"))
+    assert resolve_settings("s1", cfg, base=base).llm_provider == "openai"
+    # 全局层没换端点时,.env 的选择照常生效
+    assert resolve_settings("s1", AppConfig(), base=base).llm_provider == "ollama"
+
+
 def test_resolve_ignores_user_layer_without_owner():
     """owner=""(历史无主项目、CLI 无登录态)跳过 users 层回落到 global——这条同时是
     "本功能不影响存量项目"的回归证据。"""

@@ -36,6 +36,18 @@ class OllamaLLMClient:
             body["format"] = fmt
         r = request_with_retry(lambda: self._client.post("/api/chat", json=body), retries,
                                base_url=self._base_url)
+        # 404 在这条路上几乎必然是配置问题,而不是"服务出错":要么这个地址根本不是 Ollama
+        # (2026-08-08 线上把 hermes-agent 的地址配了 ollama 协议),要么 llm_base_url 被填成了
+        # 完整接口路径(如 .../api/generate,会被拼成 .../api/generate/api/chat)。httpx 原文是
+        # 一段带 MDN 链接的英文,且会原样透到界面上(见 web/src/pipeline.ts 的"不翻译"约定),
+        # 用户从中看不出该去改哪个字段——所以在这里换成能直接指向配置项的中文。
+        if r.status_code == 404:
+            raise LLMError(
+                f"{r.request.url} 返回 404:该地址没有 Ollama 的 /api/chat 路由。"
+                "若它其实是 OpenAI 兼容服务(如 hermes-agent),请把 llm_provider 改回 openai;"
+                "若它确实是 Ollama,请把 llm_base_url 填到服务根地址"
+                "(如 http://host:11434 或 http://host:11434/v1),不要带 /api/generate 这类完整接口路径。"
+            )
         r.raise_for_status()
         return r.json()["message"]["content"]
 

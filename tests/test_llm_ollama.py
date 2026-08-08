@@ -91,3 +91,33 @@ def test_structured_does_not_retry_400():
     with pytest.raises(httpx.HTTPStatusError):         # 认证/请求错误不可重试,原样向上抛
         OllamaLLMClient(BASE, "ollama", "m").structured("s", "u", Pet)
     assert route.call_count == 1                       # 不当作"输出不合法"重发
+
+
+@respx.mock
+def test_404_explains_the_two_ways_to_misconfigure():
+    """404 换成能直指配置项的中文,而不是 httpx 那段带 MDN 链接的英文。
+
+    这条路上的 404 几乎必然是配置问题,且只有两种:地址根本不是 Ollama(2026-08-08 线上把
+    hermes-agent 配了 ollama 协议),或 llm_base_url 填成了完整接口路径(.../api/generate 会
+    被拼成 .../api/generate/api/chat)。异常文本会原样透到界面上(见 web/src/pipeline.ts 的
+    "不翻译"约定),所以它必须自己说清楚该去改哪个字段。"""
+    respx.post("http://dgx.example.com:11434/api/chat").mock(
+        return_value=httpx.Response(404, text="404 page not found"))
+    with pytest.raises(LLMError) as ei:
+        OllamaLLMClient(BASE, "ollama", "m").chat("sys", "user")
+    msg = str(ei.value)
+    assert "llm_provider" in msg and "openai" in msg       # 出路一:改回 openai
+    assert "llm_base_url" in msg                           # 出路二:填到根地址
+    assert "404" in msg
+
+
+@respx.mock
+def test_404_not_swallowed_by_structured_retry_loop():
+    """404 不能被 structured 的重试循环吞掉:配置错了重试多少次都是错,
+    重试只会把一条能直接照做的提示,变成三次请求之后的"结构化输出失败:..."。"""
+    route = respx.post("http://dgx.example.com:11434/api/chat").mock(
+        return_value=httpx.Response(404, text="404 page not found"))
+    with pytest.raises(LLMError) as ei:
+        OllamaLLMClient(BASE, "ollama", "m").structured("sys", "user", Pet)
+    assert "结构化输出失败" not in str(ei.value)
+    assert route.call_count == 1                           # 只发一次,不重试
