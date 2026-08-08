@@ -21,15 +21,27 @@ class LLMClient:
             timeout=timeout,  # 本地大模型(如带思考的 Qwen3.5)单次结构化输出可远超 300s
         )
 
-    def chat(self, system: str, user: str, temperature: float = 0.7, retries: int = 2) -> str:
-        r = request_with_retry(lambda: self._client.post("/chat/completions", json={
+    def chat(self, system: str, user: str, temperature: float = 0.7, retries: int = 2,
+             max_tokens: int | None = None) -> str:
+        """max_tokens 只给**探活**用(见 api._probe_llm),生成路径一律不传。
+
+        由来:思考型模型(线上 vllm 上的 Qwen3.5-9B)为了回一个字会先思考 185~1524 个 token,
+        耗时因此在 8.8~74.3 秒之间长尾抖动——探活超时抬到多少都会有一条尾巴,抬阈值治不了。
+        限制输出长度是对症的:掐掉思考就掐掉了长尾的来源。
+        ⚠️ 代价:思考型模型被截断后 content 可能为空(甚至是 null),所以这里统一归一成 ""——
+        探活关心的是"这个端点能不能正常应答我们这种请求",不是它说了什么。"""
+        body: dict = {
             "model": self.model,
             "temperature": temperature,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
-        }), retries, base_url=self._base_url)
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        r = request_with_retry(lambda: self._client.post("/chat/completions", json=body),
+                               retries, base_url=self._base_url)
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        return r.json()["choices"][0]["message"].get("content") or ""
 
     def structured[T: BaseModel](self, system: str, user: str,
                                  schema: type[T], retries: int = 2) -> T:

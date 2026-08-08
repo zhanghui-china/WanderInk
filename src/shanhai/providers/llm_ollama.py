@@ -25,7 +25,7 @@ class OllamaLLMClient:
         )
 
     def _chat(self, system: str, user: str, temperature: float,
-              fmt: dict | None, retries: int) -> str:
+              fmt: dict | None, retries: int, max_tokens: int | None = None) -> str:
         body: dict = {
             "model": self.model, "stream": False, "think": False,
             "messages": [{"role": "system", "content": system},
@@ -34,6 +34,10 @@ class OllamaLLMClient:
         }
         if fmt is not None:
             body["format"] = fmt
+        # Ollama 的输出长度上限叫 num_predict(不是 OpenAI 的 max_tokens),放在 options 里。
+        # 只给探活用,理由见 LLMClient.chat 的说明。
+        if max_tokens is not None:
+            body["options"]["num_predict"] = max_tokens
         r = request_with_retry(lambda: self._client.post("/api/chat", json=body), retries,
                                base_url=self._base_url)
         # 404 在这条路上几乎必然是配置问题,而不是"服务出错":要么这个地址根本不是 Ollama
@@ -49,10 +53,13 @@ class OllamaLLMClient:
                 "(如 http://host:11434 或 http://host:11434/v1),不要带 /api/generate 这类完整接口路径。"
             )
         r.raise_for_status()
-        return r.json()["message"]["content"]
+        # 与 LLMClient.chat 一致:截断后 content 可能为空/缺失,统一归一成 ""
+        return r.json().get("message", {}).get("content") or ""
 
-    def chat(self, system: str, user: str, temperature: float = 0.7, retries: int = 2) -> str:
-        return self._chat(system, user, temperature, fmt=None, retries=retries)
+    def chat(self, system: str, user: str, temperature: float = 0.7, retries: int = 2,
+             max_tokens: int | None = None) -> str:
+        return self._chat(system, user, temperature, fmt=None, retries=retries,
+                          max_tokens=max_tokens)
 
     def structured[T: BaseModel](self, system: str, user: str,
                                  schema: type[T], retries: int = 2) -> T:
