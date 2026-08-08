@@ -260,3 +260,21 @@ export interface AppConfigInput {
   users?: Record<string, ConfigOverrideInput>
   stages?: Record<string, ConfigOverrideInput>
 }
+
+// POST /api/config/test 的一条结果:一个「端点身份」(provider+地址+模型)以及它服务哪些环节。
+// 后端按环节逐个解析再去重——只测被编辑的那一层看不出跨层分叉(你配了自己的 Ollama,
+// 而某个环节其实被管理员钉死指向别的地址)。不含 api_key,后端刻意不回显。
+export interface ConfigTestResult {
+  stages: string[]
+  provider: string
+  base_url: string
+  model: string
+  ok: boolean
+  detail: string
+  elapsed_ms: number
+}
+
+export interface ConfigTestReport {
+  ok: boolean
+  results: ConfigTestResult[]
+}

@@ -2946,3 +2946,155 @@ def test_files_hides_whole_bgm_namespace(tmp_path, monkeypatch):
         assert c.get(f"{base}/bgm_x.mp3").status_code == 404
     finally:
         _sh.rmtree(d, ignore_errors=True)
+
+
+# ---------- 配置连通性测试(POST /api/config/test) ----------
+
+_HERMES = "http://127.0.0.1:8642/v1"          # 纯 OpenAI 兼容(线上 hermes-agent 的形状)
+_OLLAMA = "http://127.0.0.1:11434/v1"
+
+
+def _probe_spy(record: list):
+    """替身 _probe_llm:记录每个组合解析出的 (provider, base_url, model),不发真请求。
+    这样可以断言"测了哪几个组合",而不必起真服务——真 HTTP 由端到端脚本覆盖。
+    判负规则模拟真实世界:拿 Ollama 原生协议去打只会说 OpenAI 的服务(8642)必然 404。"""
+    def fake(s):
+        record.append((s.llm_provider, s.llm_endpoint[0], s.llm_model))
+        broken = s.llm_provider == "ollama" and "8642" in s.llm_endpoint[0]
+        return (not broken), "替身"
+    return fake
+
+
+def test_config_test_reports_each_stage_endpoint_separately(_isolated_config_path, monkeypatch):
+    """**本端点存在的理由。** 复刻 2026-08-08 线上那份配置的形状:用户在自己那层配了本机
+    Ollama,而 stages.s1 被管理员钉死指向 hermes。
+
+    只测"用户那一层"会显示**一个**组合、一切正常——但生成时 s1 根本不走那个地址。
+    按环节逐个解析才看得见这种分叉,这正是只测单层做不到的事。
+
+    (跨层的 provider 穿透本身已由 runtime_config._apply_layer 在合并期堵死,所以这里 s1
+    解析出的是 hermes + openai 而非 hermes + ollama;这条顺带成了那个修复的回归证据。)"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        users={"alice": runtime_config.UserOverride(
+            llm_base_url=_OLLAMA, llm_model="glm", llm_provider="ollama")},
+        stages={"s1": runtime_config.ConfigOverride(
+            llm_base_url=_HERMES, llm_model="hermes-agent")},
+    ))
+    seen: list = []
+    monkeypatch.setattr(api, "_probe_llm", _probe_spy(seen))
+    r = client.post("/api/config/test", json={"scope": "user:alice", "config": {}})
+    assert r.status_code == 200
+    body = r.json()
+    combos = {(x["base_url"], x["provider"]) for x in body["results"]}
+    assert combos == {(_HERMES, "openai"), (_OLLAMA, "ollama")}
+    hermes = [x for x in body["results"] if x["base_url"] == _HERMES][0]
+    assert hermes["stages"] == ["s1"]        # 用户自己从没配过这个地址,但 s1 就是走它
+    assert body["ok"] is True                # 协议与端点配套,这份配置是好的
+
+
+def test_config_test_surfaces_a_broken_stage(_isolated_config_path, monkeypatch):
+    """某个环节真的配坏时(这里:管理员显式给纯 OpenAI 服务写了 ollama 协议),
+    整体判负且点名是哪个环节——用户在保存前就知道,不必等一轮生成跑完 20 分钟。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        users={"alice": runtime_config.UserOverride(llm_base_url=_OLLAMA, llm_model="glm")},
+        stages={"s1": runtime_config.ConfigOverride(
+            llm_base_url=_HERMES, llm_model="hermes-agent", llm_provider="ollama")},
+    ))
+    monkeypatch.setattr(api, "_probe_llm", _probe_spy([]))
+    body = client.post("/api/config/test",
+                       json={"scope": "user:alice", "config": {}}).json()
+    assert body["ok"] is False
+    bad = [x for x in body["results"] if not x["ok"]]
+    assert len(bad) == 1 and bad[0]["stages"] == ["s1"] and bad[0]["base_url"] == _HERMES
+
+
+def test_config_test_dedupes_identical_stages(_isolated_config_path, monkeypatch):
+    """四个 LLM 环节配置相同时只探一次——否则每点一次测试就打上游四遍。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        users={"alice": runtime_config.UserOverride(llm_base_url=_OLLAMA, llm_model="m")}))
+    seen: list = []
+    monkeypatch.setattr(api, "_probe_llm", _probe_spy(seen))
+    r = client.post("/api/config/test", json={"scope": "user:alice", "config": {}})
+    assert len(seen) == 1                                  # 只探一次
+    assert r.json()["results"][0]["stages"] == list(api._LLM_STAGES)
+
+
+def test_config_test_uses_candidate_without_persisting(_isolated_config_path, monkeypatch):
+    """测的是**未保存的候选值**,且测完不能落盘——否则"先测后存"就成了"测即是存"。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        users={"alice": runtime_config.UserOverride(llm_base_url=_OLLAMA, llm_model="old")}))
+    before = runtime_config.load_overrides().model_dump()
+    seen: list = []
+    monkeypatch.setattr(api, "_probe_llm", _probe_spy(seen))
+    client.post("/api/config/test", json={
+        "scope": "user:alice",
+        "config": {"users": {"alice": {"llm_model": "candidate-model"}}}})
+    assert seen[0][2] == "candidate-model"                  # 候选值真的生效了
+    assert runtime_config.load_overrides().model_dump() == before   # 但没写进盘
+
+
+def test_config_test_never_echoes_api_key(_isolated_config_path, monkeypatch):
+    """响应逐字段锁死:base_url 可回显(global/stages 本就对所有登录用户可见),密钥绝不。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        users={"alice": runtime_config.UserOverride(
+            llm_base_url=_OLLAMA, llm_api_key="sk-super-secret", llm_model="m")}))
+    monkeypatch.setattr(api, "_probe_llm", _probe_spy([]))
+    r = client.post("/api/config/test", json={"scope": "user:alice", "config": {}})
+    assert set(r.json()["results"][0]) == {
+        "stages", "provider", "base_url", "model", "ok", "detail", "elapsed_ms"}
+    assert "sk-super-secret" not in r.text
+
+
+def test_config_test_rejects_readonly(monkeypatch):
+    monkeypatch.setattr(api, "_READONLY", True)
+    r = client.post("/api/config/test", json={"scope": "user:testuser", "config": {}})
+    assert r.status_code == 403
+
+
+def test_config_test_scope_permissions(tmp_path, monkeypatch):
+    """分权与 PUT /api/config 同判据:影响面超出自己的只认 is_admin。"""
+    monkeypatch.setattr(auth, "USERS_PATH", tmp_path / "users.json")
+    auth.add_user("plain", "pw-plain")
+    c = _login_as("plain", "pw-plain")
+    monkeypatch.setattr(api, "_probe_llm", lambda s: (True, "替身"))
+    assert c.post("/api/config/test", json={"scope": "global", "config": {}}).status_code == 403
+    assert c.post("/api/config/test", json={"scope": "s1", "config": {}}).status_code == 403
+    assert c.post("/api/config/test",
+                  json={"scope": "user:someone", "config": {}}).status_code == 403
+    assert c.post("/api/config/test",
+                  json={"scope": "user:plain", "config": {}}).status_code == 200
+
+
+def test_config_test_rejects_unknown_and_non_llm_scope(_isolated_config_path, monkeypatch):
+    monkeypatch.setattr(api, "is_admin", lambda u: True)
+    monkeypatch.setattr(api, "_probe_llm", lambda s: (True, "替身"))
+    assert client.post("/api/config/test", json={"scope": "s9", "config": {}}).status_code == 400
+    # s4 是纯图像环节:测它没有意义,明说而不是静默返回空结果
+    assert client.post("/api/config/test", json={"scope": "s4", "config": {}}).status_code == 400
+
+
+def test_config_test_uses_short_timeout_not_llm_timeout(_isolated_config_path, monkeypatch):
+    """**防"点一下挂 45 分钟"的执法点。**
+
+    线上 llm_timeout 是 900 秒、重试 2 次:一次失败最坏 3×900+2+4 ≈ 45 分钟。测试是给人点的,
+    必须自带短超时;而且 retries 必须是 0——配置错了重试多少次都是错,只会让用户多等三倍。"""
+    runtime_config.save_overrides(runtime_config.AppConfig(
+        users={"alice": runtime_config.UserOverride(
+            llm_base_url="https://cloud.example.com/v1", llm_model="m", llm_timeout=900.0)}))
+    built: dict = {}
+    calls: dict = {}
+
+    class FakeLLM:
+        def __init__(self, base_url, api_key, model, timeout=300):
+            built.update(timeout=timeout, base_url=base_url, model=model)
+
+        def chat(self, system, user, temperature=0.7, retries=2):
+            calls.update(retries=retries)
+            return "好"
+
+    monkeypatch.setattr(api, "LLMClient", FakeLLM)
+    r = client.post("/api/config/test", json={"scope": "user:alice", "config": {}})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert built["timeout"] == api.LLM_TEST_TIMEOUT_S      # 不是 900
+    assert built["timeout"] < 60, "测试超时必须是人能等的量级"
+    assert calls["retries"] == 0

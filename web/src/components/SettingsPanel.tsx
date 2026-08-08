@@ -7,12 +7,19 @@ import type {
   AppConfigView,
   ConfigOverrideInput,
   ConfigOverrideView,
+  ConfigTestReport,
   Meta,
   UserAccount,
 } from '../types'
 
 // PUT 密钥语义:未改送此哨兵(后端保持已存值不变);与 runtime_config.py 的 _SENTINEL 对应
 const SENTINEL = '__UNCHANGED__'
+
+// 「测试连通」按钮。与 AccountSection 的 smallBtn 同款——本文件里已有两处局部按钮类名,
+// 项目现状就是各处各定义一份(见 StepRunDialog 顶部说明),这里保持一致而不抽公共文件。
+const smallTestBtn =
+  'rounded-lg border border-line px-3 py-1.5 text-xs text-ink-soft transition ' +
+  'hover:border-cinnabar hover:text-cinnabar disabled:cursor-not-allowed disabled:opacity-40'
 
 type Group = 'llm' | 'image' | 'tts' | 'music'
 type FieldKey = keyof ConfigOverrideView
@@ -134,6 +141,11 @@ export function SettingsPanel({
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // 测试与保存各管各的:照 AccountSection 的先例(它也刻意不复用底部那颗「保存」),
+  // 两件事语义不同,共用一套 busy/err 会让人以为测一下也会写盘。按 scope 分开存,
+  // 因为面板上同时存在多颗测试按钮(我的模型 / 全局 / 每个环节 / 别人的)。
+  const [testing, setTesting] = useState<string | null>(null)
+  const [reports, setReports] = useState<Record<string, ConfigTestReport | string>>({})
 
   const applyConfig = (next: AppConfigView) => {
     setCfg(next)
@@ -274,35 +286,95 @@ export function SettingsPanel({
     return false
   }
 
+  // 保存与测试**必须发同一个载荷**:测试若只发被测那一层,测的就不是"保存后会发生什么"。
+  // 只发自己有权改的层:非管理员发 global/stages 会被后端 403,连带自己的改动一起丢。
+  function buildPayload(): AppConfigInput {
+    const users: Record<string, ConfigOverrideInput> = {}
+    for (const u of Object.keys(userValues)) {
+      if (!isAdmin && u !== user) continue
+      if (cfg!.users[u] !== undefined || scopeHasContent(userScope(u))) {
+        users[u] = buildOverride(userScope(u))
+      }
+    }
+    const payload: AppConfigInput = { users }
+    if (isAdmin) {
+      const stages: Record<string, ConfigOverrideInput> = {}
+      for (const s of Object.keys(cfg!.stage_clients)) {
+        if (cfg!.stages[s] !== undefined || scopeHasContent(s)) stages[s] = buildOverride(s)
+      }
+      payload.global = buildOverride('global')
+      payload.stages = stages
+    }
+    return payload
+  }
+
   async function handleSave() {
     if (!cfg) return
     setSaving(true)
     setErr(null)
     try {
-      // 只发自己有权改的层:非管理员发 global/stages 会被后端 403,连带自己的改动一起丢。
-      const users: Record<string, ConfigOverrideInput> = {}
-      for (const u of Object.keys(userValues)) {
-        if (!isAdmin && u !== user) continue
-        if (cfg.users[u] !== undefined || scopeHasContent(userScope(u))) {
-          users[u] = buildOverride(userScope(u))
-        }
-      }
-      const payload: AppConfigInput = { users }
-      if (isAdmin) {
-        const stages: Record<string, ConfigOverrideInput> = {}
-        for (const s of Object.keys(cfg.stage_clients)) {
-          if (cfg.stages[s] !== undefined || scopeHasContent(s)) stages[s] = buildOverride(s)
-        }
-        payload.global = buildOverride('global')
-        payload.stages = stages
-      }
-      const next = await api.saveConfig(payload)
+      const next = await api.saveConfig(buildPayload())
       applyConfig(next)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
+  }
+
+  // 测这一层配置能不能真的调通。后端拿候选值按环节逐个解析、去重后各发一句最小生成,
+  // **不落盘**——所以可以填完就测、通过了再保存。
+  async function runTest(scope: string) {
+    if (!cfg) return
+    setTesting(scope)
+    setReports((m) => ({ ...m, [scope]: undefined as never }))
+    try {
+      const rep = await api.testConfig(scope, buildPayload())
+      setReports((m) => ({ ...m, [scope]: rep }))
+    } catch (e) {
+      setReports((m) => ({ ...m, [scope]: e instanceof Error ? e.message : String(e) }))
+    } finally {
+      setTesting(null)
+    }
+  }
+
+  // 测试按钮 + 结果,跟在被测那一块后面。多个组合时逐行列出,因为同一层配置在不同环节
+  // 可能解析出**不同端点**(管理员为某环节钉死了别的地址)——那正是只看一层发现不了的事。
+  function renderTest(scope: string) {
+    const rep = reports[scope]
+    return (
+      <div className="space-y-2">
+        <button
+          type="button"
+          onClick={() => void runTest(scope)}
+          disabled={testing !== null || ro}
+          className={smallTestBtn}
+        >
+          {testing === scope ? '测试中…' : '测试连通'}
+        </button>
+        {typeof rep === 'string' && (
+          <p className="rounded-md bg-alarm/8 px-3 py-2 text-sm text-alarm">{rep}</p>
+        )}
+        {rep && typeof rep !== 'string' && (
+          <div
+            className={`space-y-1 rounded-md px-3 py-2 text-[11px] ${
+              rep.ok ? 'bg-jade/10 text-jade' : 'bg-alarm/8 text-alarm'
+            }`}
+          >
+            {rep.results.map((r) => (
+              <p key={r.stages.join(',')}>
+                {r.ok ? '✓' : '✗'} {r.stages.map((s) => STAGE_LABEL[s] ?? s).join('/')} ·{' '}
+                {r.provider} · {r.model} · {r.elapsed_ms}ms
+                <br />
+                <span className="opacity-70">
+                  {r.base_url} — {r.detail}
+                </span>
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+    )
   }
 
   function renderField(scope: string, field: FieldDef) {
@@ -450,6 +522,7 @@ export function SettingsPanel({
                 {isAdmin && '管理员为某个环节单独钉死的配置优先级更高,会盖过这里。'}
               </p>
               {renderGroup(userScope(user), 'llm')}
+              {renderTest(userScope(user))}
             </div>
 
             {isAdmin && (
@@ -459,6 +532,8 @@ export function SettingsPanel({
                 {renderGroup('global', 'image')}
                 {renderGroup('global', 'tts')}
                 {renderGroup('global', 'music')}
+                {/* 只测 LLM:生一张图要占 GPU 数十秒并烧额度,探活形状完全不同 */}
+                {renderTest('global')}
               </div>
             )}
 
@@ -479,6 +554,7 @@ export function SettingsPanel({
                           {STAGE_LABEL[stage] ?? stage}
                         </h4>
                         {groups.filter(isGroup).map((g) => renderGroup(stage, g))}
+                        {groups.includes('llm') && renderTest(stage)}
                       </div>
                     ))}
                   </div>
@@ -497,6 +573,7 @@ export function SettingsPanel({
                     <div key={u} className="space-y-3 rounded-lg border border-line p-3">
                       <h4 className="text-sm font-semibold tracking-wide text-ink">{u}</h4>
                       {renderGroup(userScope(u), 'llm')}
+                      {renderTest(userScope(u))}
                     </div>
                   ))}
               </div>

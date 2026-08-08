@@ -23,13 +23,15 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from shanhai import auth, editing, export, ffmpeg, runtime_config, store, uploads
 from shanhai.auth import current_user, is_admin, verify_login
-from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _clients,
+from shanhai.cli import (_AUDIENCES, _MINUTES, _TONES, _client_key, _clients,
                          resolve_stage_clients)
+from shanhai.providers._http import LocalBackendBusy, try_local_backend_guard
+from shanhai.providers.llm import LLMClient
 from shanhai.config import Settings, load_env
 from shanhai.runtime_config import (STAGE_CLIENTS, AppConfig, apply_put,
                                      config_view, image_concurrency,
@@ -1770,6 +1772,115 @@ def write_config(body: AppConfig, user: str = Depends(current_user)) -> dict:
         raise HTTPException(400, f"未知环节: {unknown}(合法环节 {list(STAGE_CLIENTS)})")
     update_overrides(lambda existing: apply_put(existing, body))
     return config_view(_READONLY, viewer=user, viewer_is_admin=is_admin(user))
+
+
+# ---------- 配置连通性测试(保存前就知道这套 LLM 能不能用) ----------
+
+# 用到 LLM 的环节,从 STAGE_CLIENTS 推导而不是硬编码:以后加环节这里会自动跟上,
+# 漏掉一个的后果是"测试全绿但那个环节仍然会炸",正是本功能要杜绝的事。
+_LLM_STAGES = tuple(st for st, cs in STAGE_CLIENTS.items() if "llm" in cs)
+
+# ⚠️ 绝不能用 settings.llm_timeout:线上是 900s、重试 2 次,一次失败最坏要等 45 分钟。
+# 测试是给人点的,必须自带短超时 + retries=0。
+LLM_TEST_TIMEOUT_S = 20.0
+# 本地端点抢那把全局单并发锁的时限。等不到就如实说"后端正忙"——那是有用的信息,
+# 不是失败;而无限期等会把 FastAPI 的 worker 线程挂住(见 _http.try_local_backend_guard)。
+LLM_TEST_LOCK_WAIT_S = 5.0
+_TEST_PROMPT = "回答一个字:好"
+
+
+class ConfigTest(BaseModel):
+    """测试候选配置。config 与 PUT /api/config 完全同形——密钥哨兵、extra=forbid、
+    Literal 校验、部分更新语义因此全部免费继承,不另造一套合并逻辑。"""
+    model_config = ConfigDict(extra="forbid")
+
+    scope: str                                   # 'global' | 环节名 | 'user:<登录名>'
+    config: AppConfig = Field(default_factory=AppConfig)
+
+
+def _probe_llm(s: Settings) -> tuple[bool, str]:
+    """真发一句最小生成。返回 (是否成功, 中文说明)。
+
+    为什么不是探连通(GET /v1/models 之类):2026-08-08 那次故障里,hermes 的 /v1/models
+    返回 401——服务活着、地址正确、密钥也对,**真正坏的是 POST /api/chat**(拿 Ollama 原生
+    协议打一个纯 OpenAI 兼容服务)。只有真发一句才招得出协议不匹配这一类。"""
+    if s.llm_provider == "ollama":
+        from shanhai.providers.llm_ollama import OllamaLLMClient
+        llm = OllamaLLMClient(*s.llm_endpoint, s.llm_model, timeout=LLM_TEST_TIMEOUT_S)
+    else:
+        llm = LLMClient(*s.llm_endpoint, s.llm_model, timeout=LLM_TEST_TIMEOUT_S)
+    try:
+        with try_local_backend_guard(s.llm_endpoint[0], LLM_TEST_LOCK_WAIT_S):
+            # retries=0:配置错了重试多少次都是错,只会让用户多等三倍
+            text = llm.chat("你是测试探针,只回一个字。", _TEST_PROMPT, retries=0)
+    except LocalBackendBusy as e:
+        return False, str(e)
+    except Exception as e:  # noqa: BLE001 —— 上游任何失败都要变成用户能看懂的一行字
+        return False, str(e)
+    return True, f"正常,返回 {len(text.strip())} 字"
+
+
+@app.post("/api/config/test")
+def test_config(body: ConfigTest, user: str = Depends(current_user)) -> dict:
+    """测候选配置(不落盘)能不能真的调通 LLM。
+
+    ⚠️ **按环节逐个解析,而不是只测被编辑的那一层** —— 这是本端点存在的理由。2026-08-08
+    那次故障里,用户自己那层是自洽的(他的 Ollama 地址 + ollama 协议),单独测必然通过;
+    坏的是 s0/s1/s2 用 stages 层的 hermes 地址、却继承了他 users 层的 ollama 协议。
+    跨层穿透只有带着环节解析才看得见,所以 global 与 user 作用域一律测全部 LLM 环节。
+
+    按 cli._client_key 去重:配置相同的环节只测一次(同一条配置链上四个环节通常是一个组合)。
+
+    分权照 PUT /api/config:影响面超出自己的只认 is_admin。"""
+    if _READONLY:
+        raise HTTPException(403, "公开演示为只读,禁止测试配置")
+    scope = body.scope
+    owner = ""
+    if scope.startswith("user:"):
+        owner = scope[len("user:"):]
+        if not owner:
+            raise HTTPException(400, "user 作用域缺少用户名")
+        if owner != user and not is_admin(user):
+            raise HTTPException(403, "只能测试自己的模型配置")
+        stages = _LLM_STAGES
+    elif scope == "global":
+        if not is_admin(user):
+            raise HTTPException(403, "仅管理员可测试全站配置")
+        stages = _LLM_STAGES
+    elif scope in STAGE_CLIENTS:
+        if not is_admin(user):
+            raise HTTPException(403, "仅管理员可测试环节配置")
+        if scope not in _LLM_STAGES:
+            raise HTTPException(400, f"环节 {scope} 不使用 LLM(用 LLM 的是 {list(_LLM_STAGES)})")
+        stages = (scope,)
+    else:
+        raise HTTPException(400, f"未知作用域: {scope}")
+
+    # apply_put 是纯函数(写盘的是 update_overrides),候选配置只活在这次请求里
+    candidate = apply_put(load_overrides(), body.config)
+
+    seen: dict[tuple, dict] = {}
+    for st in stages:
+        s = resolve_settings(st, candidate, owner=owner)
+        key = _client_key(s)
+        if key in seen:
+            seen[key]["stages"].append(st)
+            continue
+        t0 = time.monotonic()
+        ok, detail = _probe_llm(s)
+        seen[key] = {
+            "stages": [st],
+            "provider": s.llm_provider,
+            # base_url 可回显:非管理员只能测自己那层,而 global/stages 本就对所有登录用户
+            # 可见(见 read_config)。**api_key 绝不回显。**
+            "base_url": s.llm_endpoint[0],
+            "model": s.llm_model,
+            "ok": ok,
+            "detail": detail,
+            "elapsed_ms": int((time.monotonic() - t0) * 1000),
+        }
+    results = list(seen.values())
+    return {"ok": all(r["ok"] for r in results), "results": results}
 
 
 # 音色样本目录在挂载根下,但整个命名空间不经 /files 对外:见 _ArtifactStatic 说明。

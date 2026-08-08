@@ -17,7 +17,11 @@ import httpx
 TRANSIENT_STATUS = {429, 500, 502, 503, 504}  # 代理瞬时过载/超时,可重试;400 等不可重试
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-_local_lock = threading.Lock()
+# ⚠️ 必须是**可重入**锁。跨线程语义与 Lock 完全一样(仍是互斥),区别只在同一线程可以重进。
+# 需要它是因为 try_local_backend_guard 会套在 request_with_retry 外面,而后者内部还会再进
+# 一次 local_backend_guard——用不可重入的 Lock 时,同一线程第二次 acquire 永远等下去,
+# 表现为配置测试请求整个挂死(2026-08-08 端到端实测踩到,见 test_..._does_not_deadlock)。
+_local_lock = threading.RLock()
 
 
 def is_local_endpoint(base_url: str) -> bool:
@@ -28,12 +32,41 @@ def is_local_endpoint(base_url: str) -> bool:
 def local_backend_guard(base_url: str):
     """本地 Spark 后端全局单并发:GPU 物理共享(Ollama/ComfyUI/CosyVoice2/ACE-Step 同卡),
     跨环节跨用户排队,避免争抢显存导致的推理拖慢(见 2026-07-13 DGX 实测:并发命中同卡时
-    LLM 调用从数十秒拖到接近 900s 超时)。云端 base_url 不受影响,直接放行。"""
+    LLM 调用从数十秒拖到接近 900s 超时)。云端 base_url 不受影响,直接放行。
+
+    ⚠️ 这把锁**没有超时**:等不到就一直等。后台生成线程该如此(排队总比抢显存好),但
+    **请求线程不能用它**——挂住的是 FastAPI 的 worker,且无日志无 503。请求线程走
+    try_local_backend_guard。"""
     if is_local_endpoint(base_url):
         with _local_lock:
             yield
     else:
         yield
+
+
+class LocalBackendBusy(Exception):
+    """本地后端正忙(锁被生成作业占着),在给定时限内没抢到。"""
+
+
+@contextmanager
+def try_local_backend_guard(base_url: str, wait_s: float):
+    """同 local_backend_guard,但**等不到就抛 LocalBackendBusy**,给请求线程用。
+
+    存在的理由:配置「测试」按钮跑在请求线程里。若直接用 local_backend_guard,一个正在跑
+    S4 的作业能把这颗按钮挂住整整一个 image_timeout(线上 900s)——用户看到的是浏览器
+    一直转圈,而真相"后端正忙"其实是条有用的信息,该如实说出来。
+    不绕过锁:测试也是真调用,绕过就是在生成期间抢显存,那正是这把锁要防的事。"""
+    if not is_local_endpoint(base_url):
+        yield
+        return
+    if not _local_lock.acquire(timeout=wait_s):
+        raise LocalBackendBusy(
+            f"本地后端正忙({base_url}):有生成作业正占用 GPU,等待 {wait_s:g} 秒未获得。"
+            "这不代表配置有问题,等当前作业跑完再测一次。")
+    try:
+        yield
+    finally:
+        _local_lock.release()
 
 
 def request_with_retry(do_request: Callable[[], httpx.Response], retries: int, *,
