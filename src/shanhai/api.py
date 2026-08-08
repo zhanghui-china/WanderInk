@@ -504,6 +504,15 @@ def _serialize(p: Project) -> dict:
         "image_route": c.image_route, "image_lora": c.image_lora,
         # 这一页生成时缺三视图锚点的角色——一致性无保证,必须让用户看得见。
         "missing_refs": c.missing_refs,
+        # 真正发给图像模型的整条提示词(单图页);分格页恒空,逐格记在下面的 panels 里。
+        "image_prompt": c.image_prompt,
+        # ⚠️ 分格页里 **cell.visual_desc 完全不参与生成**——S4 走的是每格自己的
+        # panel.visual_desc(见 s4_pages._render_panel_cell)。界面上只显示 visual_desc 时,
+        # 用户改了半天的那句话其实没被送出去,这正是 2026-08-08「躺在白娘子怀里画不出来」
+        # 那次的一半原因。把每格都发出去,让界面能如实说明"实际用的是这些"。
+        "panels": [{"visual_desc": pn.visual_desc, "shot_type": pn.shot_type,
+                    "characters": pn.characters, "image_prompt": pn.image_prompt}
+                   for pn in c.panels],
         "image": _file_url(p.project_id, c.image, workdir),
         "audio": _file_url(p.project_id, c.audio, workdir),
         "tracks": {lg: {"caption": t.caption, "duration_ms": t.duration_ms,

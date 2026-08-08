@@ -76,6 +76,11 @@ class Panel(BaseModel):
     shot_type: Literal["wide", "medium", "closeup", "insert"] = "medium"
     characters: list[str] = Field(default_factory=list)
     image: str = ""  # S4 填入,该格自己的生成图相对路径
+    # S4 实际发给图像模型的整条提示词。**不是 visual_desc**——中间还叠了画风、匿名化后的
+    # 角色代号、镜头提示与一堆固定约束(见 s4_pages.PANEL_TMPL)。2026-08-08 排查"躺在
+    # 白娘子怀里画不出来"时,想知道到底发出去了什么,只能靠读代码逐段反推;有它就不必。
+    # 空串 = 老数据或尚未生成。
+    image_prompt: str = ""
 
 
 class LocalizedTrack(BaseModel):
@@ -116,6 +121,11 @@ class StoryboardCell(BaseModel):
     #(Real_Ani-Qwen_000001250.safetensors),而那个默认值 shanhai 这边无从得知。所以空串
     # 只表示"未指定,由后端决定",不是"无"——照这条字面意思做界面会做出一个说谎的界面。
     image_lora: str = ""
+    # S4 实际发给图像模型的整条提示词(单图页)。分格页各格自己记在 Panel.image_prompt 上,
+    # 这里保持空——一页多格根本没有"一条"提示词。理由同 Panel.image_prompt:
+    # 界面上的 visual_desc 与真正发出去的东西之间隔着画风、匿名化、镜头提示和一堆固定约束,
+    # 出了问题不该靠读代码反推。空串 = 老数据、尚未生成、或分格页。
+    image_prompt: str = ""
     # silent=True 表示该页音频是静音兜底(非真人解说);用于状态诚实化与重跑重合成。
     silent: bool = False
     status: Literal["draft", "confirmed", "failed"] = "draft"

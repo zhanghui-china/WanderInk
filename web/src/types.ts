@@ -58,6 +58,19 @@ export interface Page {
   missing_refs: string[]
   // 附加语种轨,key 是语种码(如 "en");没生成过就是空对象
   tracks: Record<string, LocalizedTrack>
+  // 真正发给图像模型的整条提示词(单图页)。**不等于 visual_desc**——中间叠了画风、
+  // 匿名化后的角色代号、一堆固定约束。空串 = 老数据、尚未生成、或分格页(见 panels)。
+  image_prompt: string
+  // 分格页的每一格。⚠️ 非空时 **visual_desc 完全不参与生成**,S4 用的是这里每格自己的
+  // visual_desc。界面必须如实说明这一点,否则用户会一直改一段没被使用的文字。
+  panels: Panel[]
+}
+
+export interface Panel {
+  visual_desc: string
+  shot_type: string
+  characters: string[]
+  image_prompt: string
 }
 
 export interface LocalizedTrack {

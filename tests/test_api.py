@@ -2422,6 +2422,7 @@ _PAGE_FIELDS_USED_BY_WEB = {
     "index", "caption", "emotion", "status", "duration_ms", "silent",
     "scene_ref", "visual_desc", "characters", "image", "audio", "tracks",
     "image_gen_ms", "image_route", "image_lora", "missing_refs",
+    "image_prompt", "panels",
 }
 
 
