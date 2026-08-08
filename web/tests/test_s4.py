@@ -774,3 +774,41 @@ def test_s4_redrawn_page_still_renders_as_panels(tmp_path: Path):
     assert image.generate.call_count == 3          # 三格各生成一次,不是整页一次
     assert (tmp_path / "pages" / "page_01_panel3.png").exists()
     assert p.storyboard[0].status == "confirmed"
+
+
+def test_s4_records_the_prompt_actually_sent(tmp_path: Path):
+    """落盘的必须是**真正发出去的那串**,不是 visual_desc。
+
+    两者之间隔着画风、匿名化后的角色代号、镜头提示与两百多字固定约束。2026-08-08 排查
+    「躺在白娘子怀里画不出来」时,想知道到底发出去了什么只能靠读代码逐段反推——那次之后
+    才把它存下来。所以这条断言的重点是"与 image.generate 收到的第一个参数逐字相同"。"""
+    image = _mock_image()
+    image.generate.return_value = _png()
+    p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
+    sent = image.generate.call_args[0][0]
+    assert p.storyboard[0].image_prompt == sent
+    assert p.storyboard[0].image_prompt != p.storyboard[0].visual_desc   # 不是原文
+    assert p.storyboard[0].visual_desc  # 前提:原文非空,否则上一条恒真
+
+
+def test_s4_multi_panel_records_prompt_per_panel_not_on_the_page(tmp_path: Path):
+    """分格页每格各记各的;整页那个字段恒空——一页多格根本没有"一条"提示词,
+    写任何一格的都是说谎。界面按 panels[].image_prompt 逐格展示。"""
+    image = _mock_image()
+    image.generate.return_value = _png()
+    p = s4_pages.run(_multi_panel_project(tmp_path, 2), image, tmp_path, "1536x1024")
+    cell = p.storyboard[0]
+    assert cell.image_prompt == ""
+    assert len(cell.panels) == 2
+    assert all(pn.image_prompt for pn in cell.panels)
+    # 两格的提示词必须不同(各自的 visual_desc 与镜头提示都不一样),相同说明串了
+    assert cell.panels[0].image_prompt != cell.panels[1].image_prompt
+
+
+def test_s4_clears_prompt_when_generation_fails(tmp_path: Path):
+    """与 image_route/image_lora 同生共死:失败页不留描述上一次生成的陈旧提示词。"""
+    image = _mock_image()
+    image.generate.side_effect = ImageGenError("boom")
+    p = s4_pages.run(_project(tmp_path), image, tmp_path, "1536x1024")
+    assert p.storyboard[0].status == "failed"
+    assert p.storyboard[0].image_prompt == ""

@@ -3,6 +3,7 @@ import type {
   AppConfigInput,
   AppConfigView,
   CellPatch,
+  ConfigTestReport,
   InsertCellFields,
   Meta,
   NewProjectInput,
@@ -296,4 +297,14 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => j<AppConfigView>(r)),
+
+  // 测这套配置能不能真的调通 LLM。config 与 saveConfig 同形,但**不落盘**——
+  // 传的是表单里尚未保存的值,先测通过再保存。
+  testConfig: (scope: string, config: AppConfigInput) =>
+    fetch('/api/config/test', {
+      ...CREDS,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope, config }),
+    }).then((r) => j<ConfigTestReport>(r)),
 }

@@ -58,6 +58,19 @@ export interface Page {
   missing_refs: string[]
   // 附加语种轨,key 是语种码(如 "en");没生成过就是空对象
   tracks: Record<string, LocalizedTrack>
+  // 真正发给图像模型的整条提示词(单图页)。**不等于 visual_desc**——中间叠了画风、
+  // 匿名化后的角色代号、一堆固定约束。空串 = 老数据、尚未生成、或分格页(见 panels)。
+  image_prompt: string
+  // 分格页的每一格。⚠️ 非空时 **visual_desc 完全不参与生成**,S4 用的是这里每格自己的
+  // visual_desc。界面必须如实说明这一点,否则用户会一直改一段没被使用的文字。
+  panels: Panel[]
+}
+
+export interface Panel {
+  visual_desc: string
+  shot_type: string
+  characters: string[]
+  image_prompt: string
 }
 
 export interface LocalizedTrack {
@@ -259,4 +272,22 @@ export interface AppConfigInput {
   global?: ConfigOverrideInput
   users?: Record<string, ConfigOverrideInput>
   stages?: Record<string, ConfigOverrideInput>
+}
+
+// POST /api/config/test 的一条结果:一个「端点身份」(provider+地址+模型)以及它服务哪些环节。
+// 后端按环节逐个解析再去重——只测被编辑的那一层看不出跨层分叉(你配了自己的 Ollama,
+// 而某个环节其实被管理员钉死指向别的地址)。不含 api_key,后端刻意不回显。
+export interface ConfigTestResult {
+  stages: string[]
+  provider: string
+  base_url: string
+  model: string
+  ok: boolean
+  detail: string
+  elapsed_ms: number
+}
+
+export interface ConfigTestReport {
+  ok: boolean
+  results: ConfigTestResult[]
 }

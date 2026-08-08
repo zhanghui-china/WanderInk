@@ -205,6 +205,8 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
                 out = pages_dir / f"page_{cell.index:02d}_panel{i}.png"
                 out.write_bytes(art)
                 panel.image = str(out.relative_to(workdir))
+                # 逐格记下真正发出去的那串:分格页没有"一条"整页提示词,只有每格自己的
+                panel.image_prompt = prompt
                 imgs.append(art)
                 kept_panels.append(panel)
                 # 落在写盘之后:这一格确定进成品页了才计入路径统计
@@ -222,6 +224,9 @@ def _render_panel_cell(cell: StoryboardCell, style: str, cards: dict, image: Ima
         cell.image_lora = ""
         cell.status = "failed"
         return
+    # 整页级的 image_prompt 恒为空:分格页压根没有"一条"提示词,写任何一格的都是说谎。
+    # 界面按 panels[].image_prompt 逐格展示(见 web/src/components/ProjectDetail.tsx)。
+    cell.image_prompt = ""
     composed = paneling.compose_manga_page(imgs, kept_panels)
     out = pages_dir / f"page_{cell.index:02d}.png"
     typeset.compose_page(composed, out)
@@ -266,6 +271,9 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
             # 否则记录的路径可能和实际生成用的路径对不上。
             cell.image_route = image.route_for(refs or None)
             cell.image_lora = image.lora_model or ""
+            # 存下真正发出去的那串。与上面几个字段同生共死:只在这一次生成确实成功后才写,
+            # 免得 failed 页挂着一条描述另一次生成的提示词。
+            cell.image_prompt = prompt
             cell.status = "confirmed"
             return
         except Exception as e:  # noqa: BLE001 单页失败不拖垮整轮,重试/预算耗尽后标 failed
@@ -274,6 +282,7 @@ def _render_cell(cell: StoryboardCell, style: str, cards: dict, image: ImageClie
     # 挂在 failed 页上就是三条假信息(image/image_gen_ms 的同类残留是既有行为,不在本次范围)。
     cell.image_route = ""
     cell.image_lora = ""
+    cell.image_prompt = ""
     cell.status = "failed"
 
 

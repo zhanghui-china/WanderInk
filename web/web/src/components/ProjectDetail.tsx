@@ -54,6 +54,34 @@ const TRACK_LABEL: Record<string, string> = { en: '英文版' }
 // 字幕语种码 -> <track> 的 srclang / label
 const SUB_LABEL: Record<string, string> = { zh: '中文', en: 'English' }
 
+// 分格的镜头类型(后端 schema.Panel.shot_type 的四个取值)
+const SHOT_LABEL: Record<string, string> = {
+  wide: '远景', medium: '中景', closeup: '特写', insert: '插入',
+}
+
+// 真正发给图像模型的提示词。默认折叠:它有两三百字,且大半是每页都一样的固定约束,
+// 平铺出来会把分镜文本淹掉。但必须能看到——2026-08-08 查"躺在怀里画不出来"时,
+// 想知道到底发出去了什么,只能靠读代码逐段反推。
+function PromptPeek({ prompt }: { prompt: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-[10px] text-muted transition hover:text-cinnabar"
+      >
+        {open ? '▾' : '▸'} 实际发给模型的提示词
+      </button>
+      {open && (
+        <p className="mt-1 whitespace-pre-wrap break-words rounded bg-kraft/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted">
+          {prompt}
+        </p>
+      )}
+    </div>
+  )
+}
+
 // 浏览器的 HTML5 <video> **不解析 MP4 容器内的 mov_text 字幕轨**(Chrome/Firefox/Edge
 // 一律忽略),网页里显示字幕唯一的办法就是 <track> 外挂 WebVTT。MP4 内嵌轨仍然保留——
 // 下载后用 VLC / 景区播放设备看时靠的是它。
@@ -1671,8 +1699,33 @@ function PageCard({
             <div>
               <span className="text-[10px] tracking-[2px] text-muted">画面</span>
               <p className="mt-0.5 text-[13px] leading-relaxed text-ink-soft">{pg.visual_desc}</p>
+              {/* ⚠️ 分格页里这段**不参与生成**——S4 用的是下面每格自己的描述
+                  (见 s4_pages._render_panel_cell)。不说清楚的话,用户会一直改一段没被
+                  使用的文字然后以为"模型画不出来";2026-08-08 就发生过。 */}
+              {pg.panels.length > 0 && (
+                <p className="mt-1 text-[11px] leading-relaxed text-alarm">
+                  本页分 {pg.panels.length} 格,实际生成用的是下面每格的描述;这段不参与生成。
+                  修改这段会让本页回退成单图整页(点「重绘」不会)。
+                </p>
+              )}
             </div>
           )}
+          {pg.panels.length > 0 && (
+            <div className="space-y-1.5">
+              <span className="text-[10px] tracking-[2px] text-muted">分格(实际用于生成)</span>
+              {pg.panels.map((pn, i) => (
+                <div key={i} className="rounded-lg border border-line bg-white/40 px-2.5 py-1.5">
+                  <p className="text-[10px] text-muted">
+                    第 {i + 1} 格 · {SHOT_LABEL[pn.shot_type] ?? pn.shot_type}
+                    {pn.characters.length > 0 && ` · ${pn.characters.join('、')}`}
+                  </p>
+                  <p className="mt-0.5 text-[12px] leading-relaxed text-ink-soft">{pn.visual_desc}</p>
+                  {pn.image_prompt && <PromptPeek prompt={pn.image_prompt} />}
+                </div>
+              ))}
+            </div>
+          )}
+          {pg.panels.length === 0 && pg.image_prompt && <PromptPeek prompt={pg.image_prompt} />}
           <div>
             <span className="text-[10px] tracking-[2px] text-muted">旁白</span>
             <p className="mt-0.5 font-serif text-sm leading-relaxed text-ink">{pg.caption}</p>
