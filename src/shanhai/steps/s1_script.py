@@ -39,10 +39,17 @@ def _script_text(script: Script) -> str:
     return "".join(parts)
 
 
-# hermes-agent 的"编剧大师"skill:system 前置 /screenwriter-master 显式触发,尾缀"别反问"
-# 压住它的多轮反问式工作流,单轮直出 JSON(实测有效)。仅在 S1 后端确为 hermes-agent 时由
-# 调用方传 use_skill=True;单次 ~16.5 万 token / ~400s,故 retries 降到 1 封顶最坏两次尝试。
-SKILL_PREFIX = "/screenwriter-master\n\n"
+# hermes-agent 的"编剧大师"skill:system 前置斜杠命令显式触发,尾缀"别反问"压住它的
+# 多轮反问式工作流,单轮直出 JSON(实测有效)。仅在 S1 后端确为 hermes-agent 时由调用方传
+# use_skill=True;单次 ~16.5 万 token / ~400s,故 retries 降到 1 封顶最坏两次尝试。
+#
+# ⚠️ 名字必须与 hermes 上**当前已装**的 skill 逐字相同,写错**不会报错**:hermes 把不认识的
+# 斜杠命令当普通文本吞掉,照常用一个普通 LLM 回答。2026-08-08 实测发现这里原本写的
+# "/screenwriter-master" 早已不匹配任何已装 skill(真名是 screenwriting-master),
+# 编剧大师因此长期空转——用户勾了开关、付了 hermes 的时间成本,拿的却是普通生成。
+# 判据是 prompt_tokens:无前缀 16282 / 写错的名字 16288(只多出那串字面文本)/ 正确名字 36544。
+# 校验办法见 scripts/check-hermes-skills.py;对方改名我们这边零信号,所以要定期对一次。
+SKILL_PREFIX = "/screenwriting-master\n\n"
 SKILL_SUFFIX = "\n\n【一次性给全信息,请勿反问,直接产出成品剧本】"
 
 
