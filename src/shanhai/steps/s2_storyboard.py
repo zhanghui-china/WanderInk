@@ -89,11 +89,12 @@ BACKFILL_SYSTEM = f"""你是连环画分镜师。下面每一条是一页已经�
 只补 panels,不要改动原有的 caption / visual_desc / characters。"""
 
 
-# hermes-agent 的"导演大师"skill(与编剧大师联动,从剧本出发拆分镜):system 前置
-# /director-master 显式触发,尾缀"别反问+只输出 JSON"压住它原生的多轮工作流/xlsx 分镜表输出,
-# 单轮直出符合 _Cells schema 的 JSON(实测有效)。仅在 S2 后端确为 hermes-agent 时由调用方
-# 传 use_skill=True;单次约 3.5 万 token/300s,故 retries 降到 1 封顶最坏两次尝试。
-DIRECTOR_PREFIX = "/director-master\n\n"
+# "导演大师"skill(与编剧大师联动,从剧本出发拆分镜)的尾缀:压住它原生的五步工作流与
+# xlsx 九列分镜表输出,单轮直出符合 _Cells schema 的 JSON(实测有效)。
+# 两条 skill 路径(hermes 斜杠命令 / 本地正文)都要带——正文的「工作流纪律」一节明写
+# 「每一步完成后暂停,等待用户的 [通过/修改/自检]」「绝不一次性生成所有内容」,不压一样会停。
+# 前缀由调用方给(runtime_config.use_master_skill,见 shanhai.skills)。
+# 用 skill 时单次约 3.5 万 token/300s,故 retries 降到 1 封顶最坏两次尝试。
 DIRECTOR_SUFFIX = "\n\n【一次性给全信息,请勿反问,直接产出成品;严格只输出 JSON,不要输出 xlsx/表格/其它格式】"
 
 
@@ -213,7 +214,7 @@ def _backfill_panels(project: Project, llm: LLMClient) -> None:
         cell.panels = panels[:MAX_PANELS_PER_PAGE]
 
 
-def run(project: Project, llm: LLMClient, use_skill: bool = False) -> Project:
+def run(project: Project, llm: LLMClient, skill_prefix: str = "") -> Project:
     if project.script is None:
         raise ValueError("先完成 S1")
     lo, hi = PAGE_TARGETS[project.params.duration_min]
@@ -221,8 +222,8 @@ def run(project: Project, llm: LLMClient, use_skill: bool = False) -> Project:
     system = head + SYSTEM + (PANEL_RULES if project.params.multi_panel else "")
     user = (f"页数要求:{lo}~{hi} 页。\n剧本 JSON:\n"
             + project.script.model_dump_json(indent=1))
-    if use_skill:
-        result = llm.structured(DIRECTOR_PREFIX + system + DIRECTOR_SUFFIX, user, _Cells, retries=1)
+    if skill_prefix:
+        result = llm.structured(skill_prefix + system + DIRECTOR_SUFFIX, user, _Cells, retries=1)
     else:
         result = llm.structured(system, user, _Cells)
     project.storyboard = result.cells

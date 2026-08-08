@@ -28,3 +28,7 @@ version.json
 
 # 本地部署包装脚本,里面写着 DGX 的真实内网地址。同上,sync-wanderink.sh 会把仓库根发布出去。
 deploy.local.sh
+
+# 「山音超级编剧/导演大师」skill 正文,@山音 的作品(MIT)。不在本仓库里再放一份——
+# 用 scripts/fetch-skills.py 从上游公开仓库取回。rsync 部署不看 .gitignore,故它仍会同步到 DGX。
+assets/skills/

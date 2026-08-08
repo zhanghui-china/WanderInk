@@ -2,6 +2,7 @@ import json
 import httpx, respx, pytest
 from shanhai.providers.llm import LLMClient
 from shanhai.schema import Legend, Project, Script
+from shanhai import skills
 from shanhai.steps import s1_script
 
 BASE = "https://p.example.com/v1"
@@ -39,7 +40,7 @@ def test_s1_use_skill_prepends_slash_and_caps_retries():
     from unittest.mock import MagicMock
     llm = MagicMock()
     llm.structured.return_value = Script.model_validate(SCRIPT)
-    s1_script.run(_project(), llm, use_skill=True)
+    s1_script.run(_project(), llm, skill_prefix=skills.SLASH['s1'])
     sys_arg = llm.structured.call_args.args[0]
     assert sys_arg.startswith("/screenwriting-master")
     assert "请勿反问" in sys_arg

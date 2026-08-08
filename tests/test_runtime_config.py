@@ -347,31 +347,46 @@ HERMES = dict(base_url="http://127.0.0.1:8642/v1", api_key="x", llm_model="herme
 OTHER = dict(base_url="https://api.stepfun.com/v1", api_key="x", llm_model="step-3.7-flash")
 
 
-def test_use_master_skill_on_hermes_returns_true_and_records_skill_name():
+def test_use_master_skill_on_hermes_sends_slash_command():
+    """后端是 hermes → 发斜杠命令,由它加载自己那份 skill(既有行为)。"""
+    from shanhai import skills
     p = _p_with_skill(True)
     s = Settings(_env_file=None, **HERMES)
-    assert use_master_skill(p, s, "s1") is True
-    assert use_master_skill(p, s, "s2") is True
-    assert p.status["s1_engine"] == "hermes-agent · 编剧大师"
-    assert p.status["s2_engine"] == "hermes-agent · 导演大师"
+    assert use_master_skill(p, s, "s1") == skills.SLASH["s1"]
+    assert use_master_skill(p, s, "s2") == skills.SLASH["s2"]
+    assert p.status["s1_engine"] == "hermes-agent · 编剧大师(远程)"
+    assert p.status["s2_engine"] == "hermes-agent · 导演大师(远程)"
 
 
 def test_use_master_skill_off_records_plain_engine():
     p = _p_with_skill(False)
     s = Settings(_env_file=None, **HERMES)
-    assert use_master_skill(p, s, "s1") is False   # 开关关 → 恒 False,即便后端是 hermes
+    assert use_master_skill(p, s, "s1") == ""   # 开关关 → 恒不用,即便后端是 hermes
     assert p.status["s1_engine"] == "hermes-agent · 普通"
 
 
-def test_use_master_skill_on_non_hermes_degrades_and_records_reason():
-    # 开关开了但该环节后端不是 hermes-agent → 退化普通生成(不把斜杠命令发给别的模型),
-    # 且记录里必须写明退化原因,否则这次退化在事后完全不可见。
+def test_use_master_skill_on_other_backend_uses_builtin_text(monkeypatch):
+    """**这条是"不再依赖 hermes"的执法点。** 后端不是 hermes 时,只要本地有 skill 正文
+    就把正文拼进 system——任何 LLM 都能用大师 skill,用户因此只需配一个端点。"""
+    from shanhai import skills
+    monkeypatch.setattr(skills, "build_skill_prompt", lambda stage, proj: f"【{stage} 正文】")
     p = _p_with_skill(True)
     s = Settings(_env_file=None, **OTHER)
-    assert use_master_skill(p, s, "s2") is False
+    assert use_master_skill(p, s, "s2") == "【s2 正文】"
+    assert p.status["s2_engine"] == "step-3.7-flash · 导演大师(内置)"
+
+
+def test_use_master_skill_degrades_when_no_builtin_text(monkeypatch):
+    """两条路都不通(非 hermes 且本地无正文)→ 退化普通生成,且记录里写明原因。
+    退化本身没问题,**退化得无声无息**才是问题:此前只 print 到 stdout,事后无从归因。"""
+    from shanhai import skills
+    monkeypatch.setattr(skills, "build_skill_prompt", lambda stage, proj: "")
+    p = _p_with_skill(True)
+    s = Settings(_env_file=None, **OTHER)
+    assert use_master_skill(p, s, "s2") == ""
     rec = p.status["s2_engine"]
     assert rec.startswith("step-3.7-flash · 普通")
-    assert "已忽略大师开关" in rec and "hermes-agent" in rec
+    assert "已忽略大师开关" in rec and "正文缺失" in rec
 
 
 # ---------- 附加语种轨的默认音色 ----------
